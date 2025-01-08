@@ -88,7 +88,7 @@ struct Identification<'a> {
     comments: &'a str,
 }
 
-impl<'a> Identification<'a> {
+impl Identification<'_> {
     fn outgoing() -> Self {
         Self {
             protocol: PROTOCOL,
@@ -132,7 +132,7 @@ impl<'a> Decode<'a> for Identification<'a> {
     }
 }
 
-impl<'a> Encode for Identification<'a> {
+impl Encode for Identification<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(self.protocol.as_bytes());
         buf.push(b'-');
@@ -188,16 +188,16 @@ struct ReadMessage<'a> {
     buf: ReadBuf<'a>,
 }
 
-impl<'a> Future for ReadMessage<'a> {
+impl Future for ReadMessage<'_> {
     type Output = Result<usize, ProtoError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let (stream, buf) = (&mut this.stream, &mut this.buf);
-        match ready!(stream.as_mut().poll_read(cx, buf)) {
-            Ok(()) => Poll::Ready(Ok(buf.filled().len())),
-            Err(error) => return Poll::Ready(Err(ProtoError::Io(error))),
-        }
+        Poll::Ready(match ready!(stream.as_mut().poll_read(cx, buf)) {
+            Ok(()) => Ok(buf.filled().len()),
+            Err(error) => Err(ProtoError::Io(error)),
+        })
     }
 }
 
