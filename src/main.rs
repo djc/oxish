@@ -109,24 +109,22 @@ impl Identification<'_> {
 }
 
 impl<'a> Decode<'a> for Identification<'a> {
-    type Error = IdentificationError;
-
-    fn decode(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+    fn decode(bytes: &'a [u8]) -> Result<Self, Error> {
         let message = match str::from_utf8(bytes) {
             Ok(message) => message,
-            Err(_) => return Err(IdentificationError::InvalidUtf8),
+            Err(_) => return Err(IdentificationError::InvalidUtf8.into()),
         };
 
         let Some(rest) = message.strip_prefix("SSH-") else {
-            return Err(IdentificationError::NoSsh);
+            return Err(IdentificationError::NoSsh.into());
         };
 
         let Some((protocol, rest)) = rest.split_once('-') else {
-            return Err(IdentificationError::NoVersion);
+            return Err(IdentificationError::NoVersion.into());
         };
 
         let Some(rest) = rest.strip_suffix("\r\n") else {
-            return Err(IdentificationError::NoLineEndings);
+            return Err(IdentificationError::NoLineEndings.into());
         };
 
         let (software, comments) = match rest.split_once(' ') {
@@ -161,10 +159,7 @@ trait StreamState<'a> {
         &self,
         stream: &'a mut TcpStream,
         buf: &'a mut Vec<u8>,
-    ) -> impl Future<Output = Result<Self::Output, Error>> + 'a
-    where
-        Error: From<<Self::Output as Decode<'a>>::Error>,
-    {
+    ) -> impl Future<Output = Result<Self::Output, Error>> + 'a {
         async {
             let read = ReadMessage {
                 stream: Pin::new(stream),
@@ -182,9 +177,7 @@ trait Encode {
 }
 
 trait Decode<'a>: Sized {
-    type Error;
-
-    fn decode(bytes: &'a [u8]) -> Result<Self, Self::Error>;
+    fn decode(bytes: &'a [u8]) -> Result<Self, Error>;
 }
 
 struct ReadMessage<'a> {
