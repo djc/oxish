@@ -3,6 +3,7 @@ use std::{
     future::Future,
     io,
     net::{Ipv4Addr, SocketAddr},
+    ops::Range,
     pin::Pin,
     str,
     task::{ready, Context, Poll},
@@ -63,11 +64,11 @@ impl Connection {
         }
 
         let state = VersionExchange;
-        let mut read_buf = vec![0; 16_384];
-        let ident = match state.read(&mut stream, &mut read_buf).await {
-            Ok(ident) => {
+        let (mut read_buf, mut offset) = (vec![0; 16_384], 0);
+        let (ident, next) = match state.read(&mut stream, &mut read_buf).await {
+            Ok((ident, next)) => {
                 debug!(%addr, ?ident, "Received identification");
-                ident
+                (ident, next)
             }
             Err(error) => {
                 warn!(%addr, %error, "Failed to read version exchange");
@@ -79,6 +80,9 @@ impl Connection {
             warn!(%addr, ?ident, "Unsupported protocol version");
             return;
         }
+
+        read_buf.copy_within(next.start..next.end, 0);
+        offset = next.len();
 
         todo!();
     }
@@ -109,10 +113,14 @@ impl Identification<'_> {
 }
 
 impl<'a> Decode<'a> for Identification<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Self, Error> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
         let message = match str::from_utf8(bytes) {
             Ok(message) => message,
             Err(_) => return Err(IdentificationError::InvalidUtf8.into()),
+        };
+
+        let Some((message, next)) = message.split_once("\r\n") else {
+            return Err(Error::Incomplete(None));
         };
 
         let Some(rest) = message.strip_prefix("SSH-") else {
@@ -123,19 +131,20 @@ impl<'a> Decode<'a> for Identification<'a> {
             return Err(IdentificationError::NoVersion.into());
         };
 
-        let Some(rest) = rest.strip_suffix("\r\n") else {
-            return Err(IdentificationError::NoLineEndings.into());
-        };
-
         let (software, comments) = match rest.split_once(' ') {
             Some((software, comments)) => (software, comments),
             None => (rest, ""),
         };
 
-        Ok(Self {
+        let out = Self {
             protocol,
             software,
             comments,
+        };
+
+        Ok(Decoded {
+            value: out,
+            next: next.as_bytes(),
         })
     }
 }
@@ -159,7 +168,7 @@ trait StreamState<'a> {
         &self,
         stream: &'a mut TcpStream,
         buf: &'a mut Vec<u8>,
-    ) -> impl Future<Output = Result<Self::Output, Error>> + 'a {
+    ) -> impl Future<Output = Result<(Self::Output, Range<usize>), Error>> + 'a {
         async {
             let read = ReadMessage {
                 stream: Pin::new(stream),
@@ -167,7 +176,9 @@ trait StreamState<'a> {
             };
 
             let len = read.await?;
-            Ok(Self::Output::decode(&buf[..len])?)
+            let decoded = Self::Output::decode(&buf[..len])?;
+            let offset = len - decoded.next.len();
+            Ok((decoded.value, offset..len))
         }
     }
 }
@@ -177,7 +188,12 @@ trait Encode {
 }
 
 trait Decode<'a>: Sized {
-    fn decode(bytes: &'a [u8]) -> Result<Self, Error>;
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error>;
+}
+
+struct Decoded<'a, T> {
+    value: T,
+    next: &'a [u8],
 }
 
 struct ReadMessage<'a> {
@@ -200,14 +216,19 @@ impl Future for ReadMessage<'_> {
 
 #[derive(Debug, Error)]
 enum Error {
-    Io(#[from] io::Error),
     Identification(#[from] IdentificationError),
+    Io(#[from] io::Error),
+    Incomplete(Option<usize>),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(f, "IO error: {error}"),
+            Self::Incomplete(len) => match len {
+                Some(len) => write!(f, "incomplete message: expected {len} bytes"),
+                None => write!(f, "incomplete message"),
+            },
             Self::Identification(error) => write!(f, "identification error: {error}"),
         }
     }
@@ -217,8 +238,6 @@ impl fmt::Display for Error {
 enum IdentificationError {
     #[error("Invalid UTF-8")]
     InvalidUtf8,
-    #[error("No line endings")]
-    NoLineEndings,
     #[error("No SSH prefix")]
     NoSsh,
     #[error("No version found")]
