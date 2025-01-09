@@ -11,3 +11,9 @@ thiserror = "2.0.9"
 tokio = { version = "1.42", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[lints.rust]
+unreachable_pub = { level = "warn" }
+
+[lints.clippy]
+use_self = { level = "warn" }
