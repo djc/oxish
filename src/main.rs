@@ -62,8 +62,9 @@ impl Connection {
             return;
         }
 
+        let state = Start;
         let mut read_buf = vec![0; 16_384];
-        let ident = match Start::read(&mut stream, &mut read_buf).await {
+        let ident = match state.read(&mut stream, &mut read_buf).await {
             Ok(ident) => {
                 debug!(%addr, ?ident, "Received identification");
                 ident
@@ -155,6 +156,7 @@ trait StreamState<'a> {
     type Output: Decode<'a>;
 
     fn read(
+        &self,
         stream: &'a mut TcpStream,
         buf: &'a mut Vec<u8>,
     ) -> impl Future<Output = Result<Self::Output, ProtoError>> + 'a
