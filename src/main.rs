@@ -53,7 +53,7 @@ impl Connection {
     }
 
     async fn run(self) {
-        let Connection { mut stream, addr } = self;
+        let Self { mut stream, addr } = self;
         let mut write_buf = Vec::with_capacity(16_384);
         let ident = Identification::outgoing();
         ident.encode(&mut write_buf);
@@ -79,6 +79,8 @@ impl Connection {
             warn!(%addr, ?ident, "Unsupported protocol version");
             return;
         }
+
+        todo!();
     }
 }
 
@@ -212,8 +214,8 @@ enum ProtoError {
 impl fmt::Display for ProtoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProtoError::Io(error) => write!(f, "IO error: {error}"),
-            ProtoError::Identification(error) => write!(f, "identification error: {error}"),
+            Self::Io(error) => write!(f, "IO error: {error}"),
+            Self::Identification(error) => write!(f, "identification error: {error}"),
         }
     }
 }
