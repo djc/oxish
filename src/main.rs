@@ -62,7 +62,7 @@ impl Connection {
             return;
         }
 
-        let state = Start;
+        let state = VersionExchange;
         let mut read_buf = vec![0; 16_384];
         let ident = match state.read(&mut stream, &mut read_buf).await {
             Ok(ident) => {
@@ -84,9 +84,9 @@ impl Connection {
     }
 }
 
-struct Start;
+struct VersionExchange;
 
-impl<'a> StreamState<'a> for Start {
+impl<'a> StreamState<'a> for VersionExchange {
     type Input = Identification<'a>;
     type Output = Identification<'a>;
 }
