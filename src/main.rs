@@ -84,6 +84,13 @@ impl Connection {
     }
 }
 
+struct Start;
+
+impl<'a> StreamState<'a> for Start {
+    type Input = Identification<'a>;
+    type Output = Identification<'a>;
+}
+
 #[derive(Debug)]
 struct Identification<'a> {
     protocol: &'a str,
@@ -144,13 +151,6 @@ impl Encode for Identification<'_> {
         buf.extend_from_slice(self.comments.as_bytes());
         buf.extend_from_slice(b"\r\n");
     }
-}
-
-struct Start;
-
-impl<'a> StreamState<'a> for Start {
-    type Input = Identification<'a>;
-    type Output = Identification<'a>;
 }
 
 trait StreamState<'a> {
