@@ -161,9 +161,9 @@ trait StreamState<'a> {
         &self,
         stream: &'a mut TcpStream,
         buf: &'a mut Vec<u8>,
-    ) -> impl Future<Output = Result<Self::Output, ProtoError>> + 'a
+    ) -> impl Future<Output = Result<Self::Output, Error>> + 'a
     where
-        ProtoError: From<<Self::Output as Decode<'a>>::Error>,
+        Error: From<<Self::Output as Decode<'a>>::Error>,
     {
         async {
             let read = ReadMessage {
@@ -193,25 +193,25 @@ struct ReadMessage<'a> {
 }
 
 impl Future for ReadMessage<'_> {
-    type Output = Result<usize, ProtoError>;
+    type Output = Result<usize, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let (stream, buf) = (&mut this.stream, &mut this.buf);
         Poll::Ready(match ready!(stream.as_mut().poll_read(cx, buf)) {
             Ok(()) => Ok(buf.filled().len()),
-            Err(error) => Err(ProtoError::Io(error)),
+            Err(error) => Err(Error::Io(error)),
         })
     }
 }
 
 #[derive(Debug, Error)]
-enum ProtoError {
+enum Error {
     Io(#[from] io::Error),
     Identification(#[from] IdentificationError),
 }
 
-impl fmt::Display for ProtoError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(f, "IO error: {error}"),
