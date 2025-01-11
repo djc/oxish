@@ -3,7 +3,6 @@ use std::{
     future::Future,
     io,
     net::{Ipv4Addr, SocketAddr},
-    ops::Range,
     str,
 };
 
@@ -63,11 +62,11 @@ impl Connection {
         write_buf.clear();
 
         let state = VersionExchange;
-        let (mut read_buf, mut offset) = (Vec::with_capacity(16_384), 0);
-        let (ident, next) = match state.read(&mut stream, &mut read_buf).await {
-            Ok((ident, next)) => {
+        let mut read_buf = Vec::with_capacity(16_384);
+        let (ident, rest) = match state.read(&mut stream, &mut read_buf).await {
+            Ok((ident, rest)) => {
                 debug!(%addr, ?ident, "Received identification");
-                (ident, next)
+                (ident, rest)
             }
             Err(error) => {
                 warn!(%addr, %error, "Failed to read version exchange");
@@ -80,8 +79,9 @@ impl Connection {
             return;
         }
 
-        read_buf.copy_within(next.start..next.end, 0);
-        offset = next.len();
+        let start = read_buf.len() - rest;
+        read_buf.copy_within(start.., 0);
+        read_buf.truncate(rest);
 
         todo!();
     }
@@ -173,13 +173,12 @@ trait StreamState<'a> {
         &self,
         stream: &'a mut TcpStream,
         buf: &'a mut Vec<u8>,
-    ) -> impl Future<Output = Result<(Self::Output, Range<usize>), Error>> + 'a {
+    ) -> impl Future<Output = Result<(Self::Output, usize), Error>> + 'a {
         async move {
             let len = stream.read_buf(buf).await?;
             debug!(bytes = len, "read from stream");
             let decoded = Self::Output::decode(buf)?;
-            let offset = len - decoded.next.len();
-            Ok((decoded.value, offset..len))
+            Ok((decoded.value, decoded.next.len()))
         }
     }
 }
