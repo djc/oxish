@@ -60,6 +60,7 @@ impl Connection {
             warn!(%addr, %error, "Failed to send version exchange");
             return;
         }
+        write_buf.clear();
 
         let state = VersionExchange;
         let (mut read_buf, mut offset) = (Vec::with_capacity(16_384), 0);
