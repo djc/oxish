@@ -176,6 +176,7 @@ trait StreamState<'a> {
     ) -> impl Future<Output = Result<(Self::Output, Range<usize>), Error>> + 'a {
         async move {
             let len = stream.read_buf(buf).await?;
+            debug!(bytes = len, "read from stream");
             let decoded = Self::Output::decode(buf)?;
             let offset = len - decoded.next.len();
             Ok((decoded.value, offset..len))
