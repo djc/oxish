@@ -149,11 +149,14 @@ impl<'a> Decode<'a> for Identification<'a> {
 
 impl Encode for Identification<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(b"SSH-");
         buf.extend_from_slice(self.protocol.as_bytes());
         buf.push(b'-');
         buf.extend_from_slice(self.software.as_bytes());
-        buf.push(b' ');
-        buf.extend_from_slice(self.comments.as_bytes());
+        if !self.comments.is_empty() {
+            buf.push(b' ');
+            buf.extend_from_slice(self.comments.as_bytes());
+        }
         buf.extend_from_slice(b"\r\n");
     }
 }
@@ -226,4 +229,4 @@ struct Args {
 }
 
 const PROTOCOL: &str = "2.0";
-const SOFTWARE: &str = concat!("OxiSH-", env!("CARGO_PKG_VERSION"));
+const SOFTWARE: &str = concat!("OxiSH/", env!("CARGO_PKG_VERSION"));
