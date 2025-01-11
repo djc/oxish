@@ -4,15 +4,13 @@ use std::{
     io,
     net::{Ipv4Addr, SocketAddr},
     ops::Range,
-    pin::Pin,
     str,
-    task::{ready, Context, Poll},
 };
 
 use clap::Parser;
 use thiserror::Error;
 use tokio::{
-    io::{AsyncRead, AsyncWriteExt, ReadBuf},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 use tracing::{debug, warn};
@@ -64,7 +62,7 @@ impl Connection {
         }
 
         let state = VersionExchange;
-        let (mut read_buf, mut offset) = (vec![0; 16_384], 0);
+        let (mut read_buf, mut offset) = (Vec::with_capacity(16_384), 0);
         let (ident, next) = match state.read(&mut stream, &mut read_buf).await {
             Ok((ident, next)) => {
                 debug!(%addr, ?ident, "Received identification");
@@ -169,14 +167,9 @@ trait StreamState<'a> {
         stream: &'a mut TcpStream,
         buf: &'a mut Vec<u8>,
     ) -> impl Future<Output = Result<(Self::Output, Range<usize>), Error>> + 'a {
-        async {
-            let read = ReadMessage {
-                stream: Pin::new(stream),
-                buf: ReadBuf::new(buf),
-            };
-
-            let len = read.await?;
-            let decoded = Self::Output::decode(&buf[..len])?;
+        async move {
+            let len = stream.read_buf(buf).await?;
+            let decoded = Self::Output::decode(buf)?;
             let offset = len - decoded.next.len();
             Ok((decoded.value, offset..len))
         }
@@ -194,24 +187,6 @@ trait Decode<'a>: Sized {
 struct Decoded<'a, T> {
     value: T,
     next: &'a [u8],
-}
-
-struct ReadMessage<'a> {
-    stream: Pin<&'a mut TcpStream>,
-    buf: ReadBuf<'a>,
-}
-
-impl Future for ReadMessage<'_> {
-    type Output = Result<usize, Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        let (stream, buf) = (&mut this.stream, &mut this.buf);
-        Poll::Ready(match ready!(stream.as_mut().poll_read(cx, buf)) {
-            Ok(()) => Ok(buf.filled().len()),
-            Err(error) => Err(Error::Io(error)),
-        })
-    }
 }
 
 #[derive(Debug, Error)]
