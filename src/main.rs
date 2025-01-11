@@ -118,7 +118,10 @@ impl<'a> Decode<'a> for Identification<'a> {
         };
 
         let Some((message, next)) = message.split_once("\r\n") else {
-            return Err(Error::Incomplete(None));
+            return Err(match message.len() > 256 {
+                true => IdentificationError::TooLong.into(),
+                false => Error::Incomplete(None),
+            });
         };
 
         let Some(rest) = message.strip_prefix("SSH-") else {
@@ -220,6 +223,8 @@ enum IdentificationError {
     NoSsh,
     #[error("No version found")]
     NoVersion,
+    #[error("Identification too long")]
+    TooLong,
 }
 
 #[derive(Debug, Parser)]
