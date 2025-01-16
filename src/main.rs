@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use clap::Parser;
 use oxish::Connection;
 use tokio::net::TcpListener;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -14,16 +14,16 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.port));
     let listener = TcpListener::bind(addr).await?;
-    debug!(%addr, "Listening for connections");
+    info!(%addr, "listening for connections");
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                debug!(%addr, "Accepted connection");
+                debug!(%addr, "accepted connection");
                 let conn = Connection::new(stream, addr)?;
                 tokio::spawn(conn.run());
             }
             Err(error) => {
-                warn!(%error, "Failed to accept connection");
+                warn!(%error, "failed to accept connection");
                 continue;
             }
         }

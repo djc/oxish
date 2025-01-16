@@ -21,14 +21,14 @@ impl Connection {
         Ok(Self { stream, addr })
     }
 
-    /// Drive the connection
+    /// Drive the connection forward
     pub async fn run(self) {
         let Self { mut stream, addr } = self;
         let mut write_buf = Vec::with_capacity(16_384);
         let ident = Identification::outgoing();
         ident.encode(&mut write_buf);
         if let Err(error) = stream.write_all(&write_buf).await {
-            warn!(%addr, %error, "Failed to send version exchange");
+            warn!(%addr, %error, "failed to send version exchange");
             return;
         }
         write_buf.clear();
@@ -37,17 +37,17 @@ impl Connection {
         let mut read_buf = Vec::with_capacity(16_384);
         let (ident, rest) = match state.read(&mut stream, &mut read_buf).await {
             Ok((ident, rest)) => {
-                debug!(%addr, ?ident, "Received identification");
+                debug!(%addr, ?ident, "received identification");
                 (ident, rest)
             }
             Err(error) => {
-                warn!(%addr, %error, "Failed to read version exchange");
+                warn!(%addr, %error, "failed to read version exchange");
                 return;
             }
         };
 
         if ident.protocol != PROTOCOL {
-            warn!(%addr, ?ident, "Unsupported protocol version");
+            warn!(%addr, ?ident, "unsupported protocol version");
             return;
         }
 
@@ -65,24 +65,24 @@ impl Connection {
         };
 
         if let Err(error) = Packet::encode(&kex_init, &mut write_buf) {
-            error!(%addr, %error, "Failed to encode key exchange init");
+            warn!(%addr, %error, "failed to encode key exchange init");
             return;
         }
 
         if let Err(error) = stream.write_all(&write_buf).await {
-            warn!(%addr, %error, "Failed to send version exchange");
+            warn!(%addr, %error, "failed to send version exchange");
             return;
         }
         write_buf.clear();
 
         let _key_exchange_init = match state.read(&mut stream, &mut read_buf).await {
             Ok(key_exchange_init) => {
-                debug!(%addr, "Received key exchange init");
+                debug!(%addr, "received key exchange init");
                 dbg!(&key_exchange_init);
                 key_exchange_init
             }
             Err(error) => {
-                warn!(%addr, %error, "Failed to read key exchange init");
+                warn!(%addr, %error, "failed to read key exchange init");
                 return;
             }
         };
