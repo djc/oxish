@@ -346,6 +346,7 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 
 #[derive(Debug)]
 enum KeyExchangeAlgorithm<'a> {
+    /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
     Curve25519Sha256,
     Unknown(&'a str),
 }
