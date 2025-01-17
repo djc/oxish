@@ -141,6 +141,12 @@ pub(crate) struct PacketBuilderWithPayload<'a> {
 }
 
 impl<'a> PacketBuilderWithPayload<'a> {
+    pub(crate) fn payload(&self) -> Result<&[u8], Error> {
+        self.buf
+            .get(self.start + 5..)
+            .ok_or(Error::Unreachable("unable to extract packet"))
+    }
+
     pub(crate) fn without_mac(self) -> Result<&'a [u8], Error> {
         let Self { buf, start } = self;
 

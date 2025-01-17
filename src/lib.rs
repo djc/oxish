@@ -1,5 +1,6 @@
 use std::{io, net::SocketAddr, str};
 
+use aws_lc_rs::digest;
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::{debug, error, warn};
@@ -31,16 +32,17 @@ impl Connection {
 
     /// Drive the connection forward
     pub async fn run(mut self) {
+        let mut exchange = digest::Context::new(&digest::SHA256);
         let state = VersionExchange::default();
-        let Ok(state) = state.advance(&mut self).await else {
+        let Ok(state) = state.advance(&mut exchange, &mut self).await else {
             return;
         };
 
-        let Ok(state) = state.advance(&mut self).await else {
+        let Ok(state) = state.advance(&mut exchange, &mut self).await else {
             return;
         };
 
-        let Ok(()) = state.advance(&mut self).await else {
+        let Ok(()) = state.advance(exchange, &mut self).await else {
             return;
         };
 
@@ -52,7 +54,11 @@ impl Connection {
 struct VersionExchange(());
 
 impl VersionExchange {
-    async fn advance(&self, conn: &mut Connection) -> Result<KeyExchange, ()> {
+    async fn advance(
+        &self,
+        exchange: &mut digest::Context,
+        conn: &mut Connection,
+    ) -> Result<KeyExchange, ()> {
         let ident = Identification::outgoing();
         ident.encode(&mut conn.write_buf);
         if let Err(error) = conn.stream.write_all(&conn.write_buf).await {
@@ -75,6 +81,18 @@ impl VersionExchange {
         if ident.protocol != PROTOCOL {
             warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
             return Err(());
+        }
+
+        let v_c_len = conn.read_buf.len() - rest - 2;
+        if let Some(v_c) = conn.read_buf.get(..v_c_len) {
+            exchange.update(&(v_c.len() as u32).to_be_bytes());
+            exchange.update(v_c);
+        }
+
+        let v_s_len = conn.write_buf.len() - 2;
+        if let Some(v_s) = conn.write_buf.get(..v_s_len) {
+            exchange.update(&(v_s.len() as u32).to_be_bytes());
+            exchange.update(v_s);
         }
 
         if rest > 0 {
