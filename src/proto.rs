@@ -143,6 +143,10 @@ impl<'a> Decode<'a> for Packet<'a> {
             )));
         };
 
+        let Some(next) = next.get(padding_length.inner as usize..) else {
+            return Err(Error::Unreachable("unable to extract rest after padding"));
+        };
+
         // No MAC support yet
 
         Ok(Decoded {
