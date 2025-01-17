@@ -16,6 +16,8 @@ pub(crate) enum MessageType {
     ServiceAccept,
     KeyExchangeInit,
     NewKeys,
+    KeyExchangeEcdhInit,
+    KeyExchangeEcdhReply,
     Unknown(u8),
 }
 
@@ -30,6 +32,8 @@ impl Encode for MessageType {
             Self::ServiceAccept => buf.push(6),
             Self::KeyExchangeInit => buf.push(20),
             Self::NewKeys => buf.push(21),
+            Self::KeyExchangeEcdhInit => buf.push(30),
+            Self::KeyExchangeEcdhReply => buf.push(31),
             Self::Unknown(value) => buf.push(*value),
         }
     }
@@ -56,6 +60,8 @@ impl From<u8> for MessageType {
             6 => Self::ServiceAccept,
             20 => Self::KeyExchangeInit,
             21 => Self::NewKeys,
+            30 => Self::KeyExchangeEcdhInit,
+            31 => Self::KeyExchangeEcdhReply,
             value => Self::Unknown(value),
         }
     }
@@ -194,12 +200,40 @@ impl Decode<'_> for PaddingLength {
     }
 }
 
+impl<'a> Decode<'a> for &'a [u8] {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let len = u32::decode(bytes)?;
+        let Some(value) = len.next.get(..len.value as usize) else {
+            return Err(Error::Incomplete(Some(len.value as usize - len.next.len())));
+        };
+
+        let Some(next) = len.next.get(len.value as usize..) else {
+            return Err(Error::Unreachable("unable to extract rest after slice"));
+        };
+
+        Ok(Decoded { value, next })
+    }
+}
+
+impl Encode for [u8] {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        (self.len() as u32).encode(buf);
+        buf.extend_from_slice(self);
+    }
+}
+
 impl Decode<'_> for u32 {
     fn decode(bytes: &[u8]) -> Result<Decoded<Self>, Error> {
         <[u8; 4]>::decode(bytes).map(|decoded| Decoded {
             value: Self::from_be_bytes(decoded.value),
             next: decoded.next,
         })
+    }
+}
+
+impl Encode for u32 {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_be_bytes());
     }
 }
 
