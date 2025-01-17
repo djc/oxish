@@ -8,6 +8,97 @@ use crate::{
     Error,
 };
 
+pub(crate) struct EcdhKeyExchange;
+
+impl<'a> StreamState<'a> for EcdhKeyExchange {
+    type Input = EcdhKeyExchangeReply<'a>;
+    type Output = EcdhKeyExchangeInit<'a>;
+}
+
+#[derive(Debug)]
+pub(crate) struct EcdhKeyExchangeInit<'a> {
+    /// Also known as `Q_C` (<https://www.rfc-editor.org/rfc/rfc5656#section-4>)
+    #[allow(dead_code)]
+    client_ephemeral_public_key: &'a [u8],
+}
+
+impl<'a> Decode<'a> for EcdhKeyExchangeInit<'a> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded {
+            value: packet,
+            next: next_packet,
+        } = Packet::decode(bytes)?;
+
+        let Decoded {
+            value: r#type,
+            next,
+        } = MessageType::decode(packet.payload)?;
+        if r#type != MessageType::KeyExchangeEcdhInit {
+            return Err(Error::InvalidPacket("unexpected message type"));
+        }
+
+        let Decoded {
+            value: client_ephemeral_public_key,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        if !next.is_empty() {
+            debug!(bytes = ?next, "unexpected trailing bytes");
+            return Err(Error::InvalidPacket("unexpected trailing bytes"));
+        }
+
+        Ok(Decoded {
+            value: Self {
+                client_ephemeral_public_key,
+            },
+            next: next_packet,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct EcdhKeyExchangeReply<'a> {
+    server_public_host_key: &'a [u8],
+    server_ephemeral_public_key: &'a [u8],
+    exchange_hash_signature: &'a [u8],
+}
+
+impl Encode for EcdhKeyExchangeReply<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::KeyExchangeEcdhReply.encode(buf);
+        self.server_public_host_key.encode(buf);
+        self.server_ephemeral_public_key.encode(buf);
+        self.exchange_hash_signature.encode(buf);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Algorithms {
+    pub(crate) key_exchange: KeyExchangeAlgorithm<'static>,
+}
+
+impl Algorithms {
+    pub(crate) fn choose(
+        client: KeyExchangeInit<'_>,
+        server: KeyExchangeInit<'static>,
+    ) -> Result<Self, Error> {
+        let key_exchange = client
+            .key_exchange_algorithms
+            .iter()
+            .find_map(|&client| {
+                server
+                    .key_exchange_algorithms
+                    .iter()
+                    .find(|&&server_alg| server_alg == client)
+            })
+            .ok_or(Error::NoCommonAlgorithm("key exchange"))?;
+
+        Ok(Self {
+            key_exchange: *key_exchange,
+        })
+    }
+}
+
 pub(crate) struct KeyExchange;
 
 impl<'a> StreamState<'a> for KeyExchange {

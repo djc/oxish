@@ -5,7 +5,9 @@ use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::{debug, error, warn};
 
 mod key_exchange;
-use key_exchange::{KeyExchange, KeyExchangeInit};
+use key_exchange::{
+    Algorithms, EcdhKeyExchange, KeyExchange, KeyExchangeAlgorithm, KeyExchangeInit,
+};
 mod proto;
 use proto::{Decode, Decoded, Encode, Packet, StreamState};
 
@@ -85,6 +87,41 @@ impl Connection {
             }
             Err(error) => {
                 warn!(%addr, %error, "failed to read key exchange init");
+                return;
+            }
+        };
+
+        let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
+            Ok(algorithms) => {
+                debug!(%addr, ?algorithms, "chosen algorithms");
+                algorithms
+            }
+            Err(error) => {
+                warn!(%addr, %error, "failed to choose algorithms");
+                return;
+            }
+        };
+
+        if algorithms.key_exchange != KeyExchangeAlgorithm::Curve25519Sha256 {
+            warn!(%addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
+            return;
+        }
+
+        if rest > 0 {
+            let start = read_buf.len() - rest;
+            read_buf.copy_within(start.., 0);
+        }
+        read_buf.truncate(rest);
+
+        let state = EcdhKeyExchange;
+        let (_ecdh_key_exchange_start, _rest) = match state.read(&mut stream, &mut read_buf).await {
+            Ok((ecdh_key_exchange_start, rest)) => {
+                debug!(%addr, "received ECDH key exchange start");
+                dbg!(&ecdh_key_exchange_start);
+                (ecdh_key_exchange_start, rest)
+            }
+            Err(error) => {
+                warn!(%addr, %error, "failed to read ECDH key exchange start");
                 return;
             }
         };
@@ -183,6 +220,8 @@ enum Error {
     Incomplete(Option<usize>),
     #[error("invalid packet: {0}")]
     InvalidPacket(&'static str),
+    #[error("no common {0} algorithms")]
+    NoCommonAlgorithm(&'static str),
     #[error("unreachable code: {0}")]
     Unreachable(&'static str),
 }
