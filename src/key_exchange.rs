@@ -351,7 +351,7 @@ impl<'a> From<&'a str> for KeyExchangeAlgorithm<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublicKeyAlgorithm<'a> {
-    /// sh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
+    /// ssh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
     Ed25519,
     Unknown(&'a str),
 }
