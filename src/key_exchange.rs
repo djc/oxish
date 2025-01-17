@@ -1,6 +1,11 @@
 use std::str;
 
-use aws_lc_rs::rand;
+use aws_lc_rs::{
+    agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
+    digest,
+    rand::{self, SystemRandom},
+    signature::{Ed25519KeyPair, KeyPair},
+};
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
@@ -12,7 +17,11 @@ use crate::{
 pub(crate) struct EcdhKeyExchange(());
 
 impl EcdhKeyExchange {
-    pub(crate) async fn advance(&self, conn: &mut Connection) -> Result<(), ()> {
+    pub(crate) async fn advance(
+        &self,
+        mut exchange: digest::Context,
+        conn: &mut Connection,
+    ) -> Result<(), ()> {
         let (packet, _rest) = match read::<Packet>(&mut conn.stream, &mut conn.read_buf).await {
             Ok(Decoded {
                 value: packet,
@@ -24,16 +33,107 @@ impl EcdhKeyExchange {
             }
         };
 
-        let _ecdh_key_exchange_start = match EcdhKeyExchangeInit::try_from(packet) {
-            Ok(ecdh_key_exchange_start) => {
+        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
+            Ok(ecdh_key_exchange_init) => {
                 debug!(addr = %conn.addr, "received ECDH key exchange start");
-                ecdh_key_exchange_start
+                ecdh_key_exchange_init
             }
             Err(error) => {
                 warn!(addr = %conn.addr, %error, "failed to read ECDH key exchange start");
                 return Err(());
             }
         };
+
+        let Ok(host_key) = Ed25519KeyPair::generate() else {
+            warn!(addr = %conn.addr, "failed to generate host key");
+            return Err(());
+        };
+
+        // Write the server's public host key (`K_S`) to the exchange hash
+
+        let mut host_key_buf = Vec::with_capacity(128);
+        TaggedPublicKey {
+            algorithm: PublicKeyAlgorithm::Ed25519,
+            key: host_key.public_key().as_ref(),
+        }
+        .encode(&mut host_key_buf);
+        exchange.update(&host_key_buf);
+
+        // Write the client's ephemeral public key (`Q_C`) to the exchange hash
+
+        exchange.update(
+            &(ecdh_key_exchange_init.client_ephemeral_public_key.len() as u32).to_be_bytes(),
+        );
+        exchange.update(ecdh_key_exchange_init.client_ephemeral_public_key);
+
+        let random = SystemRandom::new();
+        let Ok(kx_private_key) = EphemeralPrivateKey::generate(&X25519, &random) else {
+            warn!(addr = %conn.addr, "failed to generate key exchange private key");
+            return Err(());
+        };
+
+        let Ok(kx_public_key) = kx_private_key.compute_public_key() else {
+            warn!(addr = %conn.addr, "failed to compute key exchange public key");
+            return Err(());
+        };
+
+        let client_kx_public_key =
+            UnparsedPublicKey::new(&X25519, ecdh_key_exchange_init.client_ephemeral_public_key);
+
+        exchange.update(&(kx_public_key.as_ref().len() as u32).to_be_bytes());
+        exchange.update(kx_public_key.as_ref());
+        let Ok(shared_secret) = agreement::agree_ephemeral(
+            kx_private_key,
+            &client_kx_public_key,
+            aws_lc_rs::error::Unspecified,
+            |shared_secret| Ok(shared_secret.to_vec()),
+        ) else {
+            warn!(addr = %conn.addr, "key exchange failed");
+            return Err(());
+        };
+
+        // Remove leading zeros from the shared secret, and prepend a zero byte
+        // if the first byte has its most significant bit set.
+
+        let hashed_secret = shared_secret.as_slice();
+        let leading_zeros = hashed_secret.iter().take_while(|&&b| b == 0).count();
+        if let Some(hashed_secret) = hashed_secret.get(leading_zeros..) {
+            let prepend = matches!(hashed_secret.first(), Some(&b) if b & 0x80 != 0);
+            let len = hashed_secret.len() + if prepend { 1 } else { 0 };
+            exchange.update(&(len as u32).to_be_bytes());
+            if prepend {
+                exchange.update(&[0]);
+            }
+            exchange.update(hashed_secret);
+        }
+
+        let hash = exchange.finish();
+        let signature = host_key.sign(hash.as_ref());
+        let key_exchange_reply = EcdhKeyExchangeReply {
+            server_public_host_key: TaggedPublicKey {
+                algorithm: PublicKeyAlgorithm::Ed25519,
+                key: host_key.public_key().as_ref(),
+            },
+            server_ephemeral_public_key: kx_public_key.as_ref(),
+            exchange_hash_signature: TaggedSignature {
+                algorithm: PublicKeyAlgorithm::Ed25519,
+                signature: signature.as_ref(),
+            },
+        };
+
+        conn.write_buf.clear();
+        let Ok(packet) = Packet::builder(&mut conn.write_buf)
+            .with_payload(&key_exchange_reply)
+            .without_mac()
+        else {
+            error!(addr = %conn.addr, "failed to build key exchange init packet");
+            return Err(());
+        };
+
+        if let Err(error) = conn.stream.write_all(packet).await {
+            warn!(addr = %conn.addr, %error, "failed to send version exchange");
+            return Err(());
+        }
 
         Ok(())
     }
@@ -42,7 +142,6 @@ impl EcdhKeyExchange {
 #[derive(Debug)]
 pub(crate) struct EcdhKeyExchangeInit<'a> {
     /// Also known as `Q_C` (<https://www.rfc-editor.org/rfc/rfc5656#section-4>)
-    #[allow(dead_code)]
     client_ephemeral_public_key: &'a [u8],
 }
 
@@ -76,9 +175,9 @@ impl<'a> TryFrom<Packet<'a>> for EcdhKeyExchangeInit<'a> {
 
 #[derive(Debug)]
 pub(crate) struct EcdhKeyExchangeReply<'a> {
-    server_public_host_key: &'a [u8],
+    server_public_host_key: TaggedPublicKey<'a>,
     server_ephemeral_public_key: &'a [u8],
-    exchange_hash_signature: &'a [u8],
+    exchange_hash_signature: TaggedSignature<'a>,
 }
 
 impl Encode for EcdhKeyExchangeReply<'_> {
@@ -90,33 +189,53 @@ impl Encode for EcdhKeyExchangeReply<'_> {
     }
 }
 
+#[derive(Debug)]
+struct TaggedPublicKey<'a> {
+    algorithm: PublicKeyAlgorithm<'a>,
+    key: &'a [u8],
+}
+
+impl Encode for TaggedPublicKey<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let start = buf.len();
+        buf.extend([0; 4]);
+        self.algorithm.as_str().as_bytes().encode(buf);
+        self.key.encode(buf);
+        let len = (buf.len() - start - 4) as u32;
+        if let Some(dst) = buf.get_mut(start..start + 4) {
+            dst.copy_from_slice(&len.to_be_bytes());
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TaggedSignature<'a> {
+    algorithm: PublicKeyAlgorithm<'a>,
+    signature: &'a [u8],
+}
+
+impl Encode for TaggedSignature<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let start = buf.len();
+        buf.extend([0; 4]);
+        self.algorithm.as_str().as_bytes().encode(buf);
+        self.signature.encode(buf);
+        let len = (buf.len() - start - 4) as u32;
+        if let Some(dst) = buf.get_mut(start..start + 4) {
+            dst.copy_from_slice(&len.to_be_bytes());
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct KeyExchange(());
 
 impl KeyExchange {
-    pub(crate) async fn advance(&self, conn: &mut Connection) -> Result<EcdhKeyExchange, ()> {
-        let key_exchange_init = match KeyExchangeInit::new() {
-            Ok(kex_init) => kex_init,
-            Err(error) => {
-                error!(addr = %conn.addr, %error, "failed to create key exchange init");
-                return Err(());
-            }
-        };
-
-        conn.write_buf.clear();
-        let Ok(packet) = Packet::builder(&mut conn.write_buf)
-            .with_payload(&key_exchange_init)
-            .without_mac()
-        else {
-            error!(addr = %conn.addr, "failed to build key exchange init packet");
-            return Err(());
-        };
-
-        if let Err(error) = conn.stream.write_all(packet).await {
-            warn!(addr = %conn.addr, %error, "failed to send version exchange");
-            return Err(());
-        }
-
+    pub(crate) async fn advance(
+        &self,
+        exchange: &mut digest::Context,
+        conn: &mut Connection,
+    ) -> Result<EcdhKeyExchange, ()> {
         let (packet, rest) = match read::<Packet>(&mut conn.stream, &mut conn.read_buf).await {
             Ok(Decoded {
                 value: packet,
@@ -128,6 +247,9 @@ impl KeyExchange {
             }
         };
 
+        exchange.update(&(packet.payload.len() as u32).to_be_bytes());
+        exchange.update(packet.payload);
+
         let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
@@ -135,6 +257,32 @@ impl KeyExchange {
                 return Err(());
             }
         };
+
+        let key_exchange_init = match KeyExchangeInit::new() {
+            Ok(kex_init) => kex_init,
+            Err(error) => {
+                error!(addr = %conn.addr, %error, "failed to create key exchange init");
+                return Err(());
+            }
+        };
+
+        conn.write_buf.clear();
+        let builder = Packet::builder(&mut conn.write_buf).with_payload(&key_exchange_init);
+
+        if let Ok(kex_init_payload) = builder.payload() {
+            exchange.update(&(kex_init_payload.len() as u32).to_be_bytes());
+            exchange.update(kex_init_payload);
+        };
+
+        let Ok(packet) = builder.without_mac() else {
+            error!(addr = %conn.addr, "failed to build key exchange init packet");
+            return Err(());
+        };
+
+        if let Err(error) = conn.stream.write_all(packet).await {
+            warn!(addr = %conn.addr, %error, "failed to send version exchange");
+            return Err(());
+        }
 
         let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
             Ok(algorithms) => {
@@ -433,12 +581,18 @@ enum PublicKeyAlgorithm<'a> {
     Unknown(&'a str),
 }
 
+impl<'a> PublicKeyAlgorithm<'a> {
+    fn as_str(&self) -> &'a str {
+        match self {
+            Self::Ed25519 => "ssh-ed25519",
+            Self::Unknown(name) => name,
+        }
+    }
+}
+
 impl Encode for PublicKeyAlgorithm<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
-        match self {
-            Self::Ed25519 => buf.extend_from_slice(b"ssh-ed25519"),
-            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
-        }
+        buf.extend_from_slice(self.as_str().as_bytes());
     }
 }
 
