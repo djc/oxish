@@ -15,116 +15,122 @@ use proto::{Decode, Decoded, Encode, Packet, StreamState};
 pub struct Connection {
     stream: TcpStream,
     addr: SocketAddr,
+    read_buf: Vec<u8>,
+    write_buf: Vec<u8>,
 }
 
 impl Connection {
     /// Create a new [`Connection`]
     pub fn new(stream: TcpStream, addr: SocketAddr) -> anyhow::Result<Self> {
         stream.set_nodelay(true)?;
-        Ok(Self { stream, addr })
+        Ok(Self {
+            stream,
+            addr,
+            read_buf: Vec::with_capacity(16_384),
+            write_buf: Vec::with_capacity(16_384),
+        })
     }
 
     /// Drive the connection forward
-    pub async fn run(self) {
-        let Self { mut stream, addr } = self;
-        let mut write_buf = Vec::with_capacity(16_384);
+    pub async fn run(mut self) {
         let ident = Identification::outgoing();
-        ident.encode(&mut write_buf);
-        if let Err(error) = stream.write_all(&write_buf).await {
-            warn!(%addr, %error, "failed to send version exchange");
+        ident.encode(&mut self.write_buf);
+        if let Err(error) = self.stream.write_all(&self.write_buf).await {
+            warn!(addr = %self.addr, %error, "failed to send version exchange");
             return;
         }
-        write_buf.clear();
+        self.write_buf.clear();
 
         let state = VersionExchange;
-        let mut read_buf = Vec::with_capacity(16_384);
-        let (ident, rest) = match state.read(&mut stream, &mut read_buf).await {
+        let (ident, rest) = match state.read(&mut self.stream, &mut self.read_buf).await {
             Ok((ident, rest)) => {
-                debug!(%addr, ?ident, "received identification");
+                debug!(addr = %self.addr, ?ident, "received identification");
                 (ident, rest)
             }
             Err(error) => {
-                warn!(%addr, %error, "failed to read version exchange");
+                warn!(addr = %self.addr, %error, "failed to read version exchange");
                 return;
             }
         };
 
         if ident.protocol != PROTOCOL {
-            warn!(%addr, ?ident, "unsupported protocol version");
+            warn!(addr = %self.addr, ?ident, "unsupported protocol version");
             return;
         }
 
         if rest > 0 {
-            let start = read_buf.len() - rest;
-            read_buf.copy_within(start.., 0);
+            let start = self.read_buf.len() - rest;
+            self.read_buf.copy_within(start.., 0);
         }
-        read_buf.truncate(rest);
+        self.read_buf.truncate(rest);
 
         let state = KeyExchange;
         let key_exchange_init = match KeyExchangeInit::new() {
             Ok(kex_init) => kex_init,
             Err(error) => {
-                error!(%addr, %error, "failed to create key exchange init");
+                error!(addr = %self.addr, %error, "failed to create key exchange init");
                 return;
             }
         };
 
-        if let Err(error) = Packet::encode(&key_exchange_init, &mut write_buf) {
-            warn!(%addr, %error, "failed to encode key exchange init");
+        if let Err(error) = Packet::encode(&key_exchange_init, &mut self.write_buf) {
+            warn!(addr = %self.addr, %error, "failed to encode key exchange init");
             return;
         }
 
-        if let Err(error) = stream.write_all(&write_buf).await {
-            warn!(%addr, %error, "failed to send version exchange");
+        if let Err(error) = self.stream.write_all(&self.write_buf).await {
+            warn!(addr = %self.addr, %error, "failed to send version exchange");
             return;
         }
-        write_buf.clear();
+        self.write_buf.clear();
 
-        let (peer_key_exchange_init, rest) = match state.read(&mut stream, &mut read_buf).await {
-            Ok((key_exchange_init, rest)) => {
-                debug!(%addr, "received key exchange init");
-                (key_exchange_init, rest)
-            }
-            Err(error) => {
-                warn!(%addr, %error, "failed to read key exchange init");
-                return;
-            }
-        };
+        let (peer_key_exchange_init, rest) =
+            match state.read(&mut self.stream, &mut self.read_buf).await {
+                Ok((key_exchange_init, rest)) => {
+                    debug!(addr = %self.addr, "received key exchange init");
+                    (key_exchange_init, rest)
+                }
+                Err(error) => {
+                    warn!(addr = %self.addr, %error, "failed to read key exchange init");
+                    return;
+                }
+            };
 
         let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
             Ok(algorithms) => {
-                debug!(%addr, ?algorithms, "chosen algorithms");
+                debug!(addr = %self.addr, ?algorithms, "chosen algorithms");
                 algorithms
             }
             Err(error) => {
-                warn!(%addr, %error, "failed to choose algorithms");
+                warn!(addr = %self.addr, %error, "failed to choose algorithms");
                 return;
             }
         };
 
         if algorithms.key_exchange != KeyExchangeAlgorithm::Curve25519Sha256 {
-            warn!(%addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
+            warn!(addr = %self.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
             return;
         }
 
         if rest > 0 {
-            let start = read_buf.len() - rest;
-            read_buf.copy_within(start.., 0);
+            let start = self.read_buf.len() - rest;
+            self.read_buf.copy_within(start.., 0);
         }
-        read_buf.truncate(rest);
+        self.read_buf.truncate(rest);
 
         let state = EcdhKeyExchange;
-        let (_ecdh_key_exchange_start, _rest) = match state.read(&mut stream, &mut read_buf).await {
-            Ok((ecdh_key_exchange_start, rest)) => {
-                debug!(%addr, "received ECDH key exchange start");
-                dbg!(&ecdh_key_exchange_start);
-                (ecdh_key_exchange_start, rest)
-            }
-            Err(error) => {
-                warn!(%addr, %error, "failed to read ECDH key exchange start");
-                return;
-            }
-        };
+        let (_ecdh_key_exchange_start, _rest) =
+            match state.read(&mut self.stream, &mut self.read_buf).await {
+                Ok((ecdh_key_exchange_start, rest)) => {
+                    debug!(addr = %self.addr, "received ECDH key exchange start");
+                    dbg!(&ecdh_key_exchange_start);
+                    (ecdh_key_exchange_start, rest)
+                }
+                Err(error) => {
+                    warn!(addr = %self.addr, %error, "failed to read ECDH key exchange start");
+                    return;
+                }
+            };
 
         todo!();
     }
