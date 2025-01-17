@@ -52,12 +52,14 @@ impl Connection {
             return;
         }
 
-        let start = read_buf.len() - rest;
-        read_buf.copy_within(start.., 0);
+        if rest > 0 {
+            let start = read_buf.len() - rest;
+            read_buf.copy_within(start.., 0);
+        }
         read_buf.truncate(rest);
 
         let state = KeyExchange;
-        let kex_init = match KeyExchangeInit::new() {
+        let key_exchange_init = match KeyExchangeInit::new() {
             Ok(kex_init) => kex_init,
             Err(error) => {
                 error!(%addr, %error, "failed to create key exchange init");
@@ -65,7 +67,7 @@ impl Connection {
             }
         };
 
-        if let Err(error) = Packet::encode(&kex_init, &mut write_buf) {
+        if let Err(error) = Packet::encode(&key_exchange_init, &mut write_buf) {
             warn!(%addr, %error, "failed to encode key exchange init");
             return;
         }
@@ -76,11 +78,10 @@ impl Connection {
         }
         write_buf.clear();
 
-        let _key_exchange_init = match state.read(&mut stream, &mut read_buf).await {
-            Ok(key_exchange_init) => {
+        let (peer_key_exchange_init, rest) = match state.read(&mut stream, &mut read_buf).await {
+            Ok((key_exchange_init, rest)) => {
                 debug!(%addr, "received key exchange init");
-                dbg!(&key_exchange_init);
-                key_exchange_init
+                (key_exchange_init, rest)
             }
             Err(error) => {
                 warn!(%addr, %error, "failed to read key exchange init");
