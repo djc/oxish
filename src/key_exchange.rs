@@ -1,14 +1,33 @@
 use std::str;
 
 use aws_lc_rs::rand;
-use tracing::debug;
+use tokio::io::AsyncWriteExt;
+use tracing::{debug, error, warn};
 
 use crate::{
     proto::{Decode, Decoded, Encode, MessageType, Packet, StreamState},
-    Error,
+    Connection, Error,
 };
 
-pub(crate) struct EcdhKeyExchange;
+pub(crate) struct EcdhKeyExchange(());
+
+impl EcdhKeyExchange {
+    pub(crate) async fn advance(&self, conn: &mut Connection) -> Result<(), ()> {
+        let (_ecdh_key_exchange_start, _rest) =
+            match self.read(&mut conn.stream, &mut conn.read_buf).await {
+                Ok((ecdh_key_exchange_start, rest)) => {
+                    debug!(addr = %conn.addr, "received ECDH key exchange start");
+                    (ecdh_key_exchange_start, rest)
+                }
+                Err(error) => {
+                    warn!(addr = %conn.addr, %error, "failed to read ECDH key exchange start");
+                    return Err(());
+                }
+            };
+
+        Ok(())
+    }
+}
 
 impl<'a> StreamState<'a> for EcdhKeyExchange {
     type Input = EcdhKeyExchangeReply<'a>;
@@ -73,12 +92,12 @@ impl Encode for EcdhKeyExchangeReply<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Algorithms {
-    pub(crate) key_exchange: KeyExchangeAlgorithm<'static>,
+struct Algorithms {
+    key_exchange: KeyExchangeAlgorithm<'static>,
 }
 
 impl Algorithms {
-    pub(crate) fn choose(
+    fn choose(
         client: KeyExchangeInit<'_>,
         server: KeyExchangeInit<'static>,
     ) -> Result<Self, Error> {
@@ -99,7 +118,67 @@ impl Algorithms {
     }
 }
 
-pub(crate) struct KeyExchange;
+#[derive(Debug, Default)]
+pub(crate) struct KeyExchange(());
+
+impl KeyExchange {
+    pub(crate) async fn advance(&self, conn: &mut Connection) -> Result<EcdhKeyExchange, ()> {
+        let key_exchange_init = match KeyExchangeInit::new() {
+            Ok(kex_init) => kex_init,
+            Err(error) => {
+                error!(addr = %conn.addr, %error, "failed to create key exchange init");
+                return Err(());
+            }
+        };
+
+        conn.write_buf.clear();
+        if let Err(error) = Packet::encode(&key_exchange_init, &mut conn.write_buf) {
+            warn!(addr = %conn.addr, %error, "failed to encode key exchange init");
+            return Err(());
+        }
+
+        if let Err(error) = conn.stream.write_all(&conn.write_buf).await {
+            warn!(addr = %conn.addr, %error, "failed to send version exchange");
+            return Err(());
+        }
+
+        let (peer_key_exchange_init, rest) =
+            match self.read(&mut conn.stream, &mut conn.read_buf).await {
+                Ok((key_exchange_init, rest)) => {
+                    debug!(addr = %conn.addr, "received key exchange init");
+                    (key_exchange_init, rest)
+                }
+                Err(error) => {
+                    warn!(addr = %conn.addr, %error, "failed to read key exchange init");
+                    return Err(());
+                }
+            };
+
+        let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
+            Ok(algorithms) => {
+                debug!(addr = %conn.addr, ?algorithms, "chosen algorithms");
+                algorithms
+            }
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to choose algorithms");
+                return Err(());
+            }
+        };
+
+        if algorithms.key_exchange != KeyExchangeAlgorithm::Curve25519Sha256 {
+            warn!(addr = %conn.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
+            return Err(());
+        }
+
+        if rest > 0 {
+            let start = conn.read_buf.len() - rest;
+            conn.read_buf.copy_within(start.., 0);
+        }
+        conn.read_buf.truncate(rest);
+
+        Ok(EcdhKeyExchange(()))
+    }
+}
 
 impl<'a> StreamState<'a> for KeyExchange {
     type Input = KeyExchangeInit<'a>;
@@ -124,7 +203,7 @@ pub(crate) struct KeyExchangeInit<'a> {
 }
 
 impl KeyExchangeInit<'static> {
-    pub(crate) fn new() -> Result<Self, Error> {
+    fn new() -> Result<Self, Error> {
         let mut cookie = [0; 16];
         if rand::fill(&mut cookie).is_err() {
             return Err(Error::FailedRandomBytes);
@@ -325,7 +404,7 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum KeyExchangeAlgorithm<'a> {
+enum KeyExchangeAlgorithm<'a> {
     /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
     Curve25519Sha256,
     Unknown(&'a str),
