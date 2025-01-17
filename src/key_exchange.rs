@@ -91,33 +91,6 @@ impl Encode for EcdhKeyExchangeReply<'_> {
     }
 }
 
-#[derive(Debug)]
-struct Algorithms {
-    key_exchange: KeyExchangeAlgorithm<'static>,
-}
-
-impl Algorithms {
-    fn choose(
-        client: KeyExchangeInit<'_>,
-        server: KeyExchangeInit<'static>,
-    ) -> Result<Self, Error> {
-        let key_exchange = client
-            .key_exchange_algorithms
-            .iter()
-            .find_map(|&client| {
-                server
-                    .key_exchange_algorithms
-                    .iter()
-                    .find(|&&server_alg| server_alg == client)
-            })
-            .ok_or(Error::NoCommonAlgorithm("key exchange"))?;
-
-        Ok(Self {
-            key_exchange: *key_exchange,
-        })
-    }
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct KeyExchange(());
 
@@ -183,6 +156,33 @@ impl KeyExchange {
 impl<'a> StreamState<'a> for KeyExchange {
     type Input = KeyExchangeInit<'a>;
     type Output = KeyExchangeInit<'a>;
+}
+
+#[derive(Debug)]
+struct Algorithms {
+    key_exchange: KeyExchangeAlgorithm<'static>,
+}
+
+impl Algorithms {
+    fn choose(
+        client: KeyExchangeInit<'_>,
+        server: KeyExchangeInit<'static>,
+    ) -> Result<Self, Error> {
+        let key_exchange = client
+            .key_exchange_algorithms
+            .iter()
+            .find_map(|&client| {
+                server
+                    .key_exchange_algorithms
+                    .iter()
+                    .find(|&&server_alg| server_alg == client)
+            })
+            .ok_or(Error::NoCommonAlgorithm("key exchange"))?;
+
+        Ok(Self {
+            key_exchange: *key_exchange,
+        })
+    }
 }
 
 #[derive(Debug)]
