@@ -233,8 +233,8 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
     }
 }
 
-#[derive(Debug)]
-enum KeyExchangeAlgorithm<'a> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeyExchangeAlgorithm<'a> {
     /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
     Curve25519Sha256,
     Unknown(&'a str),
@@ -258,7 +258,7 @@ impl<'a> From<&'a str> for KeyExchangeAlgorithm<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublicKeyAlgorithm<'a> {
     /// sh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
     Ed25519,
@@ -283,7 +283,7 @@ impl<'a> From<&'a str> for PublicKeyAlgorithm<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EncryptionAlgorithm<'a> {
     /// aes128-ctr (<https://www.rfc-editor.org/rfc/rfc4344#section-4>)
     Aes128Ctr,
@@ -308,7 +308,7 @@ impl<'a> From<&'a str> for EncryptionAlgorithm<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MacAlgorithm<'a> {
     /// hmac-sha2-256 (<https://www.rfc-editor.org/rfc/rfc6668#section-2>)
     HmacSha2256,
@@ -333,7 +333,7 @@ impl<'a> From<&'a str> for MacAlgorithm<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CompressionAlgorithm<'a> {
     None,
     Unknown(&'a str),
@@ -357,7 +357,7 @@ impl<'a> From<&'a str> for CompressionAlgorithm<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Language<'a> {
     Unknown(&'a str),
 }
