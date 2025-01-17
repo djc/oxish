@@ -152,6 +152,7 @@ impl<'a> Decode<'a> for Packet<'a> {
     }
 }
 
+#[derive(Debug)]
 struct PacketLength {
     inner: u32,
 }
@@ -170,6 +171,7 @@ impl Decode<'_> for PacketLength {
     }
 }
 
+#[derive(Debug)]
 struct PaddingLength {
     inner: u8,
 }
