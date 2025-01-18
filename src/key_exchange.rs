@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{Decode, Decoded, Encode, MessageType, Packet, StreamState},
+    proto::{Decode, Decoded, Encode, MessageType, Packet},
     Connection, Error,
 };
 
@@ -14,10 +14,13 @@ pub(crate) struct EcdhKeyExchange(());
 impl EcdhKeyExchange {
     pub(crate) async fn advance(&self, conn: &mut Connection) -> Result<(), ()> {
         let (_ecdh_key_exchange_start, _rest) =
-            match self.read(&mut conn.stream, &mut conn.read_buf).await {
-                Ok((ecdh_key_exchange_start, rest)) => {
+            match EcdhKeyExchangeInit::read(&mut conn.stream, &mut conn.read_buf).await {
+                Ok(Decoded {
+                    value: ecdh_key_exchange_start,
+                    next,
+                }) => {
                     debug!(addr = %conn.addr, "received ECDH key exchange start");
-                    (ecdh_key_exchange_start, rest)
+                    (ecdh_key_exchange_start, next.len())
                 }
                 Err(error) => {
                     warn!(addr = %conn.addr, %error, "failed to read ECDH key exchange start");
@@ -27,11 +30,6 @@ impl EcdhKeyExchange {
 
         Ok(())
     }
-}
-
-impl<'a> StreamState<'a> for EcdhKeyExchange {
-    type Input = EcdhKeyExchangeReply<'a>;
-    type Output = EcdhKeyExchangeInit<'a>;
 }
 
 #[derive(Debug)]
@@ -116,10 +114,13 @@ impl KeyExchange {
         }
 
         let (peer_key_exchange_init, rest) =
-            match self.read(&mut conn.stream, &mut conn.read_buf).await {
-                Ok((key_exchange_init, rest)) => {
+            match KeyExchangeInit::read(&mut conn.stream, &mut conn.read_buf).await {
+                Ok(Decoded {
+                    value: key_exchange_init,
+                    next,
+                }) => {
                     debug!(addr = %conn.addr, "received key exchange init");
-                    (key_exchange_init, rest)
+                    (key_exchange_init, next.len())
                 }
                 Err(error) => {
                     warn!(addr = %conn.addr, %error, "failed to read key exchange init");
@@ -151,11 +152,6 @@ impl KeyExchange {
 
         Ok(EcdhKeyExchange(()))
     }
-}
-
-impl<'a> StreamState<'a> for KeyExchange {
-    type Input = KeyExchangeInit<'a>;
-    type Output = KeyExchangeInit<'a>;
 }
 
 #[derive(Debug)]
