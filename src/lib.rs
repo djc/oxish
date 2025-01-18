@@ -7,7 +7,7 @@ use tracing::{debug, error, warn};
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{Decode, Decoded, Encode};
+use proto::{read, Decode, Decoded, Encode};
 
 /// A single SSH connection
 pub struct Connection {
@@ -60,7 +60,8 @@ impl VersionExchange {
             return Err(());
         }
 
-        let (ident, rest) = match Identification::read(&mut conn.stream, &mut conn.read_buf).await {
+        let (ident, rest) = match read::<Identification>(&mut conn.stream, &mut conn.read_buf).await
+        {
             Ok(Decoded { value: ident, next }) => {
                 debug!(addr = %conn.addr, ?ident, "received identification");
                 (ident, next.len())
