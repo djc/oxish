@@ -7,7 +7,7 @@ use tracing::{debug, error, warn};
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{Decode, Decoded, Encode, StreamState};
+use proto::{Decode, Decoded, Encode};
 
 /// A single SSH connection
 pub struct Connection {
@@ -60,10 +60,10 @@ impl VersionExchange {
             return Err(());
         }
 
-        let (ident, rest) = match self.read(&mut conn.stream, &mut conn.read_buf).await {
-            Ok((ident, rest)) => {
+        let (ident, rest) = match Identification::read(&mut conn.stream, &mut conn.read_buf).await {
+            Ok(Decoded { value: ident, next }) => {
                 debug!(addr = %conn.addr, ?ident, "received identification");
-                (ident, rest)
+                (ident, next.len())
             }
             Err(error) => {
                 warn!(addr = %conn.addr, %error, "failed to read version exchange");
@@ -84,11 +84,6 @@ impl VersionExchange {
 
         Ok(KeyExchange::default())
     }
-}
-
-impl<'a> StreamState<'a> for VersionExchange {
-    type Input = Identification<'a>;
-    type Output = Identification<'a>;
 }
 
 #[derive(Debug)]

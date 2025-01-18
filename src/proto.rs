@@ -1,7 +1,7 @@
 use std::{future::Future, iter};
 
 use aws_lc_rs::rand;
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use tokio::io::AsyncReadExt;
 use tracing::debug;
 
 use crate::Error;
@@ -271,29 +271,22 @@ impl<'a> Decode<'a> for u8 {
     }
 }
 
-pub(crate) trait StreamState<'a> {
-    type Input: Encode;
-    type Output: Decode<'a>;
-
-    fn read(
-        &self,
-        stream: &'a mut TcpStream,
-        buf: &'a mut Vec<u8>,
-    ) -> impl Future<Output = Result<(Self::Output, usize), Error>> + 'a {
-        async move {
-            let len = stream.read_buf(buf).await?;
-            debug!(bytes = len, "read from stream");
-            let decoded = Self::Output::decode(buf)?;
-            Ok((decoded.value, decoded.next.len()))
-        }
-    }
-}
-
 pub(crate) trait Encode {
     fn encode(&self, buf: &mut Vec<u8>);
 }
 
 pub(crate) trait Decode<'a>: Sized {
+    fn read(
+        reader: &'a mut (impl AsyncReadExt + Unpin),
+        buf: &'a mut Vec<u8>,
+    ) -> impl Future<Output = Result<Decoded<'a, Self>, Error>> + 'a {
+        async move {
+            let read = reader.read_buf(buf).await?;
+            debug!(bytes = read, "read from stream");
+            Self::decode(buf)
+        }
+    }
+
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error>;
 }
 
