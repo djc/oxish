@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{Decode, Decoded, Encode, MessageType, Packet},
+    proto::{read, Decode, Decoded, Encode, MessageType, Packet},
     Connection, Error,
 };
 
@@ -13,20 +13,27 @@ pub(crate) struct EcdhKeyExchange(());
 
 impl EcdhKeyExchange {
     pub(crate) async fn advance(&self, conn: &mut Connection) -> Result<(), ()> {
-        let (_ecdh_key_exchange_start, _rest) =
-            match EcdhKeyExchangeInit::read(&mut conn.stream, &mut conn.read_buf).await {
-                Ok(Decoded {
-                    value: ecdh_key_exchange_start,
-                    next,
-                }) => {
-                    debug!(addr = %conn.addr, "received ECDH key exchange start");
-                    (ecdh_key_exchange_start, next.len())
-                }
-                Err(error) => {
-                    warn!(addr = %conn.addr, %error, "failed to read ECDH key exchange start");
-                    return Err(());
-                }
-            };
+        let (packet, _rest) = match read::<Packet>(&mut conn.stream, &mut conn.read_buf).await {
+            Ok(Decoded {
+                value: packet,
+                next,
+            }) => (packet, next.len()),
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read packet");
+                return Err(());
+            }
+        };
+
+        let _ecdh_key_exchange_start = match EcdhKeyExchangeInit::try_from(packet) {
+            Ok(ecdh_key_exchange_start) => {
+                debug!(addr = %conn.addr, "received ECDH key exchange start");
+                ecdh_key_exchange_start
+            }
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read ECDH key exchange start");
+                return Err(());
+            }
+        };
 
         Ok(())
     }
@@ -39,13 +46,10 @@ pub(crate) struct EcdhKeyExchangeInit<'a> {
     client_ephemeral_public_key: &'a [u8],
 }
 
-impl<'a> Decode<'a> for EcdhKeyExchangeInit<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
-        let Decoded {
-            value: packet,
-            next: next_packet,
-        } = Packet::decode(bytes)?;
+impl<'a> TryFrom<Packet<'a>> for EcdhKeyExchangeInit<'a> {
+    type Error = Error;
 
+    fn try_from(packet: Packet<'a>) -> Result<Self, Error> {
         let Decoded {
             value: r#type,
             next,
@@ -64,11 +68,8 @@ impl<'a> Decode<'a> for EcdhKeyExchangeInit<'a> {
             return Err(Error::InvalidPacket("unexpected trailing bytes"));
         }
 
-        Ok(Decoded {
-            value: Self {
-                client_ephemeral_public_key,
-            },
-            next: next_packet,
+        Ok(Self {
+            client_ephemeral_public_key,
         })
     }
 }
@@ -113,20 +114,24 @@ impl KeyExchange {
             return Err(());
         }
 
-        let (peer_key_exchange_init, rest) =
-            match KeyExchangeInit::read(&mut conn.stream, &mut conn.read_buf).await {
-                Ok(Decoded {
-                    value: key_exchange_init,
-                    next,
-                }) => {
-                    debug!(addr = %conn.addr, "received key exchange init");
-                    (key_exchange_init, next.len())
-                }
-                Err(error) => {
-                    warn!(addr = %conn.addr, %error, "failed to read key exchange init");
-                    return Err(());
-                }
-            };
+        let (packet, rest) = match read::<Packet>(&mut conn.stream, &mut conn.read_buf).await {
+            Ok(Decoded {
+                value: packet,
+                next,
+            }) => (packet, next.len()),
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read packet");
+                return Err(());
+            }
+        };
+
+        let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
+            Ok(key_exchange_init) => key_exchange_init,
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read key exchange init");
+                return Err(());
+            }
+        };
 
         let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
             Ok(algorithms) => {
@@ -223,13 +228,10 @@ impl KeyExchangeInit<'static> {
     }
 }
 
-impl<'a> Decode<'a> for KeyExchangeInit<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
-        let Decoded {
-            value: packet,
-            next: next_packet,
-        } = Packet::decode(bytes)?;
+impl<'a> TryFrom<Packet<'a>> for KeyExchangeInit<'a> {
+    type Error = Error;
 
+    fn try_from(packet: Packet<'a>) -> Result<Self, Self::Error> {
         let Decoded {
             value: r#type,
             next,
@@ -324,10 +326,7 @@ impl<'a> Decode<'a> for KeyExchangeInit<'a> {
             return Err(Error::InvalidPacket("unexpected trailing bytes"));
         }
 
-        Ok(Decoded {
-            value,
-            next: next_packet,
-        })
+        Ok(value)
     }
 }
 
