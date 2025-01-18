@@ -72,51 +72,11 @@ pub(crate) struct Packet<'a> {
 }
 
 impl Packet<'_> {
-    pub(crate) fn encode(payload: &impl Encode, buf: &mut Vec<u8>) -> Result<(), Error> {
-        // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
-        //
-        // Note that the length of the concatenation of 'packet_length',
-        // 'padding_length', 'payload', and 'random padding' MUST be a multiple
-        // of the cipher block size or 8, whichever is larger.  This constraint
-        // MUST be enforced, even when using stream ciphers.  Note that the
-        // 'packet_length' field is also encrypted, and processing it requires
-        // special care when sending or receiving packets.  Also note that the
-        // insertion of variable amounts of 'random padding' may help thwart
-        // traffic analysis.
-        //
-        // The minimum size of a packet is 16 (or the cipher block size,
-        // whichever is larger) bytes (plus 'mac').  Implementations SHOULD
-        // decrypt the length after receiving the first 8 (or cipher block size,
-        // whichever is larger) bytes of a packet.
-
+    pub(crate) fn builder(buf: &mut Vec<u8>) -> PacketBuilder<'_> {
         let start = buf.len();
         buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
         buf.push(0); // padding_length
-
-        payload.encode(buf); // payload
-
-        let min_padding = 8 - (buf.len() - start) % 8;
-        let padding_len = match min_padding < 4 {
-            true => min_padding + 8,
-            false => min_padding,
-        };
-
-        buf[4] = padding_len as u8;
-
-        let padding_start = buf.len();
-        buf.extend(iter::repeat(0).take(padding_len)); // padding
-        if let Some(padding) = buf.get_mut(padding_start..) {
-            if rand::fill(padding).is_err() {
-                return Err(Error::Unreachable("failed to get random padding"));
-            }
-        }
-
-        buf.extend_from_slice(&[]); // mac
-
-        let packet_len = (buf.len() - start - 4) as u32;
-        buf[start..start + 4].copy_from_slice(&packet_len.to_be_bytes());
-
-        Ok(())
+        PacketBuilder { buf, start }
     }
 }
 
@@ -159,6 +119,74 @@ impl<'a> Decode<'a> for Packet<'a> {
             value: Self { payload },
             next,
         })
+    }
+}
+
+pub(crate) struct PacketBuilder<'a> {
+    buf: &'a mut Vec<u8>,
+    start: usize,
+}
+
+impl<'a> PacketBuilder<'a> {
+    pub(crate) fn with_payload(self, payload: &impl Encode) -> PacketBuilderWithPayload<'a> {
+        let Self { buf, start } = self;
+        payload.encode(buf);
+        PacketBuilderWithPayload { buf, start }
+    }
+}
+
+pub(crate) struct PacketBuilderWithPayload<'a> {
+    buf: &'a mut Vec<u8>,
+    start: usize,
+}
+
+impl<'a> PacketBuilderWithPayload<'a> {
+    pub(crate) fn without_mac(self) -> Result<&'a [u8], Error> {
+        let Self { buf, start } = self;
+
+        // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
+        //
+        // Note that the length of the concatenation of 'packet_length',
+        // 'padding_length', 'payload', and 'random padding' MUST be a multiple
+        // of the cipher block size or 8, whichever is larger.  This constraint
+        // MUST be enforced, even when using stream ciphers.  Note that the
+        // 'packet_length' field is also encrypted, and processing it requires
+        // special care when sending or receiving packets.  Also note that the
+        // insertion of variable amounts of 'random padding' may help thwart
+        // traffic analysis.
+        //
+        // The minimum size of a packet is 16 (or the cipher block size,
+        // whichever is larger) bytes (plus 'mac').  Implementations SHOULD
+        // decrypt the length after receiving the first 8 (or cipher block size,
+        // whichever is larger) bytes of a packet.
+
+        let min_padding = 8 - (buf.len() - start) % 8;
+        let padding_len = match min_padding < 4 {
+            true => min_padding + 8,
+            false => min_padding,
+        };
+
+        if let Some(padding_length_dst) = buf.get_mut(start + 4) {
+            *padding_length_dst = padding_len as u8;
+        }
+
+        let padding_start = buf.len();
+        buf.extend(iter::repeat(0).take(padding_len)); // padding
+        if let Some(padding) = buf.get_mut(padding_start..) {
+            if rand::fill(padding).is_err() {
+                return Err(Error::Unreachable("failed to get random padding"));
+            }
+        }
+
+        buf.extend_from_slice(&[]); // mac
+
+        let packet_len = (buf.len() - start - 4) as u32;
+        if let Some(packet_length_dst) = buf.get_mut(start..start + 4) {
+            packet_length_dst.copy_from_slice(&packet_len.to_be_bytes());
+        }
+
+        buf.get(start..)
+            .ok_or(Error::Unreachable("unable to extract packet"))
     }
 }
 

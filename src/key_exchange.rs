@@ -104,12 +104,15 @@ impl KeyExchange {
         };
 
         conn.write_buf.clear();
-        if let Err(error) = Packet::encode(&key_exchange_init, &mut conn.write_buf) {
-            warn!(addr = %conn.addr, %error, "failed to encode key exchange init");
+        let Ok(packet) = Packet::builder(&mut conn.write_buf)
+            .with_payload(&key_exchange_init)
+            .without_mac()
+        else {
+            error!(addr = %conn.addr, "failed to build key exchange init packet");
             return Err(());
-        }
+        };
 
-        if let Err(error) = conn.stream.write_all(&conn.write_buf).await {
+        if let Err(error) = conn.stream.write_all(packet).await {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(());
         }
