@@ -1,3 +1,24 @@
+# OxiSH: SSH server written in Rust
+
+OxiSH is an SSH server written in Rust. It is a work in progress and not yet fit for usage.
+
+Please don't publicize this project at its current stage. Funding to advance its development is welcome.
+
+## Intended features
+
+* Improved security track record
+* Limit features to the most common
+* Efficient -- low latency
+* Usable as server and library
+
+## Limitations
+
+* Will only support modern clients
+* May require a modern platform/Rust compiler (currently 1.75)
+* No support for older cryptographic algorithms
+
+## References to RFCs consulted during development
+
 * [RFC 4251][rfc4251]: The Secure Shell (SSH) Protocol Architecture
 * [RFC 4253][rfc4253]: The Secure Shell (SSH) Transport Layer Protocol
 * [RFC 4344][rfc4344]: The Secure Shell (SSH) Transport Layer Encryption Modes
