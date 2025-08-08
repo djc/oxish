@@ -202,7 +202,7 @@ struct PacketLength {
 }
 
 impl Decode<'_> for PacketLength {
-    fn decode(bytes: &[u8]) -> Result<Decoded<Self>, Error> {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
         let Decoded { value, next } = u32::decode(bytes)?;
         if value > 256 * 1024 {
             return Err(Error::InvalidPacket("packet too large"));
@@ -221,7 +221,7 @@ struct PaddingLength {
 }
 
 impl Decode<'_> for PaddingLength {
-    fn decode(bytes: &[u8]) -> Result<Decoded<Self>, Error> {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
         let Decoded { value, next } = u8::decode(bytes)?;
         if value < 4 {
             return Err(Error::InvalidPacket("padding too short"));
@@ -257,7 +257,7 @@ impl Encode for [u8] {
 }
 
 impl Decode<'_> for u32 {
-    fn decode(bytes: &[u8]) -> Result<Decoded<Self>, Error> {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
         <[u8; 4]>::decode(bytes).map(|decoded| Decoded {
             value: Self::from_be_bytes(decoded.value),
             next: decoded.next,
