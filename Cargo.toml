@@ -6,7 +6,7 @@ rust-version = "1.75"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
-anyhow = "1.0.95"
+anyhow = "1.0.100"
 aws-lc-rs = { version = "1.12", features = ["prebuilt-nasm"] }
 clap = { version = "4.5.24", features = ["derive"] }
 thiserror = "2.0.9"
