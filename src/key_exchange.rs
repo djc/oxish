@@ -84,7 +84,7 @@ impl EcdhKeyExchange {
         exchange.update(kx_public_key.as_ref());
         let Ok(shared_secret) = agreement::agree_ephemeral(
             kx_private_key,
-            &client_kx_public_key,
+            client_kx_public_key,
             aws_lc_rs::error::Unspecified,
             |shared_secret| Ok(shared_secret.to_vec()),
         ) else {
