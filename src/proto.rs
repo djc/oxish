@@ -1,4 +1,4 @@
-use std::iter;
+use core::iter;
 
 use aws_lc_rs::rand;
 use tokio::io::AsyncReadExt;

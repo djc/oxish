@@ -22,7 +22,7 @@ impl EcdhKeyExchange {
         mut exchange: digest::Context,
         conn: &mut Connection,
     ) -> Result<(), ()> {
-        let (packet, _rest) = match read::<Packet>(&mut conn.stream, &mut conn.read_buf).await {
+        let (packet, _rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read_buf).await {
             Ok(Decoded {
                 value: packet,
                 next,
@@ -236,7 +236,7 @@ impl KeyExchange {
         exchange: &mut digest::Context,
         conn: &mut Connection,
     ) -> Result<EcdhKeyExchange, ()> {
-        let (packet, rest) = match read::<Packet>(&mut conn.stream, &mut conn.read_buf).await {
+        let (packet, rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read_buf).await {
             Ok(Decoded {
                 value: packet,
                 next,
