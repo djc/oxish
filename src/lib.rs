@@ -66,17 +66,17 @@ impl VersionExchange {
             return Err(());
         }
 
-        let (ident, rest) = match read::<Identification>(&mut conn.stream, &mut conn.read_buf).await
-        {
-            Ok(Decoded { value: ident, next }) => {
-                debug!(addr = %conn.addr, ?ident, "received identification");
-                (ident, next.len())
-            }
-            Err(error) => {
-                warn!(addr = %conn.addr, %error, "failed to read version exchange");
-                return Err(());
-            }
-        };
+        let (ident, rest) =
+            match read::<Identification<'_>>(&mut conn.stream, &mut conn.read_buf).await {
+                Ok(Decoded { value: ident, next }) => {
+                    debug!(addr = %conn.addr, ?ident, "received identification");
+                    (ident, next.len())
+                }
+                Err(error) => {
+                    warn!(addr = %conn.addr, %error, "failed to read version exchange");
+                    return Err(());
+                }
+            };
 
         if ident.protocol != PROTOCOL {
             warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
@@ -124,9 +124,8 @@ impl Identification<'_> {
 
 impl<'a> Decode<'a> for Identification<'a> {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
-        let message = match str::from_utf8(bytes) {
-            Ok(message) => message,
-            Err(_) => return Err(IdentificationError::InvalidUtf8.into()),
+        let Ok(message) = str::from_utf8(bytes) else {
+            return Err(IdentificationError::InvalidUtf8.into());
         };
 
         let Some((message, next)) = message.split_once("\r\n") else {

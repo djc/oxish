@@ -14,7 +14,7 @@ tokio = { version = "1.42", features = ["io-util", "macros", "net", "rt-multi-th
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-[workspace.lints.rust]
+[lints.rust]
 elided_lifetimes_in_paths = "warn"
 trivial_numeric_casts = "warn"
 unnameable_types = "warn"
@@ -23,7 +23,7 @@ unused_extern_crates = "warn"
 unused_import_braces = "warn"
 unused_qualifications = "warn"
 
-[workspace.lints.clippy]
+[lints.clippy]
 alloc_instead_of_core = "warn"
 cloned_instead_of_copied = "warn"
 manual_let_else = "warn"
