@@ -14,8 +14,20 @@ tokio = { version = "1.42", features = ["io-util", "macros", "net", "rt-multi-th
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-[lints.rust]
-unreachable_pub = { level = "warn" }
+[workspace.lints.rust]
+elided_lifetimes_in_paths = "warn"
+trivial_numeric_casts = "warn"
+unnameable_types = "warn"
+unreachable_pub = "warn"
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+unused_qualifications = "warn"
 
-[lints.clippy]
-use_self = { level = "warn" }
+[workspace.lints.clippy]
+alloc_instead_of_core = "warn"
+cloned_instead_of_copied = "warn"
+manual_let_else = "warn"
+or_fun_call = "warn"
+std_instead_of_core = "warn"
+upper_case_acronyms = "warn"
+use_self = "warn"
