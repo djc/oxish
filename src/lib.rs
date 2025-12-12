@@ -3,7 +3,7 @@ use std::{io, net::SocketAddr, str};
 use aws_lc_rs::digest;
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 mod key_exchange;
 use key_exchange::KeyExchange;
