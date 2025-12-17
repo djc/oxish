@@ -1,6 +1,6 @@
 use core::iter;
 
-use aws_lc_rs::rand;
+use aws_lc_rs::{digest, rand};
 use tokio::io::AsyncReadExt;
 use tracing::debug;
 
@@ -325,4 +325,21 @@ pub(crate) trait Decode<'a>: Sized {
 pub(crate) struct Decoded<'a, T> {
     pub(crate) value: T,
     pub(crate) next: &'a [u8],
+}
+
+/// The mpint data type is defined in RFC4251 section 5.
+///
+/// Remove leading zeros, and prepend a zero byte if the first byte has its
+/// most significant bit set.
+pub(crate) fn hash_mpint_bytes(hashed_secret: &[u8], exchange: &mut digest::Context) {
+    let leading_zeros = hashed_secret.iter().take_while(|&&b| b == 0).count();
+    if let Some(hashed_secret) = hashed_secret.get(leading_zeros..) {
+        let prepend = matches!(hashed_secret.first(), Some(&b) if b & 0x80 != 0);
+        let len = hashed_secret.len() + if prepend { 1 } else { 0 };
+        exchange.update(&(len as u32).to_be_bytes());
+        if prepend {
+            exchange.update(&[0]);
+        }
+        exchange.update(hashed_secret);
+    }
 }

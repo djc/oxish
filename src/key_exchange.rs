@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{read, Decode, Decoded, Encode, MessageType, Packet},
+    proto::{hash_mpint_bytes, read, Decode, Decoded, Encode, MessageType, Packet},
     Connection, Error,
 };
 
@@ -92,20 +92,7 @@ impl EcdhKeyExchange {
             return Err(());
         };
 
-        // Remove leading zeros from the shared secret, and prepend a zero byte
-        // if the first byte has its most significant bit set.
-
-        let hashed_secret = shared_secret.as_slice();
-        let leading_zeros = hashed_secret.iter().take_while(|&&b| b == 0).count();
-        if let Some(hashed_secret) = hashed_secret.get(leading_zeros..) {
-            let prepend = matches!(hashed_secret.first(), Some(&b) if b & 0x80 != 0);
-            let len = hashed_secret.len() + if prepend { 1 } else { 0 };
-            exchange.update(&(len as u32).to_be_bytes());
-            if prepend {
-                exchange.update(&[0]);
-            }
-            exchange.update(hashed_secret);
-        }
+        hash_mpint_bytes(&shared_secret, &mut exchange);
 
         let hash = exchange.finish();
         let signature = host_key.sign(hash.as_ref());
