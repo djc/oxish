@@ -1,6 +1,6 @@
 use core::iter;
 
-use aws_lc_rs::{digest, rand};
+use aws_lc_rs::rand;
 use tokio::io::AsyncReadExt;
 use tracing::debug;
 
@@ -331,15 +331,15 @@ pub(crate) struct Decoded<'a, T> {
 ///
 /// Remove leading zeros, and prepend a zero byte if the first byte has its
 /// most significant bit set.
-pub(crate) fn hash_mpint_bytes(int: &[u8], exchange: &mut digest::Context) {
+pub(crate) fn with_mpint_bytes(int: &[u8], mut f: impl FnMut(&[u8])) {
     let leading_zeros = int.iter().take_while(|&&b| b == 0).count();
     // This slice indexing is safe as leading_zeros can be no larger than the length of int
     let int = &int[leading_zeros..];
     let prepend = matches!(int.first(), Some(&b) if b & 0x80 != 0);
     let len = int.len() + if prepend { 1 } else { 0 };
-    exchange.update(&(len as u32).to_be_bytes());
+    f(&(len as u32).to_be_bytes());
     if prepend {
-        exchange.update(&[0]);
+        f(&[0]);
     }
-    exchange.update(int);
+    f(int);
 }
