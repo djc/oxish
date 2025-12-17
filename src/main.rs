@@ -1,5 +1,9 @@
 use core::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::{
+    fs::{self, File},
+    io::{self, Write},
+    sync::Arc,
+};
 
 use aws_lc_rs::signature::Ed25519KeyPair;
 use clap::Parser;
@@ -16,6 +20,25 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
+    let host_key = Arc::new(if args.generate_host_key {
+        match File::create_new(&args.host_key_file) {
+            Ok(mut host_key_file) => {
+                let Ok(host_key) = Ed25519KeyPair::generate() else {
+                    anyhow::bail!("failed to generate host key");
+                };
+                // FIXME ensure the host key is only readable by the ssh server user
+                host_key_file.write_all(host_key.to_pkcs8v1()?.as_ref())?;
+                host_key
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                anyhow::bail!("host key file `{}` already exists", &args.host_key_file);
+            }
+            Err(err) => return Err(err.into()),
+        }
+    } else {
+        Ed25519KeyPair::from_pkcs8(&fs::read(args.host_key_file)?)?
+    });
+
     let listener = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
         (Some(listener), None) => {
             listener.set_nonblocking(true)?;
@@ -29,11 +52,6 @@ async fn main() -> anyhow::Result<()> {
         (None, None) => anyhow::bail!("unless LISTEN_FDS is set, --port is required"),
     };
     info!(addr = %listener.local_addr()?, "listening for connections");
-
-    let Ok(host_key) = Ed25519KeyPair::generate() else {
-        anyhow::bail!("failed to generate host key");
-    };
-    let host_key = Arc::new(host_key);
 
     loop {
         match listener.accept().await {
@@ -54,4 +72,8 @@ async fn main() -> anyhow::Result<()> {
 struct Args {
     #[clap(short, long)]
     port: Option<u16>,
+    #[clap(long, default_value = "ssh_host_ed25519_key")]
+    host_key_file: String,
+    #[clap(long)]
+    generate_host_key: bool,
 }
