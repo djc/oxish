@@ -1,6 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use clap::Parser;
+use listenfd::ListenFd;
 use oxish::Connection;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -12,9 +13,21 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, args.port));
-    let listener = TcpListener::bind(addr).await?;
-    info!(%addr, "listening for connections");
+
+    let listener = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
+        (Some(listener), None) => {
+            listener.set_nonblocking(true)?;
+            TcpListener::from_std(listener)?
+        }
+        (None, Some(port)) => {
+            let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+            TcpListener::bind(addr).await?
+        }
+        (Some(_), Some(_)) => anyhow::bail!("LISTEN_FDS and --port conflict with each other"),
+        (None, None) => anyhow::bail!("unless LISTEN_FDS is set, --port is required"),
+    };
+    info!(addr = %listener.local_addr()?, "listening for connections");
+
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
@@ -33,5 +46,5 @@ async fn main() -> anyhow::Result<()> {
 #[derive(Debug, Parser)]
 struct Args {
     #[clap(short, long)]
-    port: u16,
+    port: Option<u16>,
 }
