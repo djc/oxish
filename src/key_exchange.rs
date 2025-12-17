@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{hash_mpint_bytes, read, Decode, Decoded, Encode, MessageType, Packet},
+    proto::{read, with_mpint_bytes, Decode, Decoded, Encode, MessageType, Packet},
     Connection, Error,
 };
 
@@ -87,7 +87,7 @@ impl EcdhKeyExchange {
             return Err(());
         };
 
-        hash_mpint_bytes(&shared_secret, &mut exchange);
+        with_mpint_bytes(&shared_secret, |bytes| exchange.update(bytes));
 
         let hash = exchange.finish();
         let signature = conn.host_key.sign(hash.as_ref());
