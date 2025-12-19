@@ -1,4 +1,4 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use core::net::{Ipv4Addr, SocketAddr};
 
 use clap::Parser;
 use listenfd::ListenFd;
