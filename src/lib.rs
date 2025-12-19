@@ -1,4 +1,5 @@
-use std::{io, net::SocketAddr, str};
+use core::net::SocketAddr;
+use std::{io, str};
 
 use aws_lc_rs::digest;
 use thiserror::Error;

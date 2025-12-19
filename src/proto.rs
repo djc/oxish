@@ -177,7 +177,7 @@ impl<'a> PacketBuilderWithPayload<'a> {
         }
 
         let padding_start = buf.len();
-        buf.extend(iter::repeat(0).take(padding_len)); // padding
+        buf.extend(iter::repeat_n(0, padding_len)); // padding
         if let Some(padding) = buf.get_mut(padding_start..) {
             if rand::fill(padding).is_err() {
                 return Err(Error::Unreachable("failed to get random padding"));
