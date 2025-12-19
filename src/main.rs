@@ -1,5 +1,7 @@
 use core::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
+use aws_lc_rs::signature::Ed25519KeyPair;
 use clap::Parser;
 use listenfd::ListenFd;
 use oxish::Connection;
@@ -28,11 +30,16 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(addr = %listener.local_addr()?, "listening for connections");
 
+    let Ok(host_key) = Ed25519KeyPair::generate() else {
+        anyhow::bail!("failed to generate host key");
+    };
+    let host_key = Arc::new(host_key);
+
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
                 debug!(%addr, "accepted connection");
-                let conn = Connection::new(stream, addr)?;
+                let conn = Connection::new(stream, addr, host_key.clone())?;
                 tokio::spawn(conn.run());
             }
             Err(error) => {

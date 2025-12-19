@@ -1,7 +1,7 @@
 use core::net::SocketAddr;
-use std::{io, str};
+use std::{io, str, sync::Arc};
 
-use aws_lc_rs::digest;
+use aws_lc_rs::{digest, signature::Ed25519KeyPair};
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::{debug, warn};
@@ -15,17 +15,23 @@ use proto::{read, Decode, Decoded, Encode};
 pub struct Connection {
     stream: TcpStream,
     addr: SocketAddr,
+    host_key: Arc<Ed25519KeyPair>,
     read_buf: Vec<u8>,
     write_buf: Vec<u8>,
 }
 
 impl Connection {
     /// Create a new [`Connection`]
-    pub fn new(stream: TcpStream, addr: SocketAddr) -> anyhow::Result<Self> {
+    pub fn new(
+        stream: TcpStream,
+        addr: SocketAddr,
+        host_key: Arc<Ed25519KeyPair>,
+    ) -> anyhow::Result<Self> {
         stream.set_nodelay(true)?;
         Ok(Self {
             stream,
             addr,
+            host_key,
             read_buf: Vec::with_capacity(16_384),
             write_buf: Vec::with_capacity(16_384),
         })
