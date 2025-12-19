@@ -4,7 +4,7 @@ use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
     digest,
     rand::{self, SystemRandom},
-    signature::{Ed25519KeyPair, KeyPair},
+    signature::KeyPair,
 };
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
@@ -44,17 +44,12 @@ impl EcdhKeyExchange {
             }
         };
 
-        let Ok(host_key) = Ed25519KeyPair::generate() else {
-            warn!(addr = %conn.addr, "failed to generate host key");
-            return Err(());
-        };
-
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
         TaggedPublicKey {
             algorithm: PublicKeyAlgorithm::Ed25519,
-            key: host_key.public_key().as_ref(),
+            key: conn.host_key.public_key().as_ref(),
         }
         .encode(&mut host_key_buf);
         exchange.update(&host_key_buf);
@@ -108,11 +103,11 @@ impl EcdhKeyExchange {
         }
 
         let hash = exchange.finish();
-        let signature = host_key.sign(hash.as_ref());
+        let signature = conn.host_key.sign(hash.as_ref());
         let key_exchange_reply = EcdhKeyExchangeReply {
             server_public_host_key: TaggedPublicKey {
                 algorithm: PublicKeyAlgorithm::Ed25519,
-                key: host_key.public_key().as_ref(),
+                key: conn.host_key.public_key().as_ref(),
             },
             server_ephemeral_public_key: kx_public_key.as_ref(),
             exchange_hash_signature: TaggedSignature {
