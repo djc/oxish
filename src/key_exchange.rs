@@ -563,25 +563,22 @@ impl RawKeySet {
         exchange_hash: digest::Digest,
         session_id: &digest::Digest,
     ) -> Self {
-        let compute_key = |key: &str| {
-            let mut context = digest::Context::new(&digest::SHA256);
-            with_mpint_bytes(&shared_secret, |bytes| context.update(bytes));
-            context.update(exchange_hash.as_ref());
-            context.update(key.as_bytes());
-            context.update(session_id.as_ref());
-            context.finish()
+        let cx = KeyDerivation {
+            shared_secret,
+            exchange_hash,
+            session_id,
         };
 
         Self {
             client_to_server: RawKeys {
-                initial_iv: compute_key("A"),
-                encryption_key: compute_key("C"),
-                integrity_key: compute_key("E"),
+                initial_iv: cx.derive("A"),
+                encryption_key: cx.derive("C"),
+                integrity_key: cx.derive("E"),
             },
             server_to_client: RawKeys {
-                initial_iv: compute_key("B"),
-                encryption_key: compute_key("D"),
-                integrity_key: compute_key("F"),
+                initial_iv: cx.derive("B"),
+                encryption_key: cx.derive("D"),
+                integrity_key: cx.derive("F"),
             },
         }
     }
@@ -592,6 +589,23 @@ struct RawKeys {
     initial_iv: digest::Digest,
     encryption_key: digest::Digest,
     integrity_key: digest::Digest,
+}
+
+struct KeyDerivation<'a> {
+    shared_secret: Vec<u8>,
+    exchange_hash: digest::Digest,
+    session_id: &'a digest::Digest,
+}
+
+impl KeyDerivation<'_> {
+    fn derive(&self, key: &str) -> digest::Digest {
+        let mut context = digest::Context::new(&digest::SHA256);
+        with_mpint_bytes(&self.shared_secret, |bytes| context.update(bytes));
+        context.update(self.exchange_hash.as_ref());
+        context.update(key.as_bytes());
+        context.update(self.session_id.as_ref());
+        context.finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
