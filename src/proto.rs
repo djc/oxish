@@ -1,4 +1,5 @@
 use core::iter;
+use std::io;
 
 use aws_lc_rs::rand;
 use tokio::io::AsyncReadExt;
@@ -67,6 +68,78 @@ impl From<u8> for MessageType {
     }
 }
 
+/// A reader which decrypts data on the fly.
+// FIXME implement actual decryption
+pub(crate) struct DecryptingReader<R: AsyncReadExt + Unpin> {
+    stream: R,
+    buf: Vec<u8>,
+    unread_start: usize,
+}
+
+impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
+    pub(crate) fn new(stream: R) -> Self {
+        Self {
+            stream,
+            buf: Vec::with_capacity(16_384),
+            unread_start: 0,
+        }
+    }
+
+    async fn ensure_at_least(&mut self, n: u32) -> Result<(), Error> {
+        while self.buf.len() - self.unread_start < n as usize {
+            let read = self.stream.read_buf(&mut self.buf).await?;
+            debug!(bytes = read, "read from stream");
+            if read == 0 {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "EOF",
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a single byte without packet structure or encryption.
+    ///
+    /// This should only be used for reading the identification string.
+    pub(crate) async fn read_u8_cleartext(&mut self) -> Result<u8, Error> {
+        self.ensure_at_least(1).await?;
+
+        let byte = self.buf[self.unread_start];
+        self.unread_start += 1;
+        Ok(byte)
+    }
+
+    pub(crate) async fn read_packet<'a>(&'a mut self) -> Result<Packet<'a>, Error> {
+        // Compact the internal buffer
+        if self.unread_start > 0 {
+            self.buf.copy_within(self.unread_start.., 0);
+        }
+        self.buf.truncate(self.buf.len() - self.unread_start);
+        self.unread_start = 0;
+
+        self.ensure_at_least(4).await?;
+        let Decoded {
+            value: packet_length,
+            next,
+        } = PacketLength::decode(&self.buf[self.unread_start..self.unread_start + 4])?;
+        assert!(next.is_empty());
+
+        self.ensure_at_least(4 + packet_length.inner).await?;
+        let Decoded {
+            value: packet,
+            next,
+        } = Packet::decode(
+            &self.buf[self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
+        )?;
+        assert!(next.is_empty());
+
+        self.unread_start += 4 + packet_length.inner as usize;
+
+        Ok(packet)
+    }
+}
+
 pub(crate) struct Packet<'a> {
     pub(crate) payload: &'a [u8],
 }
@@ -80,7 +153,7 @@ impl Packet<'_> {
     }
 }
 
-impl<'a> Decode<'a> for Packet<'a> {
+impl<'a> Packet<'a> {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
         let Decoded {
             value: packet_length,
@@ -307,15 +380,6 @@ impl<'a> Decode<'a> for u8 {
 
 pub(crate) trait Encode {
     fn encode(&self, buf: &mut Vec<u8>);
-}
-
-pub(crate) async fn read<'a, T: Decode<'a>>(
-    reader: &mut (impl AsyncReadExt + Unpin),
-    buf: &'a mut Vec<u8>,
-) -> Result<Decoded<'a, T>, Error> {
-    let read = reader.read_buf(buf).await?;
-    debug!(bytes = read, "read from stream");
-    T::decode(buf)
 }
 
 pub(crate) trait Decode<'a>: Sized {

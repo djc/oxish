@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{read, with_mpint_bytes, Decode, Decoded, Encode, MessageType, Packet},
+    proto::{with_mpint_bytes, Decode, Decoded, Encode, MessageType, Packet},
     Connection, Error,
 };
 
@@ -25,11 +25,8 @@ impl EcdhKeyExchange {
         mut exchange: digest::Context,
         conn: &mut Connection,
     ) -> Result<(), ()> {
-        let (packet, _rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read_buf).await {
-            Ok(Decoded {
-                value: packet,
-                next,
-            }) => (packet, next.len()),
+        let packet = match conn.stream_read.read_packet().await {
+            Ok(packet) => packet,
             Err(error) => {
                 warn!(addr = %conn.addr, %error, "failed to read packet");
                 return Err(());
@@ -115,7 +112,7 @@ impl EcdhKeyExchange {
             return Err(());
         };
 
-        if let Err(error) = conn.stream.write_all(packet).await {
+        if let Err(error) = conn.stream_write.write_all(packet).await {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(());
         }
@@ -243,11 +240,8 @@ impl KeyExchange {
         exchange: &mut digest::Context,
         conn: &mut Connection,
     ) -> Result<EcdhKeyExchange, ()> {
-        let (packet, rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read_buf).await {
-            Ok(Decoded {
-                value: packet,
-                next,
-            }) => (packet, next.len()),
+        let packet = match conn.stream_read.read_packet().await {
+            Ok(packet) => packet,
             Err(error) => {
                 warn!(addr = %conn.addr, %error, "failed to read packet");
                 return Err(());
@@ -286,7 +280,7 @@ impl KeyExchange {
             return Err(());
         };
 
-        if let Err(error) = conn.stream.write_all(packet).await {
+        if let Err(error) = conn.stream_write.write_all(packet).await {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(());
         }
@@ -306,12 +300,6 @@ impl KeyExchange {
             warn!(addr = %conn.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
             return Err(());
         }
-
-        if rest > 0 {
-            let start = conn.read_buf.len() - rest;
-            conn.read_buf.copy_within(start.., 0);
-        }
-        conn.read_buf.truncate(rest);
 
         Ok(EcdhKeyExchange {
             session_id: self.session_id,
