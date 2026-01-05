@@ -66,13 +66,6 @@ impl VersionExchange {
         exchange: &mut digest::Context,
         conn: &mut Connection,
     ) -> Result<KeyExchange, ()> {
-        let ident = Identification::outgoing();
-        ident.encode(&mut conn.write_buf);
-        if let Err(error) = conn.stream.write_all(&conn.write_buf).await {
-            warn!(addr = %conn.addr, %error, "failed to send version exchange");
-            return Err(());
-        }
-
         let (ident, rest) =
             match read::<Identification<'_>>(&mut conn.stream, &mut conn.read_buf).await {
                 Ok(Decoded { value: ident, next }) => {
@@ -94,6 +87,13 @@ impl VersionExchange {
         if let Some(v_c) = conn.read_buf.get(..v_c_len) {
             exchange.update(&(v_c.len() as u32).to_be_bytes());
             exchange.update(v_c);
+        }
+
+        let ident = Identification::outgoing();
+        ident.encode(&mut conn.write_buf);
+        if let Err(error) = conn.stream.write_all(&conn.write_buf).await {
+            warn!(addr = %conn.addr, %error, "failed to send version exchange");
+            return Err(());
         }
 
         let v_s_len = conn.write_buf.len() - 2;
