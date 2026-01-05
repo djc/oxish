@@ -551,6 +551,8 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 }
 
 /// The raw hashes from which we will derive the crypto keys.
+///
+/// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
 struct RawKeySet {
     client_to_server: RawKeys,
@@ -571,14 +573,14 @@ impl RawKeySet {
 
         Self {
             client_to_server: RawKeys {
-                initial_iv: cx.derive("A"),
-                encryption_key: cx.derive("C"),
-                integrity_key: cx.derive("E"),
+                initial_iv: cx.derive(KeyInput::InitialIvClientToServer),
+                encryption_key: cx.derive(KeyInput::EncryptionKeyClientToServer),
+                integrity_key: cx.derive(KeyInput::IntegrityKeyClientToServer),
             },
             server_to_client: RawKeys {
-                initial_iv: cx.derive("B"),
-                encryption_key: cx.derive("D"),
-                integrity_key: cx.derive("F"),
+                initial_iv: cx.derive(KeyInput::InitialIvServerToClient),
+                encryption_key: cx.derive(KeyInput::EncryptionKeyServerToClient),
+                integrity_key: cx.derive(KeyInput::IntegrityKeyServerToClient),
             },
         }
     }
@@ -598,13 +600,35 @@ struct KeyDerivation<'a> {
 }
 
 impl KeyDerivation<'_> {
-    fn derive(&self, key: &str) -> digest::Digest {
+    fn derive(&self, input: KeyInput) -> digest::Digest {
         let mut context = digest::Context::new(&digest::SHA256);
         with_mpint_bytes(&self.shared_secret, |bytes| context.update(bytes));
         context.update(self.exchange_hash.as_ref());
-        context.update(key.as_bytes());
+        context.update(&[u8::from(input)]);
         context.update(self.session_id.as_ref());
         context.finish()
+    }
+}
+
+enum KeyInput {
+    InitialIvClientToServer,
+    InitialIvServerToClient,
+    EncryptionKeyClientToServer,
+    EncryptionKeyServerToClient,
+    IntegrityKeyClientToServer,
+    IntegrityKeyServerToClient,
+}
+
+impl From<KeyInput> for u8 {
+    fn from(value: KeyInput) -> Self {
+        match value {
+            KeyInput::InitialIvClientToServer => b'A',
+            KeyInput::InitialIvServerToClient => b'B',
+            KeyInput::EncryptionKeyClientToServer => b'C',
+            KeyInput::EncryptionKeyServerToClient => b'D',
+            KeyInput::IntegrityKeyClientToServer => b'E',
+            KeyInput::IntegrityKeyServerToClient => b'F',
+        }
     }
 }
 
