@@ -125,7 +125,7 @@ impl EcdhKeyExchange {
         // The first exchange hash is used as session id.
         let session_id = self.session_id.as_ref().unwrap_or(&exchange_hash);
 
-        RawKeys::derive(shared_secret, exchange_hash, session_id);
+        RawKeySet::derive(shared_secret, exchange_hash, session_id);
 
         Ok(())
     }
@@ -552,12 +552,12 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 
 /// The raw hashes from which we will derive the crypto keys.
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-struct RawKeys {
-    client_to_server: RawKeysOneWay,
-    server_to_client: RawKeysOneWay,
+struct RawKeySet {
+    client_to_server: RawKeys,
+    server_to_client: RawKeys,
 }
 
-impl RawKeys {
+impl RawKeySet {
     fn derive(
         shared_secret: Vec<u8>,
         exchange_hash: digest::Digest,
@@ -573,12 +573,12 @@ impl RawKeys {
         };
 
         Self {
-            client_to_server: RawKeysOneWay {
+            client_to_server: RawKeys {
                 initial_iv: compute_key("A"),
                 encryption_key: compute_key("C"),
                 integrity_key: compute_key("E"),
             },
-            server_to_client: RawKeysOneWay {
+            server_to_client: RawKeys {
                 initial_iv: compute_key("B"),
                 encryption_key: compute_key("D"),
                 integrity_key: compute_key("F"),
@@ -588,7 +588,7 @@ impl RawKeys {
 }
 
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-struct RawKeysOneWay {
+struct RawKeys {
     initial_iv: digest::Digest,
     encryption_key: digest::Digest,
     integrity_key: digest::Digest,
