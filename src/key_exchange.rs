@@ -50,9 +50,9 @@ impl RawKeys {
                 integrity_key: compute_key("E"),
             },
             server_to_client: RawKeysOneWay {
-                initial_iv: compute_key("A"),
-                encryption_key: compute_key("C"),
-                integrity_key: compute_key("E"),
+                initial_iv: compute_key("B"),
+                encryption_key: compute_key("D"),
+                integrity_key: compute_key("F"),
             },
         }
     }
