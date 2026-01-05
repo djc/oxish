@@ -1,7 +1,7 @@
 use core::iter;
 use std::io;
 
-use aws_lc_rs::rand;
+use aws_lc_rs::{cipher::StreamingDecryptingKey, constant_time, hmac, rand};
 use tokio::io::AsyncReadExt;
 use tracing::debug;
 
@@ -69,11 +69,15 @@ impl From<u8> for MessageType {
 }
 
 /// A reader which decrypts data on the fly.
-// FIXME implement actual decryption
+// FIXME implement in-place decryption once aws-lc-rs supports this for AES-CTR.
 pub(crate) struct DecryptingReader<R: AsyncReadExt + Unpin> {
     stream: R,
     buf: Vec<u8>,
+    decrypted_buf: Vec<u8>,
     unread_start: usize,
+
+    packet_number: u32,
+    decryption_key: Option<(StreamingDecryptingKey, hmac::Key)>,
 }
 
 impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
@@ -81,13 +85,21 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
         Self {
             stream,
             buf: Vec::with_capacity(16_384),
+            decrypted_buf: Vec::with_capacity(16_384),
             unread_start: 0,
+            packet_number: 0,
+            decryption_key: None,
         }
     }
 
-    async fn ensure_at_least(&mut self, n: u32) -> Result<(), Error> {
-        while self.buf.len() - self.unread_start < n as usize {
-            let read = self.stream.read_buf(&mut self.buf).await?;
+    async fn ensure_at_least(
+        stream: &mut R,
+        buf: &mut Vec<u8>,
+        unread_start: &mut usize,
+        n: u32,
+    ) -> Result<(), Error> {
+        while buf.len() - *unread_start < n as usize {
+            let read = stream.read_buf(buf).await?;
             debug!(bytes = read, "read from stream");
             if read == 0 {
                 return Err(Error::Io(io::Error::new(
@@ -103,11 +115,21 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
     ///
     /// This should only be used for reading the identification string.
     pub(crate) async fn read_u8_cleartext(&mut self) -> Result<u8, Error> {
-        self.ensure_at_least(1).await?;
+        assert!(self.decryption_key.is_none());
+
+        Self::ensure_at_least(&mut self.stream, &mut self.buf, &mut self.unread_start, 1).await?;
 
         let byte = self.buf[self.unread_start];
         self.unread_start += 1;
         Ok(byte)
+    }
+
+    pub(crate) fn set_decryption_key(
+        &mut self,
+        decryption_key: StreamingDecryptingKey,
+        integrity_key: hmac::Key,
+    ) {
+        self.decryption_key = Some((decryption_key, integrity_key));
     }
 
     pub(crate) async fn read_packet<'a>(&'a mut self) -> Result<Packet<'a>, Error> {
@@ -118,25 +140,115 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
         self.buf.truncate(self.buf.len() - self.unread_start);
         self.unread_start = 0;
 
-        self.ensure_at_least(4).await?;
-        let Decoded {
-            value: packet_length,
-            next,
-        } = PacketLength::decode(&self.buf[self.unread_start..self.unread_start + 4])?;
-        assert!(next.is_empty());
+        // Update decryption state
+        self.decrypted_buf.clear();
+        let packet_number = self.packet_number;
+        self.packet_number = self.packet_number.wrapping_add(1);
 
-        self.ensure_at_least(4 + packet_length.inner).await?;
-        let Decoded {
-            value: packet,
-            next,
-        } = Packet::decode(
-            &self.buf[self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
-        )?;
-        assert!(next.is_empty());
+        if let Some((decrypting_key, integrity_key)) = &mut self.decryption_key {
+            let block_len = decrypting_key.algorithm().block_len();
 
-        self.unread_start += 4 + packet_length.inner as usize;
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                block_len as u32,
+            )
+            .await?;
+            self.decrypted_buf.resize(self.buf.len() + block_len, 0);
 
-        Ok(packet)
+            let update = decrypting_key
+                .update(
+                    &self.buf[self.unread_start..self.unread_start + block_len],
+                    &mut self.decrypted_buf[self.unread_start..self.unread_start + 2 * block_len],
+                )
+                .unwrap();
+            assert_eq!(update.remainder().len(), block_len);
+
+            let Decoded {
+                value: packet_length,
+                next,
+            } = PacketLength::decode(
+                &self.decrypted_buf[self.unread_start..self.unread_start + 4],
+            )?;
+            assert!(next.is_empty());
+
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                4 + packet_length.inner
+                    + integrity_key.algorithm().digest_algorithm().output_len as u32,
+            )
+            .await?;
+
+            let update = decrypting_key
+                .update(
+                    &self.buf[self.unread_start + block_len
+                        ..self.unread_start + 4 + packet_length.inner as usize],
+                    &mut self.decrypted_buf[self.unread_start + block_len
+                        ..self.unread_start + 4 + packet_length.inner as usize + block_len],
+                )
+                .unwrap();
+            assert_eq!(update.remainder().len(), block_len);
+
+            let mut hmac_ctx = hmac::Context::with_key(integrity_key);
+            hmac_ctx.update(&packet_number.to_be_bytes());
+            hmac_ctx.update(
+                &self.decrypted_buf
+                    [self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
+            );
+            let actual_mac = hmac_ctx.sign();
+            let expected_mac = &self.buf[self.unread_start + 4 + packet_length.inner as usize
+                ..self.unread_start
+                    + 4
+                    + packet_length.inner as usize
+                    + integrity_key.algorithm().digest_algorithm().output_len];
+            constant_time::verify_slices_are_equal(actual_mac.as_ref(), expected_mac).unwrap(); // FIXME report error
+
+            let Decoded {
+                value: packet,
+                next,
+            } = Packet::decode(
+                &self.decrypted_buf
+                    [self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
+            )?;
+            assert!(next.is_empty());
+
+            self.unread_start += 4
+                + packet_length.inner as usize
+                + integrity_key.algorithm().digest_algorithm().output_len;
+
+            Ok(packet)
+        } else {
+            Self::ensure_at_least(&mut self.stream, &mut self.buf, &mut self.unread_start, 4)
+                .await?;
+            let Decoded {
+                value: packet_length,
+                next,
+            } = PacketLength::decode(&self.buf[self.unread_start..self.unread_start + 4])?;
+            assert!(next.is_empty());
+
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                4 + packet_length.inner,
+            )
+            .await?;
+
+            let Decoded {
+                value: packet,
+                next,
+            } = Packet::decode(
+                &self.buf[self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
+            )?;
+            assert!(next.is_empty());
+
+            self.unread_start += 4 + packet_length.inner as usize;
+
+            Ok(packet)
+        }
     }
 }
 
