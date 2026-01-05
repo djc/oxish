@@ -124,11 +124,16 @@ impl EcdhKeyExchange {
 
         // The first exchange hash is used as session id.
         let session_id = self.session_id.as_ref().unwrap_or(&exchange_hash);
-        RawKeySet::derive(KeyDerivation {
+        let derivation = KeyDerivation {
             shared_secret,
             exchange_hash,
             session_id,
-        });
+        };
+        #[expect(clippy::unnecessary_operation)]
+        RawKeySet {
+            client_to_server: RawKeys::client_to_server(&derivation),
+            server_to_client: RawKeys::server_to_client(&derivation),
+        };
 
         Ok(())
     }
@@ -562,28 +567,29 @@ struct RawKeySet {
     server_to_client: RawKeys,
 }
 
-impl RawKeySet {
-    fn derive(cx: KeyDerivation<'_>) -> Self {
-        Self {
-            client_to_server: RawKeys {
-                initial_iv: cx.derive(KeyInput::InitialIvClientToServer),
-                encryption_key: cx.derive(KeyInput::EncryptionKeyClientToServer),
-                integrity_key: cx.derive(KeyInput::IntegrityKeyClientToServer),
-            },
-            server_to_client: RawKeys {
-                initial_iv: cx.derive(KeyInput::InitialIvServerToClient),
-                encryption_key: cx.derive(KeyInput::EncryptionKeyServerToClient),
-                integrity_key: cx.derive(KeyInput::IntegrityKeyServerToClient),
-            },
-        }
-    }
-}
-
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
 struct RawKeys {
     initial_iv: digest::Digest,
     encryption_key: digest::Digest,
     integrity_key: digest::Digest,
+}
+
+impl RawKeys {
+    fn client_to_server(derivation: &KeyDerivation<'_>) -> Self {
+        Self {
+            initial_iv: derivation.derive(KeyInput::InitialIvClientToServer),
+            encryption_key: derivation.derive(KeyInput::EncryptionKeyClientToServer),
+            integrity_key: derivation.derive(KeyInput::IntegrityKeyClientToServer),
+        }
+    }
+
+    fn server_to_client(derivation: &KeyDerivation<'_>) -> Self {
+        Self {
+            initial_iv: derivation.derive(KeyInput::InitialIvServerToClient),
+            encryption_key: derivation.derive(KeyInput::EncryptionKeyServerToClient),
+            integrity_key: derivation.derive(KeyInput::IntegrityKeyServerToClient),
+        }
+    }
 }
 
 struct KeyDerivation<'a> {
