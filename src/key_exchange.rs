@@ -557,13 +557,6 @@ struct RawKeys {
     server_to_client: RawKeysOneWay,
 }
 
-#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-struct RawKeysOneWay {
-    initial_iv: digest::Digest,
-    encryption_key: digest::Digest,
-    integrity_key: digest::Digest,
-}
-
 impl RawKeys {
     fn derive(
         shared_secret: Vec<u8>,
@@ -592,6 +585,13 @@ impl RawKeys {
             },
         }
     }
+}
+
+#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
+struct RawKeysOneWay {
+    initial_iv: digest::Digest,
+    encryption_key: digest::Digest,
+    integrity_key: digest::Digest,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
