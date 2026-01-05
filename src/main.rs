@@ -28,7 +28,8 @@ async fn main() -> anyhow::Result<()> {
                 };
                 // FIXME ensure the host key is only readable by the ssh server user
                 host_key_file.write_all(host_key.to_pkcs8v1()?.as_ref())?;
-                host_key
+                eprintln!("generated host key at {}", args.host_key_file);
+                return Ok(());
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 anyhow::bail!("host key file `{}` already exists", &args.host_key_file);
