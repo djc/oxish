@@ -14,7 +14,54 @@ use crate::{
     Connection, Error,
 };
 
-pub(crate) struct EcdhKeyExchange(());
+/// The raw hashes from which we will derive the crypto keys.
+#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
+struct RawKeys {
+    client_to_server: RawKeysOneWay,
+    server_to_client: RawKeysOneWay,
+}
+
+#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
+struct RawKeysOneWay {
+    initial_iv: digest::Digest,
+    encryption_key: digest::Digest,
+    integrity_key: digest::Digest,
+}
+
+impl RawKeys {
+    fn derive(
+        shared_secret: Vec<u8>,
+        exchange_hash: digest::Digest,
+        session_id: &digest::Digest,
+    ) -> Self {
+        let compute_key = |key: &str| {
+            let mut context = digest::Context::new(&digest::SHA256);
+            with_mpint_bytes(&shared_secret, |bytes| context.update(bytes));
+            context.update(exchange_hash.as_ref());
+            context.update(key.as_bytes());
+            context.update(session_id.as_ref());
+            context.finish()
+        };
+
+        Self {
+            client_to_server: RawKeysOneWay {
+                initial_iv: compute_key("A"),
+                encryption_key: compute_key("C"),
+                integrity_key: compute_key("E"),
+            },
+            server_to_client: RawKeysOneWay {
+                initial_iv: compute_key("A"),
+                encryption_key: compute_key("C"),
+                integrity_key: compute_key("E"),
+            },
+        }
+    }
+}
+
+pub(crate) struct EcdhKeyExchange {
+    /// The current session id or `None` if this is the initial key exchange.
+    session_id: Option<digest::Digest>,
+}
 
 impl EcdhKeyExchange {
     pub(crate) async fn advance(
@@ -89,8 +136,8 @@ impl EcdhKeyExchange {
 
         with_mpint_bytes(&shared_secret, |bytes| exchange.update(bytes));
 
-        let hash = exchange.finish();
-        let signature = conn.host_key.sign(hash.as_ref());
+        let exchange_hash = exchange.finish();
+        let signature = conn.host_key.sign(exchange_hash.as_ref());
         let key_exchange_reply = EcdhKeyExchangeReply {
             server_public_host_key: TaggedPublicKey {
                 algorithm: PublicKeyAlgorithm::Ed25519,
@@ -116,6 +163,13 @@ impl EcdhKeyExchange {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(());
         }
+
+        // FIXME wait for and send newkey packet
+
+        // The first exchange hash is used as session id.
+        let session_id = self.session_id.as_ref().unwrap_or(&exchange_hash);
+
+        RawKeys::derive(shared_secret, exchange_hash, session_id);
 
         Ok(())
     }
@@ -209,10 +263,17 @@ impl Encode for TaggedSignature<'_> {
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct KeyExchange(());
+#[derive(Debug)]
+pub(crate) struct KeyExchange {
+    /// The current session id or `None` if this is the initial key exchange.
+    session_id: Option<digest::Digest>,
+}
 
 impl KeyExchange {
+    pub(crate) fn for_new_session() -> Self {
+        Self { session_id: None }
+    }
+
     pub(crate) async fn advance(
         &self,
         exchange: &mut digest::Context,
@@ -288,7 +349,9 @@ impl KeyExchange {
         }
         conn.read_buf.truncate(rest);
 
-        Ok(EcdhKeyExchange(()))
+        Ok(EcdhKeyExchange {
+            session_id: self.session_id,
+        })
     }
 }
 
