@@ -208,6 +208,8 @@ enum Error {
     InvalidPacket(&'static str),
     #[error("no common {0} algorithms")]
     NoCommonAlgorithm(&'static str),
+    #[error("invalid mac for packet")]
+    InvalidMac,
     #[error("unreachable code: {0}")]
     Unreachable(&'static str),
 }

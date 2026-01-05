@@ -1,7 +1,7 @@
 use core::iter;
 use std::io;
 
-use aws_lc_rs::rand;
+use aws_lc_rs::{cipher::StreamingDecryptingKey, constant_time, hmac, rand};
 use tokio::io::AsyncReadExt;
 use tracing::debug;
 
@@ -69,11 +69,15 @@ impl From<u8> for MessageType {
 }
 
 /// A reader which decrypts data on the fly.
-// FIXME implement actual decryption
+// FIXME implement in-place decryption once aws-lc-rs supports this for AES-CTR.
 pub(crate) struct DecryptingReader<R: AsyncReadExt + Unpin> {
     stream: R,
     buf: Vec<u8>,
+    decrypted_buf: Vec<u8>,
     unread_start: usize,
+
+    packet_number: u32,
+    pub(crate) decryption_key: Option<(StreamingDecryptingKey, hmac::Key)>,
 }
 
 impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
@@ -81,13 +85,21 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
         Self {
             stream,
             buf: Vec::with_capacity(16_384),
+            decrypted_buf: Vec::with_capacity(16_384),
             unread_start: 0,
+            packet_number: 0,
+            decryption_key: None,
         }
     }
 
-    async fn ensure_at_least(&mut self, n: u32) -> Result<(), Error> {
-        while self.buf.len() - self.unread_start < n as usize {
-            let read = self.stream.read_buf(&mut self.buf).await?;
+    async fn ensure_at_least(
+        stream: &mut R,
+        buf: &mut Vec<u8>,
+        unread_start: &mut usize,
+        n: u32,
+    ) -> Result<(), Error> {
+        while buf.len() - *unread_start < n as usize {
+            let read = stream.read_buf(buf).await?;
             debug!(bytes = read, "read from stream");
             if read == 0 {
                 return Err(Error::Io(io::Error::new(
@@ -103,7 +115,9 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
     ///
     /// This should only be used for reading the identification string.
     pub(crate) async fn read_u8_cleartext(&mut self) -> Result<u8, Error> {
-        self.ensure_at_least(1).await?;
+        assert!(self.decryption_key.is_none());
+
+        Self::ensure_at_least(&mut self.stream, &mut self.buf, &mut self.unread_start, 1).await?;
 
         let byte = self.buf[self.unread_start];
         self.unread_start += 1;
@@ -114,27 +128,106 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
         // Compact the internal buffer
         if self.unread_start > 0 {
             self.buf.copy_within(self.unread_start.., 0);
+            self.buf.truncate(self.buf.len() - self.unread_start);
+            self.unread_start = 0;
+            self.decrypted_buf.clear();
         }
-        self.buf.truncate(self.buf.len() - self.unread_start);
-        self.unread_start = 0;
 
-        self.ensure_at_least(4).await?;
-        let Decoded {
-            value: packet_length,
-            next,
-        } = PacketLength::decode(&self.buf[self.unread_start..self.unread_start + 4])?;
-        assert!(next.is_empty());
+        let (packet_without_mac, mac_len) = if let Some((decrypting_key, integrity_key)) =
+            &mut self.decryption_key
+        // comment to prevent rustfmt indenting the entire if
+        {
+            let block_len = decrypting_key.algorithm().block_len();
 
-        self.ensure_at_least(4 + packet_length.inner).await?;
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                block_len as u32,
+            )
+            .await?;
+            self.decrypted_buf.resize(block_len, 0);
+
+            // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
+            let update = decrypting_key
+                .less_safe_update(&self.buf[..block_len], &mut self.decrypted_buf[..block_len])
+                .unwrap();
+            assert_eq!(update.remainder().len(), 0);
+
+            let Decoded {
+                value: packet_length,
+                next,
+            } = PacketLength::decode(&self.decrypted_buf[..4])?;
+            assert!(next.is_empty());
+
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                4 + packet_length.inner
+                    + integrity_key.algorithm().digest_algorithm().output_len as u32,
+            )
+            .await?;
+            self.decrypted_buf
+                .resize(4 + packet_length.inner as usize, 0);
+
+            // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
+            let update = decrypting_key
+                .less_safe_update(
+                    &self.buf[block_len..4 + packet_length.inner as usize],
+                    &mut self.decrypted_buf[block_len..4 + packet_length.inner as usize],
+                )
+                .unwrap();
+            assert_eq!(update.remainder().len(), 0);
+
+            let packet_excl_mac = &self.decrypted_buf[..4 + packet_length.inner as usize];
+
+            let mut hmac_ctx = hmac::Context::with_key(integrity_key);
+            hmac_ctx.update(&self.packet_number.to_be_bytes());
+            hmac_ctx.update(packet_excl_mac);
+            let actual_mac = hmac_ctx.sign();
+            let expected_mac = &self.buf[4 + packet_length.inner as usize
+                ..4 + packet_length.inner as usize
+                    + integrity_key.algorithm().digest_algorithm().output_len];
+            if constant_time::verify_slices_are_equal(actual_mac.as_ref(), expected_mac).is_err() {
+                return Err(Error::InvalidMac);
+            }
+
+            (
+                packet_excl_mac,
+                integrity_key.algorithm().digest_algorithm().output_len,
+            )
+        } else {
+            Self::ensure_at_least(&mut self.stream, &mut self.buf, &mut self.unread_start, 4)
+                .await?;
+            let Decoded {
+                value: packet_length,
+                next,
+            } = PacketLength::decode(&self.buf[..4])?;
+            assert!(next.is_empty());
+
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                4 + packet_length.inner,
+            )
+            .await?;
+
+            (&self.buf[..4 + packet_length.inner as usize], 0)
+        };
+
+        // Note: this needs to be done AFTER the IO to ensure
+        // this async function is cancel-safe
+        self.packet_number = self.packet_number.wrapping_add(1);
+
         let Decoded {
             value: packet,
             next,
-        } = Packet::decode(
-            &self.buf[self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
-        )?;
+        } = Packet::decode(packet_without_mac)?;
         assert!(next.is_empty());
 
-        self.unread_start += 4 + packet_length.inner as usize;
+        self.unread_start = packet_without_mac.len() + mac_len;
 
         Ok(packet)
     }

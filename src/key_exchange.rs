@@ -2,7 +2,8 @@ use std::{str, sync::Arc};
 
 use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
-    digest,
+    cipher::{StreamingDecryptingKey, UnboundCipherKey, AES_128},
+    digest, hmac,
     rand::{self, SystemRandom},
     signature::KeyPair,
 };
@@ -117,7 +118,36 @@ impl EcdhKeyExchange {
             return Err(());
         }
 
-        // FIXME wait for and send newkey packet
+        let packet = match conn.stream_read.read_packet().await {
+            Ok(packet) => packet,
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read packet");
+                return Err(());
+            }
+        };
+        let Decoded {
+            value: r#type,
+            next: _,
+        } = MessageType::decode(packet.payload)
+            .map_err(|error| warn!(addr = %conn.addr, %error, "failed to read packet type"))?;
+        if r#type != MessageType::NewKeys {
+            warn!(addr = %conn.addr,  "unexpected message type {:?}", r#type);
+            return Err(());
+        }
+
+        conn.write_buf.clear();
+        let Ok(packet) = Packet::builder(&mut conn.write_buf)
+            .with_payload(&MessageType::NewKeys)
+            .without_mac()
+        else {
+            error!(addr = %conn.addr, "failed to build newkeys packet");
+            return Err(());
+        };
+
+        if let Err(error) = conn.stream_write.write_all(packet).await {
+            warn!(addr = %conn.addr, %error, "failed to send newkeys packet");
+            return Err(());
+        }
 
         // The first exchange hash is used as session id.
         let derivation = KeyDerivation {
@@ -126,11 +156,28 @@ impl EcdhKeyExchange {
             session_id: Arc::new(self.session_id.unwrap_or(exchange_hash)),
         };
 
-        #[expect(clippy::unnecessary_operation)]
-        RawKeySet {
+        let raw_keys = RawKeySet {
             client_to_server: RawKeys::client_to_server(&derivation),
             server_to_client: RawKeys::server_to_client(&derivation),
         };
+
+        conn.stream_read.decryption_key = Some((
+            StreamingDecryptingKey::ctr(
+                UnboundCipherKey::new(
+                    &AES_128,
+                    &raw_keys.client_to_server.encryption_key.derive::<16>(),
+                )
+                .unwrap(),
+                aws_lc_rs::cipher::DecryptionContext::Iv128(
+                    raw_keys.client_to_server.initial_iv.derive::<16>().into(),
+                ),
+            )
+            .unwrap(),
+            hmac::Key::new(
+                hmac::HMAC_SHA256,
+                &raw_keys.client_to_server.integrity_key.derive::<32>(),
+            ),
+        ));
 
         Ok(())
     }
@@ -555,7 +602,6 @@ struct RawKeySet {
     server_to_client: RawKeys,
 }
 
-#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
 struct RawKeys {
     initial_iv: Key,
     encryption_key: Key,
@@ -606,7 +652,6 @@ struct Key {
     input: KeyInput,
 }
 
-#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
 impl Key {
     fn derive<const N: usize>(self) -> [u8; N] {
         let block_len = digest::SHA256.output_len();
