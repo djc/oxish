@@ -11,6 +11,8 @@ use key_exchange::KeyExchange;
 mod proto;
 use proto::{read, Decode, Decoded, Encode};
 
+use crate::proto::Packet;
+
 /// A single SSH connection
 pub struct Connection {
     stream: TcpStream,
@@ -54,6 +56,23 @@ impl Connection {
         };
 
         todo!();
+    }
+
+    pub async fn connect(
+        stream: TcpStream,
+        addr: SocketAddr,
+        host_key: Arc<Ed25519KeyPair>,
+    ) -> anyhow::Result<Self> {
+        // complete connection till kex finished (incl sending the newkeys message)
+        todo!()
+    }
+
+    pub async fn recv_packet(&mut self) -> anyhow::Result<Packet<'_>> {
+        todo!()
+    }
+
+    pub async fn send_packet(&mut self, packet: impl Encode) -> anyhow::Result<()> {
+        todo!()
     }
 }
 
