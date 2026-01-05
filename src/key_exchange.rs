@@ -65,7 +65,7 @@ pub(crate) struct EcdhKeyExchange {
 
 impl EcdhKeyExchange {
     pub(crate) async fn advance(
-        &self,
+        self,
         mut exchange: digest::Context,
         conn: &mut Connection,
     ) -> Result<(), ()> {
@@ -275,7 +275,7 @@ impl KeyExchange {
     }
 
     pub(crate) async fn advance(
-        &self,
+        self,
         exchange: &mut digest::Context,
         conn: &mut Connection,
     ) -> Result<EcdhKeyExchange, ()> {
