@@ -124,8 +124,11 @@ impl EcdhKeyExchange {
 
         // The first exchange hash is used as session id.
         let session_id = self.session_id.as_ref().unwrap_or(&exchange_hash);
-
-        RawKeySet::derive(shared_secret, exchange_hash, session_id);
+        RawKeySet::derive(KeyDerivation {
+            shared_secret,
+            exchange_hash,
+            session_id,
+        });
 
         Ok(())
     }
@@ -560,17 +563,7 @@ struct RawKeySet {
 }
 
 impl RawKeySet {
-    fn derive(
-        shared_secret: Vec<u8>,
-        exchange_hash: digest::Digest,
-        session_id: &digest::Digest,
-    ) -> Self {
-        let cx = KeyDerivation {
-            shared_secret,
-            exchange_hash,
-            session_id,
-        };
-
+    fn derive(cx: KeyDerivation<'_>) -> Self {
         Self {
             client_to_server: RawKeys {
                 initial_iv: cx.derive(KeyInput::InitialIvClientToServer),
