@@ -1,7 +1,8 @@
 use core::iter;
+use core::ops::Deref;
 
 use aws_lc_rs::rand;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::debug;
 
 use crate::Error;
@@ -147,7 +148,7 @@ impl<'a> PacketBuilderWithPayload<'a> {
             .ok_or(Error::Unreachable("unable to extract packet"))
     }
 
-    pub(crate) fn without_mac(self) -> Result<&'a [u8], Error> {
+    pub(crate) fn without_mac(self) -> Result<OutgoingPacket<'a>, Error> {
         let Self { buf, start } = self;
 
         // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
@@ -191,8 +192,21 @@ impl<'a> PacketBuilderWithPayload<'a> {
             packet_length_dst.copy_from_slice(&packet_len.to_be_bytes());
         }
 
-        buf.get(start..)
-            .ok_or(Error::Unreachable("unable to extract packet"))
+        match buf.get(start..) {
+            Some(packet) => Ok(OutgoingPacket(packet)),
+            None => Err(Error::Unreachable("unable to extract packet")),
+        }
+    }
+}
+
+#[must_use]
+pub(crate) struct OutgoingPacket<'a>(&'a [u8]);
+
+impl Deref for OutgoingPacket<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0
     }
 }
 
@@ -310,7 +324,7 @@ pub(crate) trait Encode {
 }
 
 pub(crate) async fn read<'a, T: Decode<'a>>(
-    reader: &mut (impl AsyncReadExt + Unpin),
+    reader: &mut (impl AsyncRead + Unpin),
     buf: &'a mut Vec<u8>,
 ) -> Result<Decoded<'a, T>, Error> {
     let read = reader.read_buf(buf).await?;
