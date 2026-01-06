@@ -1,6 +1,7 @@
 use core::iter;
+use std::io;
 
-use aws_lc_rs::rand;
+use aws_lc_rs::{cipher::StreamingDecryptingKey, constant_time, hmac, rand};
 use tokio::io::AsyncReadExt;
 use tracing::debug;
 
@@ -67,6 +68,169 @@ impl From<u8> for MessageType {
     }
 }
 
+/// A reader which decrypts data on the fly.
+// FIXME implement in-place decryption once aws-lc-rs supports this for AES-CTR.
+pub(crate) struct DecryptingReader<R: AsyncReadExt + Unpin> {
+    stream: R,
+    buf: Vec<u8>,
+    decrypted_buf: Vec<u8>,
+    unread_start: usize,
+
+    packet_number: u32,
+    pub(crate) decryption_key: Option<(StreamingDecryptingKey, hmac::Key)>,
+}
+
+impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
+    pub(crate) fn new(stream: R) -> Self {
+        Self {
+            stream,
+            buf: Vec::with_capacity(16_384),
+            decrypted_buf: Vec::with_capacity(16_384),
+            unread_start: 0,
+            packet_number: 0,
+            decryption_key: None,
+        }
+    }
+
+    async fn ensure_at_least(
+        stream: &mut R,
+        buf: &mut Vec<u8>,
+        unread_start: &mut usize,
+        n: u32,
+    ) -> Result<(), Error> {
+        while buf.len() - *unread_start < n as usize {
+            let read = stream.read_buf(buf).await?;
+            debug!(bytes = read, "read from stream");
+            if read == 0 {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "EOF",
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a single byte without packet structure or encryption.
+    ///
+    /// This should only be used for reading the identification string.
+    pub(crate) async fn read_u8_cleartext(&mut self) -> Result<u8, Error> {
+        assert!(self.decryption_key.is_none());
+
+        Self::ensure_at_least(&mut self.stream, &mut self.buf, &mut self.unread_start, 1).await?;
+
+        let byte = self.buf[self.unread_start];
+        self.unread_start += 1;
+        Ok(byte)
+    }
+
+    pub(crate) async fn read_packet<'a>(&'a mut self) -> Result<Packet<'a>, Error> {
+        // Compact the internal buffer
+        if self.unread_start > 0 {
+            self.buf.copy_within(self.unread_start.., 0);
+            self.buf.truncate(self.buf.len() - self.unread_start);
+            self.unread_start = 0;
+            self.decrypted_buf.clear();
+        }
+
+        let (packet_without_mac, mac_len) = if let Some((decrypting_key, integrity_key)) =
+            &mut self.decryption_key
+        // comment to avoid rustfmt from indenting the entire if
+        {
+            let block_len = decrypting_key.algorithm().block_len();
+
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                block_len as u32,
+            )
+            .await?;
+            self.decrypted_buf.resize(self.buf.len() + block_len, 0);
+
+            let update = decrypting_key
+                .update(
+                    &self.buf[..block_len],
+                    &mut self.decrypted_buf[..2 * block_len],
+                )
+                .unwrap();
+            assert_eq!(update.remainder().len(), block_len);
+
+            let Decoded {
+                value: packet_length,
+                next,
+            } = PacketLength::decode(&self.decrypted_buf[..4])?;
+            assert!(next.is_empty());
+
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                4 + packet_length.inner
+                    + integrity_key.algorithm().digest_algorithm().output_len as u32,
+            )
+            .await?;
+
+            let update = decrypting_key
+                .update(
+                    &self.buf[block_len..4 + packet_length.inner as usize],
+                    &mut self.decrypted_buf
+                        [block_len..4 + packet_length.inner as usize + block_len],
+                )
+                .unwrap();
+            assert_eq!(update.remainder().len(), block_len);
+
+            let packet_excl_mac = &self.decrypted_buf[..4 + packet_length.inner as usize];
+
+            let mut hmac_ctx = hmac::Context::with_key(integrity_key);
+            hmac_ctx.update(&self.packet_number.to_be_bytes());
+            hmac_ctx.update(packet_excl_mac);
+            let actual_mac = hmac_ctx.sign();
+            let expected_mac = &self.buf[4 + packet_length.inner as usize
+                ..4 + packet_length.inner as usize
+                    + integrity_key.algorithm().digest_algorithm().output_len];
+            constant_time::verify_slices_are_equal(actual_mac.as_ref(), expected_mac).unwrap(); // FIXME report error
+
+            (
+                packet_excl_mac,
+                integrity_key.algorithm().digest_algorithm().output_len,
+            )
+        } else {
+            Self::ensure_at_least(&mut self.stream, &mut self.buf, &mut self.unread_start, 4)
+                .await?;
+            let Decoded {
+                value: packet_length,
+                next,
+            } = PacketLength::decode(&self.buf[..4])?;
+            assert!(next.is_empty());
+
+            Self::ensure_at_least(
+                &mut self.stream,
+                &mut self.buf,
+                &mut self.unread_start,
+                4 + packet_length.inner,
+            )
+            .await?;
+
+            (&self.buf[..4 + packet_length.inner as usize], 0)
+        };
+
+        // Note: this needs to be done AFTER the IO to ensure
+        // this async function is cancel-safe
+        self.packet_number = self.packet_number.wrapping_add(1);
+
+        let Decoded {
+            value: packet,
+            next,
+        } = Packet::decode(packet_without_mac)?;
+        assert!(next.is_empty());
+
+        self.unread_start = packet_without_mac.len() + mac_len;
+
+        Ok(packet)
+    }
+}
+
 pub(crate) struct Packet<'a> {
     pub(crate) payload: &'a [u8],
 }
@@ -80,7 +244,7 @@ impl Packet<'_> {
     }
 }
 
-impl<'a> Decode<'a> for Packet<'a> {
+impl<'a> Packet<'a> {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
         let Decoded {
             value: packet_length,
@@ -307,15 +471,6 @@ impl<'a> Decode<'a> for u8 {
 
 pub(crate) trait Encode {
     fn encode(&self, buf: &mut Vec<u8>);
-}
-
-pub(crate) async fn read<'a, T: Decode<'a>>(
-    reader: &mut (impl AsyncReadExt + Unpin),
-    buf: &'a mut Vec<u8>,
-) -> Result<Decoded<'a, T>, Error> {
-    let read = reader.read_buf(buf).await?;
-    debug!(bytes = read, "read from stream");
-    T::decode(buf)
 }
 
 pub(crate) trait Decode<'a>: Sized {

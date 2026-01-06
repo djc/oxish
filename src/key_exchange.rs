@@ -2,7 +2,8 @@ use std::str;
 
 use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
-    digest,
+    cipher::{StreamingDecryptingKey, UnboundCipherKey, AES_128},
+    digest, hmac,
     rand::{self, SystemRandom},
     signature::KeyPair,
 };
@@ -10,7 +11,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{read, with_mpint_bytes, Decode, Decoded, Encode, MessageType, Packet},
+    proto::{with_mpint_bytes, Decode, Decoded, Encode, MessageType, Packet},
     Connection, Error,
 };
 
@@ -25,11 +26,8 @@ impl EcdhKeyExchange {
         mut exchange: digest::Context,
         conn: &mut Connection,
     ) -> Result<(), ()> {
-        let (packet, _rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read_buf).await {
-            Ok(Decoded {
-                value: packet,
-                next,
-            }) => (packet, next.len()),
+        let packet = match conn.stream_read.read_packet().await {
+            Ok(packet) => packet,
             Err(error) => {
                 warn!(addr = %conn.addr, %error, "failed to read packet");
                 return Err(());
@@ -115,12 +113,41 @@ impl EcdhKeyExchange {
             return Err(());
         };
 
-        if let Err(error) = conn.stream.write_all(packet).await {
+        if let Err(error) = conn.stream_write.write_all(packet).await {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(());
         }
 
-        // FIXME wait for and send newkey packet
+        let packet = match conn.stream_read.read_packet().await {
+            Ok(packet) => packet,
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read packet");
+                return Err(());
+            }
+        };
+        let Decoded {
+            value: r#type,
+            next: _,
+        } = MessageType::decode(packet.payload)
+            .map_err(|error| warn!(addr = %conn.addr, %error, "failed to read packet type"))?;
+        if r#type != MessageType::NewKeys {
+            warn!(addr = %conn.addr,  "unexpected message type {:?}", r#type);
+            return Err(());
+        }
+
+        conn.write_buf.clear();
+        let Ok(packet) = Packet::builder(&mut conn.write_buf)
+            .with_payload(&MessageType::NewKeys)
+            .without_mac()
+        else {
+            error!(addr = %conn.addr, "failed to build newkeys packet");
+            return Err(());
+        };
+
+        if let Err(error) = conn.stream_write.write_all(packet).await {
+            warn!(addr = %conn.addr, %error, "failed to send newkeys packet");
+            return Err(());
+        }
 
         // The first exchange hash is used as session id.
         let session_id = self.session_id.as_ref().unwrap_or(&exchange_hash);
@@ -129,11 +156,30 @@ impl EcdhKeyExchange {
             exchange_hash,
             session_id,
         };
-        #[expect(clippy::unnecessary_operation)]
-        RawKeySet {
+        let raw_keys = RawKeySet {
             client_to_server: RawKeys::client_to_server(&derivation),
             server_to_client: RawKeys::server_to_client(&derivation),
         };
+
+        conn.stream_read.decryption_key = Some((
+            StreamingDecryptingKey::ctr(
+                UnboundCipherKey::new(
+                    &AES_128,
+                    &raw_keys.client_to_server.encryption_key.as_ref()[..16],
+                )
+                .unwrap(),
+                aws_lc_rs::cipher::DecryptionContext::Iv128(
+                    raw_keys.client_to_server.initial_iv.as_ref()[..16]
+                        .try_into()
+                        .unwrap(),
+                ),
+            )
+            .unwrap(),
+            hmac::Key::new(
+                hmac::HMAC_SHA256,
+                &raw_keys.client_to_server.integrity_key.as_ref()[..32],
+            ),
+        ));
 
         Ok(())
     }
@@ -243,11 +289,8 @@ impl KeyExchange {
         exchange: &mut digest::Context,
         conn: &mut Connection,
     ) -> Result<EcdhKeyExchange, ()> {
-        let (packet, rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read_buf).await {
-            Ok(Decoded {
-                value: packet,
-                next,
-            }) => (packet, next.len()),
+        let packet = match conn.stream_read.read_packet().await {
+            Ok(packet) => packet,
             Err(error) => {
                 warn!(addr = %conn.addr, %error, "failed to read packet");
                 return Err(());
@@ -286,7 +329,7 @@ impl KeyExchange {
             return Err(());
         };
 
-        if let Err(error) = conn.stream.write_all(packet).await {
+        if let Err(error) = conn.stream_write.write_all(packet).await {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(());
         }
@@ -306,12 +349,6 @@ impl KeyExchange {
             warn!(addr = %conn.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
             return Err(());
         }
-
-        if rest > 0 {
-            let start = conn.read_buf.len() - rest;
-            conn.read_buf.copy_within(start.., 0);
-        }
-        conn.read_buf.truncate(rest);
 
         Ok(EcdhKeyExchange {
             session_id: self.session_id,
@@ -567,7 +604,6 @@ struct RawKeySet {
     server_to_client: RawKeys,
 }
 
-#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
 struct RawKeys {
     initial_iv: digest::Digest,
     encryption_key: digest::Digest,
