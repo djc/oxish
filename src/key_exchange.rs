@@ -10,8 +10,8 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{read, with_mpint_bytes, Decode, Decoded, Encode, MessageType, Packet},
-    Connection, Error,
+    proto::{read, with_mpint_bytes, Decode, Decoded, Encode, MessageType, OutgoingPacket, Packet},
+    Connection, ConnectionContext, Error,
 };
 
 pub(crate) struct EcdhKeyExchange {
@@ -20,33 +20,12 @@ pub(crate) struct EcdhKeyExchange {
 }
 
 impl EcdhKeyExchange {
-    pub(crate) async fn advance(
+    pub(crate) fn advance<'out>(
         self,
+        ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: digest::Context,
-        conn: &mut Connection,
-    ) -> Result<(), ()> {
-        let (packet, _rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read_buf).await {
-            Ok(Decoded {
-                value: packet,
-                next,
-            }) => (packet, next.len()),
-            Err(error) => {
-                warn!(addr = %conn.addr, %error, "failed to read packet");
-                return Err(());
-            }
-        };
-
-        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
-            Ok(ecdh_key_exchange_init) => {
-                debug!(addr = %conn.addr, "received ECDH key exchange start");
-                ecdh_key_exchange_init
-            }
-            Err(error) => {
-                warn!(addr = %conn.addr, %error, "failed to read ECDH key exchange start");
-                return Err(());
-            }
-        };
-
+        conn: &'out mut ConnectionContext<'out>,
+    ) -> Result<(OutgoingPacket<'out>, RawKeySet), ()> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
@@ -106,19 +85,13 @@ impl EcdhKeyExchange {
             },
         };
 
-        conn.write_buf.clear();
-        let Ok(packet) = Packet::builder(&mut conn.write_buf)
+        let result = Packet::builder(conn.write_buf)
             .with_payload(&key_exchange_reply)
-            .without_mac()
-        else {
+            .without_mac();
+        let Ok(outgoing) = result else {
             error!(addr = %conn.addr, "failed to build key exchange init packet");
             return Err(());
         };
-
-        if let Err(error) = conn.stream.write_all(packet).await {
-            warn!(addr = %conn.addr, %error, "failed to send version exchange");
-            return Err(());
-        }
 
         // FIXME wait for and send newkey packet
 
@@ -129,13 +102,13 @@ impl EcdhKeyExchange {
             session_id: Arc::new(self.session_id.unwrap_or(exchange_hash)),
         };
 
-        #[expect(clippy::unnecessary_operation)]
-        RawKeySet {
-            client_to_server: RawKeys::client_to_server(&derivation),
-            server_to_client: RawKeys::server_to_client(&derivation),
-        };
-
-        Ok(())
+        Ok((
+            outgoing,
+            RawKeySet {
+                client_to_server: RawKeys::client_to_server(&derivation),
+                server_to_client: RawKeys::server_to_client(&derivation),
+            },
+        ))
     }
 }
 
@@ -243,7 +216,7 @@ impl KeyExchange {
         exchange: &mut digest::Context,
         conn: &mut Connection,
     ) -> Result<EcdhKeyExchange, ()> {
-        let (packet, rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read_buf).await {
+        let (packet, rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read.buf).await {
             Ok(Decoded {
                 value: packet,
                 next,
@@ -286,7 +259,7 @@ impl KeyExchange {
             return Err(());
         };
 
-        if let Err(error) = conn.stream.write_all(packet).await {
+        if let Err(error) = conn.stream.write_all(&packet).await {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(());
         }
@@ -308,10 +281,10 @@ impl KeyExchange {
         }
 
         if rest > 0 {
-            let start = conn.read_buf.len() - rest;
-            conn.read_buf.copy_within(start.., 0);
+            let start = conn.read.buf.len() - rest;
+            conn.read.buf.copy_within(start.., 0);
         }
-        conn.read_buf.truncate(rest);
+        conn.read.buf.truncate(rest);
 
         Ok(EcdhKeyExchange {
             session_id: self.session_id,
@@ -562,7 +535,7 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 ///
 /// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-struct RawKeySet {
+pub(crate) struct RawKeySet {
     client_to_server: RawKeys,
     server_to_client: RawKeys,
 }
