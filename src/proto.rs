@@ -1,10 +1,115 @@
-use core::iter;
+use core::{iter, net::SocketAddr, ops::Deref};
 
-use aws_lc_rs::rand;
-use tokio::io::AsyncReadExt;
-use tracing::debug;
+use aws_lc_rs::{digest, rand};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tracing::{debug, error};
 
 use crate::Error;
+
+pub(crate) struct ReadState {
+    pub(crate) buf: Vec<u8>,
+}
+
+impl ReadState {
+    pub(crate) async fn packet<'a, T: TryFrom<Packet<'a>, Error = Error> + 'a>(
+        &'a mut self,
+        stream: &mut (impl AsyncRead + Unpin),
+        addr: SocketAddr,
+    ) -> Result<Packeted<'a, T>, Error> {
+        let (packet, rest) = match read::<Packet<'_>>(stream, &mut self.buf).await {
+            Ok(Decoded {
+                value: packet,
+                next,
+            }) => (packet, next.len()),
+            Err(error) => {
+                error!(%addr, %error, "failed to read packet");
+                return Err(error);
+            }
+        };
+
+        let payload = packet.payload;
+        match T::try_from(packet) {
+            Ok(decoded) => Ok(Packeted {
+                payload,
+                decoded,
+                rest,
+            }),
+            Err(error) => {
+                error!(%addr, %error, "failed to parse packet");
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn truncate(&mut self, rest: usize) {
+        if rest > 0 {
+            let start = self.buf.len() - rest;
+            self.buf.copy_within(start.., 0);
+        }
+        self.buf.truncate(rest);
+    }
+}
+
+impl Default for ReadState {
+    fn default() -> Self {
+        Self {
+            buf: Vec::with_capacity(16_384),
+        }
+    }
+}
+
+pub(crate) struct Packeted<'a, T: 'a> {
+    payload: &'a [u8],
+    decoded: T,
+    rest: usize,
+}
+
+impl<'a, T> Packeted<'a, T> {
+    pub(crate) fn hash(self, hash: &mut HandshakeHash) -> (T, usize) {
+        let Self {
+            payload,
+            decoded,
+            rest,
+        } = self;
+        hash.prefixed(payload);
+        (decoded, rest)
+    }
+
+    pub(crate) fn into_inner(self) -> T {
+        self.decoded
+    }
+}
+
+impl<T> Deref for Packeted<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.decoded
+    }
+}
+
+pub(crate) struct HandshakeHash(digest::Context);
+
+impl HandshakeHash {
+    pub(crate) fn prefixed(&mut self, data: &[u8]) {
+        self.0.update(&(data.len() as u32).to_be_bytes());
+        self.0.update(data);
+    }
+
+    pub(crate) fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    pub(crate) fn finish(self) -> digest::Digest {
+        self.0.finish()
+    }
+}
+
+impl Default for HandshakeHash {
+    fn default() -> Self {
+        Self(digest::Context::new(&digest::SHA256))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MessageType {
@@ -147,7 +252,7 @@ impl<'a> PacketBuilderWithPayload<'a> {
             .ok_or(Error::Unreachable("unable to extract packet"))
     }
 
-    pub(crate) fn without_mac(self) -> Result<&'a [u8], Error> {
+    pub(crate) fn without_mac(self) -> Result<OutgoingPacket<'a>, Error> {
         let Self { buf, start } = self;
 
         // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
@@ -191,8 +296,21 @@ impl<'a> PacketBuilderWithPayload<'a> {
             packet_length_dst.copy_from_slice(&packet_len.to_be_bytes());
         }
 
-        buf.get(start..)
-            .ok_or(Error::Unreachable("unable to extract packet"))
+        match buf.get(start..) {
+            Some(packet) => Ok(OutgoingPacket(packet)),
+            None => Err(Error::Unreachable("unable to extract packet")),
+        }
+    }
+}
+
+#[must_use]
+pub(crate) struct OutgoingPacket<'a>(&'a [u8]);
+
+impl Deref for OutgoingPacket<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0
     }
 }
 
@@ -310,7 +428,7 @@ pub(crate) trait Encode {
 }
 
 pub(crate) async fn read<'a, T: Decode<'a>>(
-    reader: &mut (impl AsyncReadExt + Unpin),
+    reader: &mut (impl AsyncRead + Unpin),
     buf: &'a mut Vec<u8>,
 ) -> Result<Decoded<'a, T>, Error> {
     let read = reader.read_buf(buf).await?;

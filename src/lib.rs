@@ -1,22 +1,27 @@
 use core::net::SocketAddr;
 use std::{io, str, sync::Arc};
 
-use aws_lc_rs::{digest, signature::Ed25519KeyPair};
+use aws_lc_rs::signature::Ed25519KeyPair;
 use thiserror::Error;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{read, Decode, Decoded, Encode};
+use proto::{read, Decode, Decoded, Encode, ReadState};
+
+use crate::{
+    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit},
+    proto::HandshakeHash,
+};
 
 /// A single SSH connection
 pub struct Connection {
     stream: TcpStream,
     addr: SocketAddr,
     host_key: Arc<Ed25519KeyPair>,
-    read_buf: Vec<u8>,
+    read: ReadState,
     write_buf: Vec<u8>,
 }
 
@@ -32,29 +37,81 @@ impl Connection {
             stream,
             addr,
             host_key,
-            read_buf: Vec::with_capacity(16_384),
+            read: ReadState::default(),
             write_buf: Vec::with_capacity(16_384),
         })
     }
 
     /// Drive the connection forward
     pub async fn run(mut self) {
-        let mut exchange = digest::Context::new(&digest::SHA256);
+        let mut exchange = HandshakeHash::default();
         let state = VersionExchange::default();
         let Ok(state) = state.advance(&mut exchange, &mut self).await else {
             return;
         };
 
-        let Ok(state) = state.advance(&mut exchange, &mut self).await else {
+        let future = self
+            .read
+            .packet::<KeyExchangeInit<'_>>(&mut self.stream, self.addr);
+        let (peer_key_exchange_init, rest) = match future.await {
+            Ok(packeted) => packeted.hash(&mut exchange),
+            Err(error) => {
+                error!(addr = %self.addr, %error, "failed to read key exchange init");
+                return;
+            }
+        };
+
+        self.write_buf.clear();
+        let mut cx = ConnectionContext {
+            addr: self.addr,
+            host_key: &self.host_key,
+            write_buf: &mut self.write_buf,
+        };
+
+        let Ok((packet, state)) = state.advance(peer_key_exchange_init, &mut exchange, &mut cx)
+        else {
             return;
         };
 
-        let Ok(()) = state.advance(exchange, &mut self).await else {
+        if let Err(error) = self.stream.write_all(&packet).await {
+            error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
+            return;
+        }
+
+        self.read.truncate(rest);
+
+        let future = self
+            .read
+            .packet::<EcdhKeyExchangeInit<'_>>(&mut self.stream, self.addr);
+        let ecdh_key_exchange_init = match future.await {
+            Ok(packet) => packet.into_inner(),
+            Err(_) => return,
+        };
+
+        self.write_buf.clear();
+        let mut cx = ConnectionContext {
+            addr: self.addr,
+            host_key: &self.host_key,
+            write_buf: &mut self.write_buf,
+        };
+
+        let Ok((packet, _keys)) = state.advance(ecdh_key_exchange_init, exchange, &mut cx) else {
             return;
         };
+
+        if let Err(error) = self.stream.write_all(&packet).await {
+            error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
+            return;
+        }
 
         todo!();
     }
+}
+
+struct ConnectionContext<'a> {
+    addr: SocketAddr,
+    host_key: &'a Ed25519KeyPair,
+    write_buf: &'a mut Vec<u8>,
 }
 
 #[derive(Default)]
@@ -63,11 +120,11 @@ struct VersionExchange(());
 impl VersionExchange {
     async fn advance(
         &self,
-        exchange: &mut digest::Context,
+        exchange: &mut HandshakeHash,
         conn: &mut Connection,
     ) -> Result<KeyExchange, ()> {
         let (ident, rest) =
-            match read::<Identification<'_>>(&mut conn.stream, &mut conn.read_buf).await {
+            match read::<Identification<'_>>(&mut conn.stream, &mut conn.read.buf).await {
                 Ok(Decoded { value: ident, next }) => {
                     debug!(addr = %conn.addr, ?ident, "received identification");
                     (ident, next.len())
@@ -83,10 +140,9 @@ impl VersionExchange {
             return Err(());
         }
 
-        let v_c_len = conn.read_buf.len() - rest - 2;
-        if let Some(v_c) = conn.read_buf.get(..v_c_len) {
-            exchange.update(&(v_c.len() as u32).to_be_bytes());
-            exchange.update(v_c);
+        let v_c_len = conn.read.buf.len() - rest - 2;
+        if let Some(v_c) = conn.read.buf.get(..v_c_len) {
+            exchange.prefixed(v_c);
         }
 
         let ident = Identification::outgoing();
@@ -98,17 +154,11 @@ impl VersionExchange {
 
         let v_s_len = conn.write_buf.len() - 2;
         if let Some(v_s) = conn.write_buf.get(..v_s_len) {
-            exchange.update(&(v_s.len() as u32).to_be_bytes());
-            exchange.update(v_s);
+            exchange.prefixed(v_s);
         }
 
-        if rest > 0 {
-            let start = conn.read_buf.len() - rest;
-            conn.read_buf.copy_within(start.., 0);
-        }
-        conn.read_buf.truncate(rest);
-
-        Ok(KeyExchange::for_new_session())
+        conn.read.truncate(rest);
+        Ok(KeyExchange::default())
     }
 }
 
