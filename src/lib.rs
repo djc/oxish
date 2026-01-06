@@ -116,6 +116,14 @@ impl ReadState {
             }
         }
     }
+
+    fn truncate(&mut self, rest: usize) {
+        if rest > 0 {
+            let start = self.buf.len() - rest;
+            self.buf.copy_within(start.., 0);
+        }
+        self.buf.truncate(rest);
+    }
 }
 
 impl Default for ReadState {
@@ -208,12 +216,7 @@ impl VersionExchange {
             exchange.update(v_s);
         }
 
-        if rest > 0 {
-            let start = conn.read.buf.len() - rest;
-            conn.read.buf.copy_within(start.., 0);
-        }
-        conn.read.buf.truncate(rest);
-
+        conn.read.truncate(rest);
         Ok(KeyExchange::default())
     }
 }
