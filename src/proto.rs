@@ -77,7 +77,7 @@ pub(crate) struct DecryptingReader<R: AsyncReadExt + Unpin> {
     unread_start: usize,
 
     packet_number: u32,
-    decryption_key: Option<(StreamingDecryptingKey, hmac::Key)>,
+    pub(crate) decryption_key: Option<(StreamingDecryptingKey, hmac::Key)>,
 }
 
 impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
@@ -122,14 +122,6 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
         let byte = self.buf[self.unread_start];
         self.unread_start += 1;
         Ok(byte)
-    }
-
-    pub(crate) fn set_decryption_key(
-        &mut self,
-        decryption_key: StreamingDecryptingKey,
-        integrity_key: hmac::Key,
-    ) {
-        self.decryption_key = Some((decryption_key, integrity_key));
     }
 
     pub(crate) async fn read_packet<'a>(&'a mut self) -> Result<Packet<'a>, Error> {
