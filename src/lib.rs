@@ -14,7 +14,10 @@ use key_exchange::KeyExchange;
 mod proto;
 use proto::{read, Decode, Decoded, Encode};
 
-use crate::{key_exchange::EcdhKeyExchangeInit, proto::Packet};
+use crate::{
+    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit},
+    proto::Packet,
+};
 
 /// A single SSH connection
 pub struct Connection {
@@ -50,9 +53,35 @@ impl Connection {
             return;
         };
 
-        let Ok(state) = state.advance(&mut exchange, &mut self).await else {
+        let future = self
+            .read
+            .packet::<KeyExchangeInit<'_>>(&mut self.stream, self.addr);
+        let (peer_key_exchange_init, rest) = match future.await {
+            Ok(packeted) => packeted.hash(&mut exchange),
+            Err(error) => {
+                error!(addr = %self.addr, %error, "failed to read key exchange init");
+                return;
+            }
+        };
+
+        self.write_buf.clear();
+        let mut cx = ConnectionContext {
+            addr: self.addr,
+            host_key: &self.host_key,
+            write_buf: &mut self.write_buf,
+        };
+
+        let Ok((packet, state)) = state.advance(peer_key_exchange_init, &mut exchange, &mut cx)
+        else {
             return;
         };
+
+        if let Err(error) = self.stream.write_all(&packet).await {
+            error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
+            return;
+        }
+
+        self.read.truncate(rest);
 
         let future = self
             .read
