@@ -142,8 +142,6 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
 
         // Update decryption state
         self.decrypted_buf.clear();
-        let packet_number = self.packet_number;
-        self.packet_number = self.packet_number.wrapping_add(1);
 
         if let Some((decrypting_key, integrity_key)) = &mut self.decryption_key {
             let block_len = decrypting_key.algorithm().block_len();
@@ -181,6 +179,11 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
                     + integrity_key.algorithm().digest_algorithm().output_len as u32,
             )
             .await?;
+
+            // Note: this needs to be done AFTER the IO to ensure
+            // this async function is cancel-safe
+            let packet_number = self.packet_number;
+            self.packet_number = self.packet_number.wrapping_add(1);
 
             let update = decrypting_key
                 .update(
@@ -236,6 +239,10 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
                 4 + packet_length.inner,
             )
             .await?;
+
+            // Note: this needs to be done AFTER the IO to ensure
+            // this async function is cancel-safe
+            self.packet_number = self.packet_number.wrapping_add(1);
 
             let Decoded {
                 value: packet,
