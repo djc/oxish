@@ -3,20 +3,25 @@ use std::{io, str, sync::Arc};
 
 use aws_lc_rs::{digest, signature::Ed25519KeyPair};
 use thiserror::Error;
-use tokio::{io::AsyncWriteExt, net::TcpStream};
-use tracing::{debug, warn};
+use tokio::{
+    io::{AsyncRead, AsyncWriteExt},
+    net::TcpStream,
+};
+use tracing::{debug, error, warn};
 
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
 use proto::{read, Decode, Decoded, Encode};
 
+use crate::proto::Packet;
+
 /// A single SSH connection
 pub struct Connection {
     stream: TcpStream,
     addr: SocketAddr,
     host_key: Arc<Ed25519KeyPair>,
-    read_buf: Vec<u8>,
+    read: ReadState,
     write_buf: Vec<u8>,
 }
 
@@ -32,7 +37,7 @@ impl Connection {
             stream,
             addr,
             host_key,
-            read_buf: Vec::with_capacity(16_384),
+            read: ReadState::default(),
             write_buf: Vec::with_capacity(16_384),
         })
     }
@@ -49,12 +54,74 @@ impl Connection {
             return;
         };
 
-        let Ok(()) = state.advance(exchange, &mut self).await else {
+        let future = self.read.packet(&mut self.stream, self.addr);
+        let Ok(ecdh_key_exchange_init) = future.await else {
             return;
         };
 
+        self.write_buf.clear();
+        let mut cx = ConnectionContext {
+            addr: self.addr,
+            host_key: &self.host_key,
+            write_buf: &mut self.write_buf,
+        };
+
+        let Ok((packet, _keys)) = state.advance(ecdh_key_exchange_init, exchange, &mut cx) else {
+            return;
+        };
+
+        if let Err(error) = self.stream.write_all(&packet).await {
+            error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
+            return;
+        }
+
         todo!();
     }
+}
+
+struct ReadState {
+    buf: Vec<u8>,
+}
+
+impl ReadState {
+    async fn packet<'a, T: TryFrom<Packet<'a>, Error = Error>>(
+        &'a mut self,
+        stream: &mut (impl AsyncRead + Unpin),
+        addr: SocketAddr,
+    ) -> Result<T, Error> {
+        let (packet, _rest) = match read::<Packet<'_>>(stream, &mut self.buf).await {
+            Ok(Decoded {
+                value: packet,
+                next,
+            }) => (packet, next.len()),
+            Err(error) => {
+                error!(%addr, %error, "failed to read packet");
+                return Err(error);
+            }
+        };
+
+        match T::try_from(packet) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                error!(%addr, %error, "failed to parse packet");
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Default for ReadState {
+    fn default() -> Self {
+        Self {
+            buf: Vec::with_capacity(16_384),
+        }
+    }
+}
+
+struct ConnectionContext<'a> {
+    addr: SocketAddr,
+    host_key: &'a Ed25519KeyPair,
+    write_buf: &'a mut Vec<u8>,
 }
 
 #[derive(Default)]
@@ -67,7 +134,7 @@ impl VersionExchange {
         conn: &mut Connection,
     ) -> Result<KeyExchange, ()> {
         let (ident, rest) =
-            match read::<Identification<'_>>(&mut conn.stream, &mut conn.read_buf).await {
+            match read::<Identification<'_>>(&mut conn.stream, &mut conn.read.buf).await {
                 Ok(Decoded { value: ident, next }) => {
                     debug!(addr = %conn.addr, ?ident, "received identification");
                     (ident, next.len())
@@ -83,8 +150,8 @@ impl VersionExchange {
             return Err(());
         }
 
-        let v_c_len = conn.read_buf.len() - rest - 2;
-        if let Some(v_c) = conn.read_buf.get(..v_c_len) {
+        let v_c_len = conn.read.buf.len() - rest - 2;
+        if let Some(v_c) = conn.read.buf.get(..v_c_len) {
             exchange.update(&(v_c.len() as u32).to_be_bytes());
             exchange.update(v_c);
         }
@@ -103,10 +170,10 @@ impl VersionExchange {
         }
 
         if rest > 0 {
-            let start = conn.read_buf.len() - rest;
-            conn.read_buf.copy_within(start.., 0);
+            let start = conn.read.buf.len() - rest;
+            conn.read.buf.copy_within(start.., 0);
         }
-        conn.read_buf.truncate(rest);
+        conn.read.buf.truncate(rest);
 
         Ok(KeyExchange::for_new_session())
     }
