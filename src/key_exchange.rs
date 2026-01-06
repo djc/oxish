@@ -11,7 +11,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     proto::{with_mpint_bytes, Decode, Decoded, Encode, MessageType, OutgoingPacket, Packet},
-    Connection, ConnectionContext, Error,
+    Connection, ConnectionContext, Error, HandshakeHash,
 };
 
 pub(crate) struct EcdhKeyExchange {
@@ -23,7 +23,7 @@ impl EcdhKeyExchange {
     pub(crate) fn advance<'out>(
         self,
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
-        mut exchange: digest::Context,
+        mut exchange: HandshakeHash,
         conn: &'out mut ConnectionContext<'out>,
     ) -> Result<(OutgoingPacket<'out>, RawKeySet), ()> {
         // Write the server's public host key (`K_S`) to the exchange hash
@@ -38,10 +38,7 @@ impl EcdhKeyExchange {
 
         // Write the client's ephemeral public key (`Q_C`) to the exchange hash
 
-        exchange.update(
-            &(ecdh_key_exchange_init.client_ephemeral_public_key.len() as u32).to_be_bytes(),
-        );
-        exchange.update(ecdh_key_exchange_init.client_ephemeral_public_key);
+        exchange.prefixed(ecdh_key_exchange_init.client_ephemeral_public_key);
 
         let random = SystemRandom::new();
         let Ok(kx_private_key) = EphemeralPrivateKey::generate(&X25519, &random) else {
@@ -57,8 +54,7 @@ impl EcdhKeyExchange {
         let client_kx_public_key =
             UnparsedPublicKey::new(&X25519, ecdh_key_exchange_init.client_ephemeral_public_key);
 
-        exchange.update(&(kx_public_key.as_ref().len() as u32).to_be_bytes());
-        exchange.update(kx_public_key.as_ref());
+        exchange.prefixed(kx_public_key.as_ref());
         let Ok(shared_secret) = agreement::agree_ephemeral(
             kx_private_key,
             client_kx_public_key,
@@ -209,7 +205,7 @@ pub(crate) struct KeyExchange {
 impl KeyExchange {
     pub(crate) async fn advance(
         self,
-        exchange: &mut digest::Context,
+        exchange: &mut HandshakeHash,
         conn: &mut Connection,
     ) -> Result<EcdhKeyExchange, ()> {
         let future = conn
@@ -235,8 +231,7 @@ impl KeyExchange {
         let builder = Packet::builder(&mut conn.write_buf).with_payload(&key_exchange_init);
 
         if let Ok(kex_init_payload) = builder.payload() {
-            exchange.update(&(kex_init_payload.len() as u32).to_be_bytes());
-            exchange.update(kex_init_payload);
+            exchange.prefixed(kex_init_payload);
         };
 
         let Ok(packet) = builder.without_mac() else {
