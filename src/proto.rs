@@ -1,11 +1,115 @@
-use core::iter;
-use core::ops::Deref;
+use core::{iter, net::SocketAddr, ops::Deref};
 
-use aws_lc_rs::rand;
+use aws_lc_rs::{digest, rand};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::Error;
+
+pub(crate) struct ReadState {
+    pub(crate) buf: Vec<u8>,
+}
+
+impl ReadState {
+    pub(crate) async fn packet<'a, T: TryFrom<Packet<'a>, Error = Error> + 'a>(
+        &'a mut self,
+        stream: &mut (impl AsyncRead + Unpin),
+        addr: SocketAddr,
+    ) -> Result<Packeted<'a, T>, Error> {
+        let (packet, rest) = match read::<Packet<'_>>(stream, &mut self.buf).await {
+            Ok(Decoded {
+                value: packet,
+                next,
+            }) => (packet, next.len()),
+            Err(error) => {
+                error!(%addr, %error, "failed to read packet");
+                return Err(error);
+            }
+        };
+
+        let payload = packet.payload;
+        match T::try_from(packet) {
+            Ok(decoded) => Ok(Packeted {
+                payload,
+                decoded,
+                rest,
+            }),
+            Err(error) => {
+                error!(%addr, %error, "failed to parse packet");
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn truncate(&mut self, rest: usize) {
+        if rest > 0 {
+            let start = self.buf.len() - rest;
+            self.buf.copy_within(start.., 0);
+        }
+        self.buf.truncate(rest);
+    }
+}
+
+impl Default for ReadState {
+    fn default() -> Self {
+        Self {
+            buf: Vec::with_capacity(16_384),
+        }
+    }
+}
+
+pub(crate) struct Packeted<'a, T: 'a> {
+    payload: &'a [u8],
+    decoded: T,
+    rest: usize,
+}
+
+impl<'a, T> Packeted<'a, T> {
+    pub(crate) fn hash(self, hash: &mut HandshakeHash) -> (T, usize) {
+        let Self {
+            payload,
+            decoded,
+            rest,
+        } = self;
+        hash.prefixed(payload);
+        (decoded, rest)
+    }
+
+    pub(crate) fn into_inner(self) -> T {
+        self.decoded
+    }
+}
+
+impl<T> Deref for Packeted<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.decoded
+    }
+}
+
+pub(crate) struct HandshakeHash(digest::Context);
+
+impl HandshakeHash {
+    pub(crate) fn prefixed(&mut self, data: &[u8]) {
+        self.0.update(&(data.len() as u32).to_be_bytes());
+        self.0.update(data);
+    }
+
+    pub(crate) fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    pub(crate) fn finish(self) -> digest::Digest {
+        self.0.finish()
+    }
+}
+
+impl Default for HandshakeHash {
+    fn default() -> Self {
+        Self(digest::Context::new(&digest::SHA256))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MessageType {

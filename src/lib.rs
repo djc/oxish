@@ -1,22 +1,19 @@
-use core::{net::SocketAddr, ops::Deref};
+use core::net::SocketAddr;
 use std::{io, str, sync::Arc};
 
-use aws_lc_rs::{digest, signature::Ed25519KeyPair};
+use aws_lc_rs::signature::Ed25519KeyPair;
 use thiserror::Error;
-use tokio::{
-    io::{AsyncRead, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::{debug, error, warn};
 
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{read, Decode, Decoded, Encode};
+use proto::{read, Decode, Decoded, Encode, ReadState};
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit},
-    proto::Packet,
+    proto::HandshakeHash,
 };
 
 /// A single SSH connection
@@ -108,88 +105,6 @@ impl Connection {
         }
 
         todo!();
-    }
-}
-
-struct ReadState {
-    buf: Vec<u8>,
-}
-
-impl ReadState {
-    async fn packet<'a, T: TryFrom<Packet<'a>, Error = Error> + 'a>(
-        &'a mut self,
-        stream: &mut (impl AsyncRead + Unpin),
-        addr: SocketAddr,
-    ) -> Result<Packeted<'a, T>, Error> {
-        let (packet, rest) = match read::<Packet<'_>>(stream, &mut self.buf).await {
-            Ok(Decoded {
-                value: packet,
-                next,
-            }) => (packet, next.len()),
-            Err(error) => {
-                error!(%addr, %error, "failed to read packet");
-                return Err(error);
-            }
-        };
-
-        let payload = packet.payload;
-        match T::try_from(packet) {
-            Ok(decoded) => Ok(Packeted {
-                payload,
-                decoded,
-                rest,
-            }),
-            Err(error) => {
-                error!(%addr, %error, "failed to parse packet");
-                Err(error)
-            }
-        }
-    }
-
-    fn truncate(&mut self, rest: usize) {
-        if rest > 0 {
-            let start = self.buf.len() - rest;
-            self.buf.copy_within(start.., 0);
-        }
-        self.buf.truncate(rest);
-    }
-}
-
-impl Default for ReadState {
-    fn default() -> Self {
-        Self {
-            buf: Vec::with_capacity(16_384),
-        }
-    }
-}
-
-struct Packeted<'a, T: 'a> {
-    payload: &'a [u8],
-    decoded: T,
-    rest: usize,
-}
-
-impl<'a, T> Packeted<'a, T> {
-    fn hash(self, hash: &mut HandshakeHash) -> (T, usize) {
-        let Self {
-            payload,
-            decoded,
-            rest,
-        } = self;
-        hash.prefixed(payload);
-        (decoded, rest)
-    }
-
-    fn into_inner(self) -> T {
-        self.decoded
-    }
-}
-
-impl<T> Deref for Packeted<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.decoded
     }
 }
 
@@ -314,29 +229,6 @@ impl Encode for Identification<'_> {
             buf.extend_from_slice(self.comments.as_bytes());
         }
         buf.extend_from_slice(b"\r\n");
-    }
-}
-
-struct HandshakeHash(digest::Context);
-
-impl HandshakeHash {
-    fn prefixed(&mut self, data: &[u8]) {
-        self.0.update(&(data.len() as u32).to_be_bytes());
-        self.0.update(data);
-    }
-
-    fn update(&mut self, data: &[u8]) {
-        self.0.update(data);
-    }
-
-    fn finish(self) -> digest::Digest {
-        self.0.finish()
-    }
-}
-
-impl Default for HandshakeHash {
-    fn default() -> Self {
-        Self(digest::Context::new(&digest::SHA256))
     }
 }
 
