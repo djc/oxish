@@ -136,12 +136,10 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
         // Compact the internal buffer
         if self.unread_start > 0 {
             self.buf.copy_within(self.unread_start.., 0);
+            self.buf.truncate(self.buf.len() - self.unread_start);
+            self.unread_start = 0;
+            self.decrypted_buf.clear();
         }
-        self.buf.truncate(self.buf.len() - self.unread_start);
-        self.unread_start = 0;
-
-        // Update decryption state
-        self.decrypted_buf.clear();
 
         if let Some((decrypting_key, integrity_key)) = &mut self.decryption_key {
             let block_len = decrypting_key.algorithm().block_len();
@@ -157,8 +155,8 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
 
             let update = decrypting_key
                 .update(
-                    &self.buf[self.unread_start..self.unread_start + block_len],
-                    &mut self.decrypted_buf[self.unread_start..self.unread_start + 2 * block_len],
+                    &self.buf[..block_len],
+                    &mut self.decrypted_buf[..2 * block_len],
                 )
                 .unwrap();
             assert_eq!(update.remainder().len(), block_len);
@@ -166,9 +164,7 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
             let Decoded {
                 value: packet_length,
                 next,
-            } = PacketLength::decode(
-                &self.decrypted_buf[self.unread_start..self.unread_start + 4],
-            )?;
+            } = PacketLength::decode(&self.decrypted_buf[..4])?;
             assert!(next.is_empty());
 
             Self::ensure_at_least(
@@ -187,38 +183,29 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
 
             let update = decrypting_key
                 .update(
-                    &self.buf[self.unread_start + block_len
-                        ..self.unread_start + 4 + packet_length.inner as usize],
-                    &mut self.decrypted_buf[self.unread_start + block_len
-                        ..self.unread_start + 4 + packet_length.inner as usize + block_len],
+                    &self.buf[block_len..4 + packet_length.inner as usize],
+                    &mut self.decrypted_buf
+                        [block_len..4 + packet_length.inner as usize + block_len],
                 )
                 .unwrap();
             assert_eq!(update.remainder().len(), block_len);
 
             let mut hmac_ctx = hmac::Context::with_key(integrity_key);
             hmac_ctx.update(&packet_number.to_be_bytes());
-            hmac_ctx.update(
-                &self.decrypted_buf
-                    [self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
-            );
+            hmac_ctx.update(&self.decrypted_buf[..4 + packet_length.inner as usize]);
             let actual_mac = hmac_ctx.sign();
-            let expected_mac = &self.buf[self.unread_start + 4 + packet_length.inner as usize
-                ..self.unread_start
-                    + 4
-                    + packet_length.inner as usize
+            let expected_mac = &self.buf[4 + packet_length.inner as usize
+                ..4 + packet_length.inner as usize
                     + integrity_key.algorithm().digest_algorithm().output_len];
             constant_time::verify_slices_are_equal(actual_mac.as_ref(), expected_mac).unwrap(); // FIXME report error
 
             let Decoded {
                 value: packet,
                 next,
-            } = Packet::decode(
-                &self.decrypted_buf
-                    [self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
-            )?;
+            } = Packet::decode(&self.decrypted_buf[..4 + packet_length.inner as usize])?;
             assert!(next.is_empty());
 
-            self.unread_start += 4
+            self.unread_start = 4
                 + packet_length.inner as usize
                 + integrity_key.algorithm().digest_algorithm().output_len;
 
@@ -229,7 +216,7 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
             let Decoded {
                 value: packet_length,
                 next,
-            } = PacketLength::decode(&self.buf[self.unread_start..self.unread_start + 4])?;
+            } = PacketLength::decode(&self.buf[..4])?;
             assert!(next.is_empty());
 
             Self::ensure_at_least(
@@ -247,12 +234,10 @@ impl<R: AsyncReadExt + Unpin> DecryptingReader<R> {
             let Decoded {
                 value: packet,
                 next,
-            } = Packet::decode(
-                &self.buf[self.unread_start..self.unread_start + 4 + packet_length.inner as usize],
-            )?;
+            } = Packet::decode(&self.buf[..4 + packet_length.inner as usize])?;
             assert!(next.is_empty());
 
-            self.unread_start += 4 + packet_length.inner as usize;
+            self.unread_start = 4 + packet_length.inner as usize;
 
             Ok(packet)
         }
