@@ -92,7 +92,7 @@ impl ReadState {
         stream: &mut (impl AsyncRead + Unpin),
         addr: SocketAddr,
     ) -> Result<Packeted<'a, T>, Error> {
-        let (packet, _rest) = match read::<Packet<'_>>(stream, &mut self.buf).await {
+        let (packet, rest) = match read::<Packet<'_>>(stream, &mut self.buf).await {
             Ok(Decoded {
                 value: packet,
                 next,
@@ -105,7 +105,11 @@ impl ReadState {
 
         let payload = packet.payload;
         match T::try_from(packet) {
-            Ok(decoded) => Ok(Packeted { payload, decoded }),
+            Ok(decoded) => Ok(Packeted {
+                payload,
+                decoded,
+                rest,
+            }),
             Err(error) => {
                 error!(%addr, %error, "failed to parse packet");
                 Err(error)
@@ -123,12 +127,23 @@ impl Default for ReadState {
 }
 
 struct Packeted<'a, T: 'a> {
-    #[expect(dead_code)]
     payload: &'a [u8],
     decoded: T,
+    rest: usize,
 }
 
 impl<'a, T> Packeted<'a, T> {
+    fn hash(self, hash: &mut digest::Context) -> (T, usize) {
+        let Self {
+            payload,
+            decoded,
+            rest,
+        } = self;
+        hash.update(&(payload.len() as u32).to_be_bytes());
+        hash.update(payload);
+        (decoded, rest)
+    }
+
     fn into_inner(self) -> T {
         self.decoded
     }
