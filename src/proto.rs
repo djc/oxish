@@ -589,6 +589,21 @@ impl Encode for [u8] {
     }
 }
 
+impl Decode<'_> for bool {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
+        <[u8; 1]>::decode(bytes).map(|decoded| Decoded {
+            value: decoded.value[0] != 0,
+            next: decoded.next,
+        })
+    }
+}
+
+impl Encode for bool {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(if *self { 1 } else { 0 });
+    }
+}
+
 impl Decode<'_> for u32 {
     fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
         <[u8; 4]>::decode(bytes).map(|decoded| Decoded {
