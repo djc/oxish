@@ -44,7 +44,7 @@ impl Connection {
 
     /// Drive the connection forward
     pub async fn run(mut self) {
-        let mut exchange = digest::Context::new(&digest::SHA256);
+        let mut exchange = HandshakeHash::default();
         let state = VersionExchange::default();
         let Ok(state) = state.advance(&mut exchange, &mut self).await else {
             return;
@@ -141,14 +141,13 @@ struct Packeted<'a, T: 'a> {
 }
 
 impl<'a, T> Packeted<'a, T> {
-    fn hash(self, hash: &mut digest::Context) -> (T, usize) {
+    fn hash(self, hash: &mut HandshakeHash) -> (T, usize) {
         let Self {
             payload,
             decoded,
             rest,
         } = self;
-        hash.update(&(payload.len() as u32).to_be_bytes());
-        hash.update(payload);
+        hash.prefixed(payload);
         (decoded, rest)
     }
 
@@ -177,7 +176,7 @@ struct VersionExchange(());
 impl VersionExchange {
     async fn advance(
         &self,
-        exchange: &mut digest::Context,
+        exchange: &mut HandshakeHash,
         conn: &mut Connection,
     ) -> Result<KeyExchange, ()> {
         let (ident, rest) =
@@ -199,8 +198,7 @@ impl VersionExchange {
 
         let v_c_len = conn.read.buf.len() - rest - 2;
         if let Some(v_c) = conn.read.buf.get(..v_c_len) {
-            exchange.update(&(v_c.len() as u32).to_be_bytes());
-            exchange.update(v_c);
+            exchange.prefixed(v_c);
         }
 
         let ident = Identification::outgoing();
@@ -212,8 +210,7 @@ impl VersionExchange {
 
         let v_s_len = conn.write_buf.len() - 2;
         if let Some(v_s) = conn.write_buf.get(..v_s_len) {
-            exchange.update(&(v_s.len() as u32).to_be_bytes());
-            exchange.update(v_s);
+            exchange.prefixed(v_s);
         }
 
         conn.read.truncate(rest);
@@ -288,6 +285,29 @@ impl Encode for Identification<'_> {
             buf.extend_from_slice(self.comments.as_bytes());
         }
         buf.extend_from_slice(b"\r\n");
+    }
+}
+
+struct HandshakeHash(digest::Context);
+
+impl HandshakeHash {
+    fn prefixed(&mut self, data: &[u8]) {
+        self.0.update(&(data.len() as u32).to_be_bytes());
+        self.0.update(data);
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    fn finish(self) -> digest::Digest {
+        self.0.finish()
+    }
+}
+
+impl Default for HandshakeHash {
+    fn default() -> Self {
+        Self(digest::Context::new(&digest::SHA256))
     }
 }
 
