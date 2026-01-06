@@ -491,7 +491,8 @@ impl<'a> EncodedPacket<'a> {
         // whichever is larger) bytes of a packet.
 
         let block_size = cipher_block_len.max(8);
-        let min_padding = block_size - (buf.len() - start) % block_size;
+        let min_packet_len = (buf.len() - start).next_multiple_of(block_size).max(16);
+        let min_padding = min_packet_len - (buf.len() - start);
         let padding_len = match min_padding < 4 {
             true => min_padding + block_size,
             false => min_padding,
