@@ -1,4 +1,4 @@
-use core::net::SocketAddr;
+use core::{net::SocketAddr, ops::Deref};
 use std::{io, str, sync::Arc};
 
 use aws_lc_rs::{digest, signature::Ed25519KeyPair};
@@ -14,7 +14,7 @@ use key_exchange::KeyExchange;
 mod proto;
 use proto::{read, Decode, Decoded, Encode};
 
-use crate::proto::Packet;
+use crate::{key_exchange::EcdhKeyExchangeInit, proto::Packet};
 
 /// A single SSH connection
 pub struct Connection {
@@ -54,9 +54,12 @@ impl Connection {
             return;
         };
 
-        let future = self.read.packet(&mut self.stream, self.addr);
-        let Ok(ecdh_key_exchange_init) = future.await else {
-            return;
+        let future = self
+            .read
+            .packet::<EcdhKeyExchangeInit<'_>>(&mut self.stream, self.addr);
+        let ecdh_key_exchange_init = match future.await {
+            Ok(packet) => packet.into_inner(),
+            Err(_) => return,
         };
 
         self.write_buf.clear();
@@ -84,11 +87,11 @@ struct ReadState {
 }
 
 impl ReadState {
-    async fn packet<'a, T: TryFrom<Packet<'a>, Error = Error>>(
+    async fn packet<'a, T: TryFrom<Packet<'a>, Error = Error> + 'a>(
         &'a mut self,
         stream: &mut (impl AsyncRead + Unpin),
         addr: SocketAddr,
-    ) -> Result<T, Error> {
+    ) -> Result<Packeted<'a, T>, Error> {
         let (packet, _rest) = match read::<Packet<'_>>(stream, &mut self.buf).await {
             Ok(Decoded {
                 value: packet,
@@ -100,8 +103,9 @@ impl ReadState {
             }
         };
 
+        let payload = packet.payload;
         match T::try_from(packet) {
-            Ok(value) => Ok(value),
+            Ok(decoded) => Ok(Packeted { payload, decoded }),
             Err(error) => {
                 error!(%addr, %error, "failed to parse packet");
                 Err(error)
@@ -115,6 +119,26 @@ impl Default for ReadState {
         Self {
             buf: Vec::with_capacity(16_384),
         }
+    }
+}
+
+struct Packeted<'a, T: 'a> {
+    #[expect(dead_code)]
+    payload: &'a [u8],
+    decoded: T,
+}
+
+impl<'a, T> Packeted<'a, T> {
+    fn into_inner(self) -> T {
+        self.decoded
+    }
+}
+
+impl<T> Deref for Packeted<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.decoded
     }
 }
 
