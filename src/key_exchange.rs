@@ -9,8 +9,11 @@ use aws_lc_rs::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{with_mpint_bytes, Decode, Decoded, Encode, MessageType, OutgoingPacket, Packet},
-    ConnectionContext, Error, HandshakeHash,
+    proto::{
+        with_mpint_bytes, Decode, Decoded, Encode, HandshakeHash, MessageType, OutgoingPacket,
+        Packet,
+    },
+    ConnectionContext, Error,
 };
 
 pub(crate) struct EcdhKeyExchange {
