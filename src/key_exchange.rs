@@ -6,12 +6,11 @@ use aws_lc_rs::{
     rand::{self, SystemRandom},
     signature::KeyPair,
 };
-use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
     proto::{with_mpint_bytes, Decode, Decoded, Encode, MessageType, OutgoingPacket, Packet},
-    Connection, ConnectionContext, Error, HandshakeHash,
+    ConnectionContext, Error, HandshakeHash,
 };
 
 pub(crate) struct EcdhKeyExchange {
@@ -203,22 +202,12 @@ pub(crate) struct KeyExchange {
 }
 
 impl KeyExchange {
-    pub(crate) async fn advance(
+    pub(crate) fn advance<'out>(
         self,
+        peer_key_exchange_init: KeyExchangeInit<'_>,
         exchange: &mut HandshakeHash,
-        conn: &mut Connection,
-    ) -> Result<EcdhKeyExchange, ()> {
-        let future = conn
-            .read
-            .packet::<KeyExchangeInit<'_>>(&mut conn.stream, conn.addr);
-        let (peer_key_exchange_init, rest) = match future.await {
-            Ok(packeted) => packeted.hash(exchange),
-            Err(error) => {
-                warn!(addr = %conn.addr, %error, "failed to read key exchange init");
-                return Err(());
-            }
-        };
-
+        conn: &'out mut ConnectionContext<'out>,
+    ) -> Result<(OutgoingPacket<'out>, EcdhKeyExchange), ()> {
         let key_exchange_init = match KeyExchangeInit::new() {
             Ok(kex_init) => kex_init,
             Err(error) => {
@@ -228,7 +217,7 @@ impl KeyExchange {
         };
 
         conn.write_buf.clear();
-        let builder = Packet::builder(&mut conn.write_buf).with_payload(&key_exchange_init);
+        let builder = Packet::builder(conn.write_buf).with_payload(&key_exchange_init);
 
         if let Ok(kex_init_payload) = builder.payload() {
             exchange.prefixed(kex_init_payload);
@@ -238,11 +227,6 @@ impl KeyExchange {
             error!(addr = %conn.addr, "failed to build key exchange init packet");
             return Err(());
         };
-
-        if let Err(error) = conn.stream.write_all(&packet).await {
-            warn!(addr = %conn.addr, %error, "failed to send version exchange");
-            return Err(());
-        }
 
         let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
             Ok(algorithms) => {
@@ -260,10 +244,12 @@ impl KeyExchange {
             return Err(());
         }
 
-        conn.read.truncate(rest);
-        Ok(EcdhKeyExchange {
-            session_id: self.session_id,
-        })
+        Ok((
+            packet,
+            EcdhKeyExchange {
+                session_id: self.session_id,
+            },
+        ))
     }
 }
 
