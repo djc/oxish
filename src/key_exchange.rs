@@ -200,17 +200,13 @@ impl Encode for TaggedSignature<'_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct KeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
     session_id: Option<digest::Digest>,
 }
 
 impl KeyExchange {
-    pub(crate) fn for_new_session() -> Self {
-        Self { session_id: None }
-    }
-
     pub(crate) async fn advance(
         self,
         exchange: &mut digest::Context,

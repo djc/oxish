@@ -175,7 +175,7 @@ impl VersionExchange {
         }
         conn.read.buf.truncate(rest);
 
-        Ok(KeyExchange::for_new_session())
+        Ok(KeyExchange::default())
     }
 }
 
