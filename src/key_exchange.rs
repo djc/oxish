@@ -265,12 +265,7 @@ impl KeyExchange {
             return Err(());
         }
 
-        if rest > 0 {
-            let start = conn.read.buf.len() - rest;
-            conn.read.buf.copy_within(start.., 0);
-        }
-        conn.read.buf.truncate(rest);
-
+        conn.read.truncate(rest);
         Ok(EcdhKeyExchange {
             session_id: self.session_id,
         })
