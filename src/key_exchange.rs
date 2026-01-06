@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{read, with_mpint_bytes, Decode, Decoded, Encode, MessageType, OutgoingPacket, Packet},
+    proto::{with_mpint_bytes, Decode, Decoded, Encode, MessageType, OutgoingPacket, Packet},
     Connection, ConnectionContext, Error,
 };
 
@@ -212,22 +212,11 @@ impl KeyExchange {
         exchange: &mut digest::Context,
         conn: &mut Connection,
     ) -> Result<EcdhKeyExchange, ()> {
-        let (packet, rest) = match read::<Packet<'_>>(&mut conn.stream, &mut conn.read.buf).await {
-            Ok(Decoded {
-                value: packet,
-                next,
-            }) => (packet, next.len()),
-            Err(error) => {
-                warn!(addr = %conn.addr, %error, "failed to read packet");
-                return Err(());
-            }
-        };
-
-        exchange.update(&(packet.payload.len() as u32).to_be_bytes());
-        exchange.update(packet.payload);
-
-        let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
-            Ok(key_exchange_init) => key_exchange_init,
+        let future = conn
+            .read
+            .packet::<KeyExchangeInit<'_>>(&mut conn.stream, conn.addr);
+        let (peer_key_exchange_init, rest) = match future.await {
+            Ok(packeted) => packeted.hash(exchange),
             Err(error) => {
                 warn!(addr = %conn.addr, %error, "failed to read key exchange init");
                 return Err(());
