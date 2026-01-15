@@ -562,32 +562,32 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 ///
 /// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-struct RawKeySet {
-    client_to_server: RawKeys,
-    server_to_client: RawKeys,
+struct RawKeySet<'a> {
+    client_to_server: RawKeys<'a>,
+    server_to_client: RawKeys<'a>,
 }
 
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-struct RawKeys {
-    initial_iv: digest::Digest,
-    encryption_key: digest::Digest,
-    integrity_key: digest::Digest,
+struct RawKeys<'a> {
+    initial_iv: Key<'a>,
+    encryption_key: Key<'a>,
+    integrity_key: Key<'a>,
 }
 
-impl RawKeys {
-    fn client_to_server(derivation: &KeyDerivation<'_>) -> Self {
+impl<'a> RawKeys<'a> {
+    fn client_to_server(derivation: &KeyDerivation<'a>) -> Self {
         Self {
-            initial_iv: derivation.derive(KeyInput::InitialIvClientToServer),
-            encryption_key: derivation.derive(KeyInput::EncryptionKeyClientToServer),
-            integrity_key: derivation.derive(KeyInput::IntegrityKeyClientToServer),
+            initial_iv: derivation.key(KeyInput::InitialIvClientToServer),
+            encryption_key: derivation.key(KeyInput::EncryptionKeyClientToServer),
+            integrity_key: derivation.key(KeyInput::IntegrityKeyClientToServer),
         }
     }
 
-    fn server_to_client(derivation: &KeyDerivation<'_>) -> Self {
+    fn server_to_client(derivation: &KeyDerivation<'a>) -> Self {
         Self {
-            initial_iv: derivation.derive(KeyInput::InitialIvServerToClient),
-            encryption_key: derivation.derive(KeyInput::EncryptionKeyServerToClient),
-            integrity_key: derivation.derive(KeyInput::IntegrityKeyServerToClient),
+            initial_iv: derivation.key(KeyInput::InitialIvServerToClient),
+            encryption_key: derivation.key(KeyInput::EncryptionKeyServerToClient),
+            integrity_key: derivation.key(KeyInput::IntegrityKeyServerToClient),
         }
     }
 }
@@ -598,17 +598,63 @@ struct KeyDerivation<'a> {
     session_id: &'a digest::Digest,
 }
 
-impl KeyDerivation<'_> {
-    fn derive(&self, input: KeyInput) -> digest::Digest {
-        let mut context = digest::Context::new(&digest::SHA256);
-        with_mpint_bytes(&self.shared_secret, |bytes| context.update(bytes));
-        context.update(self.exchange_hash.as_ref());
-        context.update(&[u8::from(input)]);
+impl<'a> KeyDerivation<'a> {
+    fn key(&self, input: KeyInput) -> Key<'a> {
+        let mut base = digest::Context::new(&digest::SHA256);
+        with_mpint_bytes(&self.shared_secret, |bytes| base.update(bytes));
+        base.update(self.exchange_hash.as_ref());
+
+        Key {
+            base,
+            session_id: self.session_id,
+            input,
+        }
+    }
+}
+
+struct Key<'a> {
+    base: digest::Context,
+    session_id: &'a digest::Digest,
+    input: KeyInput,
+}
+
+#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
+impl Key<'_> {
+    fn derive<const N: usize>(&self) -> [u8; N] {
+        let block_len = digest::SHA256.output_len();
+
+        let mut key = [0; N];
+
+        if block_len < N {
+            key[0..block_len].copy_from_slice(self.derive_first_block().as_ref());
+            let mut i = block_len;
+            while i < 64 {
+                let block = self.derive_block(&key[..i]);
+                key[i..i + block_len].copy_from_slice(block.as_ref());
+                i += block_len;
+            }
+        } else {
+            key[..N].copy_from_slice(&self.derive_first_block().as_ref()[..N]);
+        }
+
+        key
+    }
+
+    fn derive_first_block(&self) -> digest::Digest {
+        let mut context = self.base.clone();
+        context.update(&[u8::from(self.input)]);
         context.update(self.session_id.as_ref());
+        context.finish()
+    }
+
+    fn derive_block(&self, rest: &[u8]) -> digest::Digest {
+        let mut context = self.base.clone();
+        context.update(rest);
         context.finish()
     }
 }
 
+#[derive(Clone, Copy)]
 enum KeyInput {
     InitialIvClientToServer,
     InitialIvServerToClient,
