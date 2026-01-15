@@ -620,41 +620,35 @@ struct Key<'a> {
 
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
 impl Key<'_> {
-    fn derive<const N: usize>(&self) -> [u8; N] {
+    fn derive<const N: usize>(self) -> [u8; N] {
         let block_len = digest::SHA256.output_len();
 
         let mut key = [0; N];
 
         if block_len < N {
-            key[0..block_len].copy_from_slice(self.derive_first_block().as_ref());
+            let mut context = self.base.clone();
+            context.update(&[u8::from(self.input)]);
+            context.update(self.session_id.as_ref());
+            key[0..block_len].copy_from_slice(context.finish().as_ref());
+
             let mut i = block_len;
             while i < 64 {
-                let block = self.derive_block(&key[..i]);
-                key[i..i + block_len].copy_from_slice(block.as_ref());
+                let mut context = self.base.clone();
+                context.update(&key[..i]);
+                key[i..i + block_len].copy_from_slice(context.finish().as_ref());
                 i += block_len;
             }
         } else {
-            key[..N].copy_from_slice(&self.derive_first_block().as_ref()[..N]);
+            let mut context = self.base;
+            context.update(&[u8::from(self.input)]);
+            context.update(self.session_id.as_ref());
+            key[..N].copy_from_slice(&context.finish().as_ref()[..N]);
         }
 
         key
     }
-
-    fn derive_first_block(&self) -> digest::Digest {
-        let mut context = self.base.clone();
-        context.update(&[u8::from(self.input)]);
-        context.update(self.session_id.as_ref());
-        context.finish()
-    }
-
-    fn derive_block(&self, rest: &[u8]) -> digest::Digest {
-        let mut context = self.base.clone();
-        context.update(rest);
-        context.finish()
-    }
 }
 
-#[derive(Clone, Copy)]
 enum KeyInput {
     InitialIvClientToServer,
     InitialIvServerToClient,
