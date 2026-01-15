@@ -1,4 +1,4 @@
-use std::str;
+use std::{str, sync::Arc};
 
 use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
@@ -123,12 +123,12 @@ impl EcdhKeyExchange {
         // FIXME wait for and send newkey packet
 
         // The first exchange hash is used as session id.
-        let session_id = self.session_id.as_ref().unwrap_or(&exchange_hash);
         let derivation = KeyDerivation {
             shared_secret,
             exchange_hash,
-            session_id,
+            session_id: Arc::new(self.session_id.unwrap_or(exchange_hash)),
         };
+
         #[expect(clippy::unnecessary_operation)]
         RawKeySet {
             client_to_server: RawKeys::client_to_server(&derivation),
@@ -562,20 +562,20 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 ///
 /// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-struct RawKeySet<'a> {
-    client_to_server: RawKeys<'a>,
-    server_to_client: RawKeys<'a>,
+struct RawKeySet {
+    client_to_server: RawKeys,
+    server_to_client: RawKeys,
 }
 
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-struct RawKeys<'a> {
-    initial_iv: Key<'a>,
-    encryption_key: Key<'a>,
-    integrity_key: Key<'a>,
+struct RawKeys {
+    initial_iv: Key,
+    encryption_key: Key,
+    integrity_key: Key,
 }
 
-impl<'a> RawKeys<'a> {
-    fn client_to_server(derivation: &KeyDerivation<'a>) -> Self {
+impl RawKeys {
+    fn client_to_server(derivation: &KeyDerivation) -> Self {
         Self {
             initial_iv: derivation.key(KeyInput::InitialIvClientToServer),
             encryption_key: derivation.key(KeyInput::EncryptionKeyClientToServer),
@@ -583,7 +583,7 @@ impl<'a> RawKeys<'a> {
         }
     }
 
-    fn server_to_client(derivation: &KeyDerivation<'a>) -> Self {
+    fn server_to_client(derivation: &KeyDerivation) -> Self {
         Self {
             initial_iv: derivation.key(KeyInput::InitialIvServerToClient),
             encryption_key: derivation.key(KeyInput::EncryptionKeyServerToClient),
@@ -592,34 +592,34 @@ impl<'a> RawKeys<'a> {
     }
 }
 
-struct KeyDerivation<'a> {
+struct KeyDerivation {
     shared_secret: Vec<u8>,
     exchange_hash: digest::Digest,
-    session_id: &'a digest::Digest,
+    session_id: Arc<digest::Digest>,
 }
 
-impl<'a> KeyDerivation<'a> {
-    fn key(&self, input: KeyInput) -> Key<'a> {
+impl KeyDerivation {
+    fn key(&self, input: KeyInput) -> Key {
         let mut base = digest::Context::new(&digest::SHA256);
         with_mpint_bytes(&self.shared_secret, |bytes| base.update(bytes));
         base.update(self.exchange_hash.as_ref());
 
         Key {
             base,
-            session_id: self.session_id,
+            session_id: self.session_id.clone(),
             input,
         }
     }
 }
 
-struct Key<'a> {
+struct Key {
     base: digest::Context,
-    session_id: &'a digest::Digest,
+    session_id: Arc<digest::Digest>,
     input: KeyInput,
 }
 
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
-impl Key<'_> {
+impl Key {
     fn derive<const N: usize>(self) -> [u8; N] {
         let block_len = digest::SHA256.output_len();
 
@@ -628,7 +628,7 @@ impl Key<'_> {
         if block_len < N {
             let mut context = self.base.clone();
             context.update(&[u8::from(self.input)]);
-            context.update(self.session_id.as_ref());
+            context.update((*self.session_id).as_ref());
             key[0..block_len].copy_from_slice(context.finish().as_ref());
 
             let mut i = block_len;
@@ -641,7 +641,7 @@ impl Key<'_> {
         } else {
             let mut context = self.base;
             context.update(&[u8::from(self.input)]);
-            context.update(self.session_id.as_ref());
+            context.update((*self.session_id).as_ref());
             key[..N].copy_from_slice(&context.finish().as_ref()[..N]);
         }
 
