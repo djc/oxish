@@ -91,8 +91,6 @@ impl EcdhKeyExchange {
             return Err(());
         };
 
-        // FIXME wait for and send newkey packet
-
         // The first exchange hash is used as session id.
         let derivation = KeyDerivation {
             shared_secret,
@@ -446,6 +444,35 @@ impl Encode for KeyExchangeInit<'_> {
     }
 }
 
+pub(crate) struct NewKeys;
+
+impl<'a> TryFrom<Packet<'a>> for NewKeys {
+    type Error = Error;
+
+    fn try_from(packet: Packet<'a>) -> Result<Self, Self::Error> {
+        let Decoded {
+            value: r#type,
+            next,
+        } = MessageType::decode(packet.payload)?;
+        if r#type != MessageType::NewKeys {
+            return Err(Error::InvalidPacket("unexpected message type"));
+        }
+
+        if !next.is_empty() {
+            debug!(bytes = ?next, "unexpected trailing bytes");
+            return Err(Error::InvalidPacket("unexpected trailing bytes"));
+        }
+
+        Ok(Self)
+    }
+}
+
+impl Encode for NewKeys {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::NewKeys.encode(buf);
+    }
+}
+
 impl<T: Encode> Encode for [T] {
     fn encode(&self, buf: &mut Vec<u8>) {
         let offset = buf.len();
@@ -500,8 +527,8 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 /// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
 #[expect(dead_code)] // FIXME implement encryption/decryption and MAC
 pub(crate) struct RawKeySet {
-    client_to_server: RawKeys,
-    server_to_client: RawKeys,
+    pub(crate) client_to_server: RawKeys,
+    pub(crate) server_to_client: RawKeys,
 }
 
 pub(crate) struct RawKeys {
