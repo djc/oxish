@@ -168,6 +168,17 @@ impl ReadState {
             return Err(Error::Incomplete(Some(payload_len - next.len())));
         };
 
+        let Decoded {
+            value: message_type,
+            next: payload,
+        } = MessageType::decode(payload).map_err(|e| {
+            if matches!(e, Error::Incomplete(_)) {
+                Error::InvalidPacket("Packet without message type")
+            } else {
+                e
+            }
+        })?;
+
         let Some(next) = next.get(payload_len..) else {
             return Err(Error::Unreachable(
                 "unable to extract rest after fixed-length slice",
@@ -182,6 +193,7 @@ impl ReadState {
 
         Ok(IncomingPacket {
             sequence_number,
+            message_type,
             payload,
         })
     }
@@ -468,10 +480,13 @@ impl From<MessageType> for u8 {
 pub(crate) struct IncomingPacket<'a> {
     #[expect(unused)]
     pub(crate) sequence_number: u32,
+    pub(crate) message_type: MessageType,
     pub(crate) payload: &'a [u8],
 }
 
 pub(crate) struct OutgoingPacket<'a> {
+    #[expect(unused)]
+    pub(crate) message_type: MessageType,
     #[expect(unused)]
     pub(crate) payload: &'a [u8],
 }
