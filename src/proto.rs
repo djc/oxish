@@ -41,7 +41,9 @@ impl ReadState {
     ) -> Result<IncomingPacket<'a>, Error> {
         loop {
             match self.poll_packet()? {
-                Completion::Complete(packet_length) => return self.decode_packet(packet_length),
+                Completion::Complete((sequence_number, packet_length)) => {
+                    return self.decode_packet(sequence_number, packet_length)
+                }
                 Completion::Incomplete(_amount) => {
                     let _ = self.buffer(stream).await?;
                     continue;
@@ -51,7 +53,7 @@ impl ReadState {
     }
 
     // This and decode_packet are split because of a borrowck limitation
-    pub(crate) fn poll_packet(&mut self) -> Result<Completion<PacketLength>, Error> {
+    pub(crate) fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, Error> {
         // Compact the internal buffer
         if self.last_length > 0 {
             self.buf.copy_within(self.last_length.., 0);
@@ -145,13 +147,15 @@ impl ReadState {
 
         // Note: this needs to be done AFTER the IO to ensure
         // this async function is cancel-safe
+        let sequence_number = self.sequence_number;
         self.sequence_number = self.sequence_number.wrapping_add(1);
         self.last_length = 4 + packet_length.inner as usize + mac_len;
-        Ok(Completion::Complete(packet_length))
+        Ok(Completion::Complete((sequence_number, packet_length)))
     }
 
     pub(crate) fn decode_packet<'a>(
         &'a self,
+        sequence_number: u32,
         packet_length: PacketLength,
     ) -> Result<IncomingPacket<'a>, Error> {
         let Decoded {
@@ -176,7 +180,10 @@ impl ReadState {
             )));
         };
 
-        Ok(IncomingPacket { payload })
+        Ok(IncomingPacket {
+            sequence_number,
+            payload,
+        })
     }
 
     pub(crate) async fn buffer<'a>(
@@ -459,6 +466,8 @@ impl From<MessageType> for u8 {
 }
 
 pub(crate) struct IncomingPacket<'a> {
+    #[expect(unused)]
+    pub(crate) sequence_number: u32,
     pub(crate) payload: &'a [u8],
 }
 
