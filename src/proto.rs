@@ -538,7 +538,6 @@ pub(crate) struct IncomingPacket<'a> {
 }
 
 impl IncomingPacket<'_> {
-    #[expect(unused)]
     pub(crate) fn unimplemented(self) -> OutgoingPacket<'static> {
         OutgoingPacket {
             message_type: MessageType::Unimplemented,
