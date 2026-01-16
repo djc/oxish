@@ -191,7 +191,6 @@ pub(crate) struct AesCtrReadKeys {
 }
 
 impl AesCtrReadKeys {
-    #[expect(dead_code)]
     pub(crate) fn new(keys: RawKeys) -> Self {
         Self {
             decrypting_key: StreamingDecryptingKey::ctr(

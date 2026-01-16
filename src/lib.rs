@@ -9,11 +9,11 @@ use tracing::{debug, error, warn};
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{Completion, Decoded, Encode, ReadState};
+use proto::{Completion, Decoded, Encode, Packet, ReadState};
 
 use crate::{
-    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit},
-    proto::HandshakeHash,
+    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys},
+    proto::{AesCtrReadKeys, HandshakeHash},
 };
 
 /// A single SSH connection
@@ -100,7 +100,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             write_buf: &mut self.write_buf,
         };
 
-        let Ok((packet, _keys)) = state.advance(ecdh_key_exchange_init, exchange, &mut cx) else {
+        let Ok((packet, keys)) = state.advance(ecdh_key_exchange_init, exchange, &mut cx) else {
             return;
         };
 
@@ -108,6 +108,35 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
             return;
         }
+
+        let packet = match self.read.packet(&mut self.stream).await {
+            Ok(packet) => packet,
+            Err(error) => {
+                warn!(addr = %self.addr, %error, "failed to read packet");
+                return;
+            }
+        };
+        let Ok(NewKeys) = NewKeys::try_from(packet) else {
+            return;
+        };
+
+        self.write_buf.clear();
+        let Ok(packet) = Packet::builder(&mut self.write_buf)
+            .with_payload(&NewKeys)
+            .without_mac()
+        else {
+            error!(addr = %self.addr, "failed to build newkeys packet");
+            return;
+        };
+
+        if let Err(error) = self.stream.write_all(&packet).await {
+            warn!(addr = %self.addr, %error, "failed to send newkeys packet");
+            return;
+        }
+
+        // Cipher and MAC algorithms are negotiated during key exchange.
+        // Currently this hard codes AES-128-CTR and HMAC-SHA256.
+        self.read.decryption_key = Some(AesCtrReadKeys::new(keys.client_to_server));
 
         todo!();
     }
