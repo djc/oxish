@@ -57,7 +57,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 return;
             }
         };
-        exchange.prefixed(packet.payload);
+        exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
+        exchange.update(&[u8::from(packet.message_type)]);
+        exchange.update(packet.payload);
         let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {

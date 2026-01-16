@@ -109,18 +109,14 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
     type Error = Error;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Error> {
-        let Decoded {
-            value: r#type,
-            next,
-        } = MessageType::decode(packet.payload)?;
-        if r#type != MessageType::KeyExchangeEcdhInit {
+        if packet.message_type != MessageType::KeyExchangeEcdhInit {
             return Err(Error::InvalidPacket("unexpected message type"));
         }
 
         let Decoded {
             value: client_ephemeral_public_key,
             next,
-        } = <&[u8]>::decode(next)?;
+        } = <&[u8]>::decode(packet.payload)?;
 
         if !next.is_empty() {
             debug!(bytes = ?next, "unexpected trailing bytes");
@@ -303,18 +299,14 @@ impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
     type Error = Error;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        let Decoded {
-            value: r#type,
-            next,
-        } = MessageType::decode(packet.payload)?;
-        if r#type != MessageType::KeyExchangeInit {
+        if packet.message_type != MessageType::KeyExchangeInit {
             return Err(Error::InvalidPacket("unexpected message type"));
         }
 
         let Decoded {
             value: cookie,
             next,
-        } = <[u8; 16]>::decode(next)?;
+        } = <[u8; 16]>::decode(packet.payload)?;
 
         let Decoded {
             value: key_exchange_algorithms,
@@ -426,16 +418,12 @@ impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
     type Error = Error;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        let Decoded {
-            value: r#type,
-            next,
-        } = MessageType::decode(packet.payload)?;
-        if r#type != MessageType::NewKeys {
+        if packet.message_type != MessageType::NewKeys {
             return Err(Error::InvalidPacket("unexpected message type"));
         }
 
-        if !next.is_empty() {
-            debug!(bytes = ?next, "unexpected trailing bytes");
+        if !packet.payload.is_empty() {
+            debug!(bytes = ?packet.payload, "unexpected trailing bytes");
             return Err(Error::InvalidPacket("unexpected trailing bytes"));
         }
 
