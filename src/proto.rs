@@ -421,6 +421,10 @@ pub(crate) enum MessageType {
     NewKeys,
     KeyExchangeEcdhInit,
     KeyExchangeEcdhReply,
+    UserAuthRequest,
+    UserAuthFailure,
+    UserAuthSuccess,
+    UserAuthBanner,
     Unknown(u8),
 }
 
@@ -453,6 +457,10 @@ impl From<u8> for MessageType {
             21 => Self::NewKeys,
             30 => Self::KeyExchangeEcdhInit,
             31 => Self::KeyExchangeEcdhReply,
+            50 => Self::UserAuthRequest,
+            51 => Self::UserAuthFailure,
+            52 => Self::UserAuthSuccess,
+            53 => Self::UserAuthBanner,
             value => Self::Unknown(value),
         }
     }
@@ -471,6 +479,10 @@ impl From<MessageType> for u8 {
             MessageType::NewKeys => 21,
             MessageType::KeyExchangeEcdhInit => 30,
             MessageType::KeyExchangeEcdhReply => 31,
+            MessageType::UserAuthRequest => 50,
+            MessageType::UserAuthFailure => 51,
+            MessageType::UserAuthSuccess => 52,
+            MessageType::UserAuthBanner => 53,
             MessageType::Unknown(value) => value,
         }
     }
