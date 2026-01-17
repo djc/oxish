@@ -9,7 +9,7 @@ use tracing::{debug, error, warn};
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{read, Decode, Decoded, Encode, ReadState};
+use proto::{Decode, Decoded, Encode, ReadState};
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit},
@@ -118,17 +118,20 @@ impl VersionExchange {
         exchange: &mut HandshakeHash,
         conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> Result<KeyExchange, ()> {
-        let (ident, rest) =
-            match read::<Identification<'_>>(&mut conn.stream, &mut conn.read.buf).await {
-                Ok(Decoded { value: ident, next }) => {
-                    debug!(addr = %conn.addr, ?ident, "received identification");
-                    (ident, next.len())
-                }
-                Err(error) => {
-                    warn!(addr = %conn.addr, %error, "failed to read version exchange");
-                    return Err(());
-                }
-            };
+        let (ident, rest) = match conn
+            .read
+            .buffer::<Identification<'_>>(&mut conn.stream)
+            .await
+        {
+            Ok(Decoded { value: ident, next }) => {
+                debug!(addr = %conn.addr, ?ident, "received identification");
+                (ident, next.len())
+            }
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read version exchange");
+                return Err(());
+            }
+        };
 
         if ident.protocol != PROTOCOL {
             warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
