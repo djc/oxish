@@ -77,7 +77,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         }
 
-        self.read.truncate(rest);
+        self.read.used = self.read.buf.len() - rest;
 
         let future = self
             .read
@@ -156,7 +156,7 @@ impl VersionExchange {
             exchange.prefixed(v_s);
         }
 
-        conn.read.truncate(rest);
+        conn.read.used = conn.read.buf.len() - rest;
         Ok(KeyExchange::default())
     }
 }
