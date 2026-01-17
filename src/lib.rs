@@ -3,7 +3,7 @@ use std::{io, str, sync::Arc};
 
 use aws_lc_rs::signature::Ed25519KeyPair;
 use thiserror::Error;
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, warn};
 
 mod key_exchange;
@@ -17,22 +17,17 @@ use crate::{
 };
 
 /// A single SSH connection
-pub struct Connection {
-    stream: TcpStream,
+pub struct Connection<T> {
+    stream: T,
     addr: SocketAddr,
     host_key: Arc<Ed25519KeyPair>,
     read: ReadState,
     write_buf: Vec<u8>,
 }
 
-impl Connection {
+impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Create a new [`Connection`]
-    pub fn new(
-        stream: TcpStream,
-        addr: SocketAddr,
-        host_key: Arc<Ed25519KeyPair>,
-    ) -> anyhow::Result<Self> {
-        stream.set_nodelay(true)?;
+    pub fn new(stream: T, addr: SocketAddr, host_key: Arc<Ed25519KeyPair>) -> anyhow::Result<Self> {
         Ok(Self {
             stream,
             addr,
@@ -121,7 +116,7 @@ impl VersionExchange {
     async fn advance(
         &self,
         exchange: &mut HandshakeHash,
-        conn: &mut Connection,
+        conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> Result<KeyExchange, ()> {
         let (ident, rest) =
             match read::<Identification<'_>>(&mut conn.stream, &mut conn.read.buf).await {
