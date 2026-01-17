@@ -16,7 +16,8 @@ impl ReadState {
         stream: &mut (impl AsyncRead + Unpin),
         addr: SocketAddr,
     ) -> Result<Packeted<'a, T>, Error> {
-        let (packet, rest) = match self.buffer::<Packet<'_>>(stream).await {
+        let bytes = self.buffer(stream).await?;
+        let (packet, rest) = match Packet::decode(bytes) {
             Ok(Decoded {
                 value: packet,
                 next,
@@ -41,13 +42,13 @@ impl ReadState {
         }
     }
 
-    pub(crate) async fn buffer<'a, T: Decode<'a>>(
+    pub(crate) async fn buffer<'a>(
         &'a mut self,
         reader: &mut (impl AsyncRead + Unpin),
-    ) -> Result<Decoded<'a, T>, Error> {
+    ) -> Result<&'a [u8], Error> {
         let read = reader.read_buf(&mut self.buf).await?;
         debug!(bytes = read, "read from stream");
-        T::decode(&self.buf)
+        Ok(&self.buf)
     }
 
     pub(crate) fn truncate(&mut self, rest: usize) {
