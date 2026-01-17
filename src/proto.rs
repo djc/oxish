@@ -8,6 +8,7 @@ use crate::Error;
 
 pub(crate) struct ReadState {
     pub(crate) buf: Vec<u8>,
+    pub(crate) used: usize,
 }
 
 impl ReadState {
@@ -46,17 +47,15 @@ impl ReadState {
         &'a mut self,
         reader: &mut (impl AsyncRead + Unpin),
     ) -> Result<&'a [u8], Error> {
+        if self.used > 0 {
+            let next = self.buf.len() - self.used;
+            self.buf.copy_within(self.used.., 0);
+            self.buf.truncate(next);
+        }
+
         let read = reader.read_buf(&mut self.buf).await?;
         debug!(bytes = read, "read from stream");
         Ok(&self.buf)
-    }
-
-    pub(crate) fn truncate(&mut self, rest: usize) {
-        if rest > 0 {
-            let start = self.buf.len() - rest;
-            self.buf.copy_within(start.., 0);
-        }
-        self.buf.truncate(rest);
     }
 }
 
@@ -64,6 +63,7 @@ impl Default for ReadState {
     fn default() -> Self {
         Self {
             buf: Vec::with_capacity(16_384),
+            used: 0,
         }
     }
 }
