@@ -58,6 +58,10 @@ async fn main() -> anyhow::Result<()> {
         match listener.accept().await {
             Ok((stream, addr)) => {
                 debug!(%addr, "accepted connection");
+                if let Err(err) = stream.set_nodelay(true) {
+                    warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
+                }
+
                 let conn = Connection::new(stream, addr, host_key.clone())?;
                 tokio::spawn(conn.run());
             }
