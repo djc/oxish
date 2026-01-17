@@ -118,11 +118,15 @@ impl VersionExchange {
         exchange: &mut HandshakeHash,
         conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> Result<KeyExchange, ()> {
-        let (ident, rest) = match conn
-            .read
-            .buffer::<Identification<'_>>(&mut conn.stream)
-            .await
-        {
+        let bytes = match conn.read.buffer(&mut conn.stream).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read version exchange");
+                return Err(());
+            }
+        };
+
+        let (ident, rest) = match Identification::decode(bytes) {
             Ok(Decoded { value: ident, next }) => {
                 debug!(addr = %conn.addr, ?ident, "received identification");
                 (ident, next.len())
