@@ -41,8 +41,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     pub async fn run(mut self) {
         let mut exchange = HandshakeHash::default();
         let state = VersionExchange::default();
-        let Ok(state) = state.advance(&mut exchange, &mut self).await else {
-            return;
+        let state = match state.advance(&mut exchange, &mut self).await {
+            Ok(state) => state,
+            Err(error) => {
+                error!(addr = %self.addr, %error, "failed to complete version exchange");
+                return;
+            }
         };
 
         let future = self
@@ -117,31 +121,17 @@ impl VersionExchange {
         &self,
         exchange: &mut HandshakeHash,
         conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
-    ) -> Result<KeyExchange, ()> {
-        let bytes = match conn.read.buffer(&mut conn.stream).await {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                warn!(addr = %conn.addr, %error, "failed to read version exchange");
-                return Err(());
-            }
-        };
-
-        let (ident, rest) = match Identification::decode(bytes) {
-            Ok(Decoded { value: ident, next }) => {
-                debug!(addr = %conn.addr, ?ident, "received identification");
-                (ident, next.len())
-            }
-            Err(error) => {
-                warn!(addr = %conn.addr, %error, "failed to read version exchange");
-                return Err(());
-            }
-        };
+    ) -> Result<KeyExchange, Error> {
+        let bytes = conn.read.buffer(&mut conn.stream).await?;
+        let Decoded { value: ident, next } = Identification::decode(bytes)?;
+        debug!(addr = %conn.addr, ?ident, "received identification");
 
         if ident.protocol != PROTOCOL {
             warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
-            return Err(());
+            return Err(IdentificationError::UnsupportedVersion(ident.protocol.to_owned()).into());
         }
 
+        let rest = next.len();
         let v_c_len = conn.read.buf.len() - rest - 2;
         if let Some(v_c) = conn.read.buf.get(..v_c_len) {
             exchange.prefixed(v_c);
@@ -151,7 +141,7 @@ impl VersionExchange {
         ident.encode(&mut conn.write_buf);
         if let Err(error) = conn.stream.write_all(&conn.write_buf).await {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
-            return Err(());
+            return Err(error.into());
         }
 
         let v_s_len = conn.write_buf.len() - 2;
@@ -262,6 +252,8 @@ enum IdentificationError {
     NoVersion,
     #[error("Identification too long")]
     TooLong,
+    #[error("Unsupported protocol version")]
+    UnsupportedVersion(String),
 }
 
 const PROTOCOL: &str = "2.0";
