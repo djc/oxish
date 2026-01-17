@@ -122,10 +122,17 @@ impl VersionExchange {
         exchange: &mut HandshakeHash,
         conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> Result<KeyExchange, Error> {
-        let bytes = conn.read.buffer(&mut conn.stream).await?;
-        let Decoded { value: ident, next } = Identification::decode(bytes)?;
-        debug!(addr = %conn.addr, ?ident, "received identification");
+        // TODO: enforce timeout if this is taking too long
+        let Decoded { value: ident, next } = loop {
+            let bytes = conn.read.buffer(&mut conn.stream).await?;
+            match Identification::decode(bytes) {
+                Ok(decoded) => break decoded,
+                Err(Error::Incomplete(_)) => continue,
+                Err(error) => return Err(error),
+            }
+        };
 
+        debug!(addr = %conn.addr, ?ident, "received identification");
         if ident.protocol != PROTOCOL {
             warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
             return Err(IdentificationError::UnsupportedVersion(ident.protocol.to_owned()).into());
