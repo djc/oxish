@@ -185,7 +185,9 @@ impl<'a> Decode<'a> for Identification<'a> {
         };
 
         let Some((message, next)) = message.split_once("\r\n") else {
-            return Err(match message.len() > 256 {
+            // The maximum length is 255 bytes including CRLF. message excludes
+            // the CRLF, so subtract 2.
+            return Err(match message.len() > 255 - 2 {
                 true => IdentificationError::TooLong.into(),
                 false => Error::Incomplete(None),
             });
