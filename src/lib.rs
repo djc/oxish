@@ -9,7 +9,7 @@ use tracing::{debug, error, warn};
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{Completion, Decoded, Encode, Packet, ReadState};
+use proto::{Completion, Decoded, Encode, OutgoingPacket, ReadState};
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys},
@@ -77,7 +77,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         };
 
-        if let Err(error) = self.stream.write_all(&packet).await {
+        if let Err(error) = self.stream.write_all(packet.without_mac()).await {
             error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
             return;
         }
@@ -104,7 +104,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         };
 
-        if let Err(error) = self.stream.write_all(&packet).await {
+        if let Err(error) = self.stream.write_all(packet.without_mac()).await {
             error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
             return;
         }
@@ -121,15 +121,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
 
         self.write_buf.clear();
-        let Ok(packet) = Packet::builder(&mut self.write_buf)
-            .with_payload(&NewKeys)
-            .without_mac()
-        else {
+        let Ok(packet) = OutgoingPacket::new(&mut self.write_buf, &NewKeys) else {
             error!(addr = %self.addr, "failed to build newkeys packet");
             return;
         };
 
-        if let Err(error) = self.stream.write_all(&packet).await {
+        if let Err(error) = self.stream.write_all(packet.without_mac()).await {
             warn!(addr = %self.addr, %error, "failed to send newkeys packet");
             return;
         }

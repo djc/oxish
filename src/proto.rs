@@ -1,4 +1,4 @@
-use core::{iter, ops::Deref};
+use core::iter;
 use std::io;
 
 use aws_lc_rs::{
@@ -322,42 +322,22 @@ pub(crate) struct Packet<'a> {
     pub(crate) payload: &'a [u8],
 }
 
-impl Packet<'_> {
-    pub(crate) fn builder(buf: &mut Vec<u8>) -> PacketBuilder<'_> {
+#[must_use]
+pub(crate) struct OutgoingPacket<'a> {
+    packet: &'a [u8],
+    payload: &'a [u8],
+}
+
+impl<'a> OutgoingPacket<'a> {
+    pub(crate) fn new(buf: &'a mut Vec<u8>, payload: &impl Encode) -> Result<Self, Error> {
         let start = buf.len();
+
         buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
         buf.push(0); // padding_length
-        PacketBuilder { buf, start }
-    }
-}
 
-pub(crate) struct PacketBuilder<'a> {
-    buf: &'a mut Vec<u8>,
-    start: usize,
-}
-
-impl<'a> PacketBuilder<'a> {
-    pub(crate) fn with_payload(self, payload: &impl Encode) -> PacketBuilderWithPayload<'a> {
-        let Self { buf, start } = self;
+        let payload_start = buf.len();
         payload.encode(buf);
-        PacketBuilderWithPayload { buf, start }
-    }
-}
-
-pub(crate) struct PacketBuilderWithPayload<'a> {
-    buf: &'a mut Vec<u8>,
-    start: usize,
-}
-
-impl<'a> PacketBuilderWithPayload<'a> {
-    pub(crate) fn payload(&self) -> Result<&[u8], Error> {
-        self.buf
-            .get(self.start + 5..)
-            .ok_or(Error::Unreachable("unable to extract packet"))
-    }
-
-    pub(crate) fn without_mac(self) -> Result<OutgoingPacket<'a>, Error> {
-        let Self { buf, start } = self;
+        let payload_range = payload_start..buf.len();
 
         // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
         //
@@ -400,21 +380,18 @@ impl<'a> PacketBuilderWithPayload<'a> {
             packet_length_dst.copy_from_slice(&packet_len.to_be_bytes());
         }
 
-        match buf.get(start..) {
-            Some(packet) => Ok(OutgoingPacket(packet)),
-            None => Err(Error::Unreachable("unable to extract packet")),
-        }
+        Ok(OutgoingPacket {
+            packet: &buf[start..],
+            payload: &buf[payload_range],
+        })
     }
-}
 
-#[must_use]
-pub(crate) struct OutgoingPacket<'a>(&'a [u8]);
+    pub(crate) fn payload(&self) -> &[u8] {
+        self.payload
+    }
 
-impl Deref for OutgoingPacket<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.0
+    pub(crate) fn without_mac(&self) -> &[u8] {
+        self.packet
     }
 }
 
