@@ -1,11 +1,14 @@
+use core::future;
 use core::iter;
+use core::pin::Pin;
+use core::task::{ready, Context, Poll};
 use std::io;
 
 use aws_lc_rs::{
-    cipher::{self, StreamingDecryptingKey, UnboundCipherKey},
+    cipher::{self, StreamingDecryptingKey, StreamingEncryptingKey, UnboundCipherKey},
     constant_time, digest, hmac, rand,
 };
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::debug;
 
 use crate::{key_exchange::RawKeys, Error};
@@ -234,6 +237,132 @@ pub(crate) enum Completion<T> {
     Incomplete(Option<usize>),
 }
 
+pub(crate) struct WriteState {
+    /// Buffer for encoded but unencrypted packets
+    buf: Vec<u8>,
+
+    /// Buffer with encrypted data ready to be sent to the transport stream
+    ///
+    /// aws-lc-rs does not support in-place encryption for AES-CTR.
+    encrypted_buf: Vec<u8>,
+
+    /// The amount of bytes at the start of `encrypted_buf`` that have already
+    /// been sent to the transport stream
+    written: usize,
+
+    sequence_number: u32,
+    pub(crate) keys: Option<AesCtrWriteKeys>,
+}
+
+impl WriteState {
+    pub(crate) async fn write_packet(
+        &mut self,
+        stream: &mut (impl AsyncWrite + Unpin),
+        payload: &impl Encode,
+        exchange_hash: Option<&mut HandshakeHash>,
+    ) -> Result<(), Error> {
+        self.handle_packet(payload, exchange_hash)?;
+
+        future::poll_fn(|cx| self.poll_write_to(cx, stream)).await?;
+
+        Ok(())
+    }
+
+    fn handle_packet(
+        &mut self,
+        payload: &impl Encode,
+        exchange_hash: Option<&mut HandshakeHash>,
+    ) -> Result<(), Error> {
+        self.buf.clear();
+
+        let sequence_number = self.sequence_number;
+        self.sequence_number = self.sequence_number.wrapping_add(1);
+
+        let pending_length = self.encrypted_buf.len();
+
+        let Some(keys) = &mut self.keys else {
+            let packet = OutgoingPacket::new(&mut self.encrypted_buf, payload)?;
+            if let Some(exchange_hash) = exchange_hash {
+                exchange_hash.prefixed(packet.payload());
+            }
+            return Ok(());
+        };
+
+        let block_len = keys.encryption.algorithm().block_len();
+
+        let packet = OutgoingPacket::new(&mut self.buf, payload)?;
+        if let Some(exchange_hash) = exchange_hash {
+            exchange_hash.prefixed(packet.payload());
+        }
+        let data = packet.without_mac();
+
+        self.encrypted_buf
+            .resize(pending_length + data.len() + block_len, 0);
+        let update = keys
+            .encryption
+            .update(data, &mut self.encrypted_buf[pending_length..])
+            .unwrap();
+        assert_eq!(update.remainder().len(), block_len);
+        self.encrypted_buf.truncate(pending_length + data.len());
+
+        let mut hmac_ctx = hmac::Context::with_key(&keys.mac);
+        hmac_ctx.update(&sequence_number.to_be_bytes());
+        hmac_ctx.update(data);
+        let mac = hmac_ctx.sign();
+        self.encrypted_buf.extend_from_slice(mac.as_ref());
+
+        Ok(())
+    }
+
+    pub(crate) fn poll_write_to(
+        &mut self,
+        cx: &mut Context<'_>,
+        stream: &mut (impl AsyncWrite + Unpin),
+    ) -> Poll<Result<(), Error>> {
+        self.written +=
+            ready!(Pin::new(stream).poll_write(cx, &self.encrypted_buf[self.written..]))?;
+
+        if self.written == self.encrypted_buf.len() {
+            self.encrypted_buf.clear();
+            self.written = 0;
+        }
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Default for WriteState {
+    fn default() -> Self {
+        Self {
+            buf: Vec::with_capacity(16_384),
+            encrypted_buf: Vec::with_capacity(16_384),
+            written: 0,
+            sequence_number: 0,
+            keys: None,
+        }
+    }
+}
+
+/// Encryption and HMAC key for AES-128-CTR + HMAC-SHA256
+pub(crate) struct AesCtrWriteKeys {
+    encryption: StreamingEncryptingKey,
+    mac: hmac::Key,
+}
+
+impl AesCtrWriteKeys {
+    pub(crate) fn new(keys: RawKeys) -> Self {
+        Self {
+            encryption: StreamingEncryptingKey::less_safe_ctr(
+                UnboundCipherKey::new(&cipher::AES_128, &keys.encryption_key.derive::<16>())
+                    .unwrap(),
+                cipher::EncryptionContext::Iv128(keys.initial_iv.derive::<16>().into()),
+            )
+            .unwrap(),
+            mac: hmac::Key::new(hmac::HMAC_SHA256, &keys.integrity_key.derive::<32>()),
+        }
+    }
+}
+
 pub(crate) struct HandshakeHash(digest::Context);
 
 impl HandshakeHash {
@@ -329,7 +458,7 @@ pub(crate) struct OutgoingPacket<'a> {
 }
 
 impl<'a> OutgoingPacket<'a> {
-    pub(crate) fn new(buf: &'a mut Vec<u8>, payload: &impl Encode) -> Result<Self, Error> {
+    fn new(buf: &'a mut Vec<u8>, payload: &impl Encode) -> Result<Self, Error> {
         let start = buf.len();
 
         buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
@@ -373,8 +502,6 @@ impl<'a> OutgoingPacket<'a> {
             }
         }
 
-        buf.extend_from_slice(&[]); // mac
-
         let packet_len = (buf.len() - start - 4) as u32;
         if let Some(packet_length_dst) = buf.get_mut(start..start + 4) {
             packet_length_dst.copy_from_slice(&packet_len.to_be_bytes());
@@ -386,11 +513,11 @@ impl<'a> OutgoingPacket<'a> {
         })
     }
 
-    pub(crate) fn payload(&self) -> &[u8] {
+    fn payload(&self) -> &[u8] {
         self.payload
     }
 
-    pub(crate) fn without_mac(&self) -> &[u8] {
+    fn without_mac(&self) -> &[u8] {
         self.packet
     }
 }

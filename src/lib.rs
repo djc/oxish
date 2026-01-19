@@ -9,7 +9,7 @@ use tracing::{debug, error, warn};
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{Completion, Decoded, Encode, OutgoingPacket, ReadState};
+use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteState};
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys},
@@ -22,7 +22,7 @@ pub struct Connection<T> {
     addr: SocketAddr,
     host_key: Arc<Ed25519KeyPair>,
     read: ReadState,
-    write_buf: Vec<u8>,
+    write: WriteState,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
@@ -33,7 +33,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             addr,
             host_key,
             read: ReadState::default(),
-            write_buf: Vec::with_capacity(16_384),
+            write: WriteState::default(),
         })
     }
 
@@ -65,20 +65,21 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        self.write_buf.clear();
         let mut cx = ConnectionContext {
             addr: self.addr,
             host_key: &self.host_key,
-            write_buf: &mut self.write_buf,
         };
 
-        let Ok((packet, state)) = state.advance(peer_key_exchange_init, &mut exchange, &mut cx)
-        else {
+        let Ok((key_exchange_init, state)) = state.advance(peer_key_exchange_init, &mut cx) else {
             return;
         };
 
-        if let Err(error) = self.stream.write_all(packet.without_mac()).await {
-            error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
+        if let Err(error) = self
+            .write
+            .write_packet(&mut self.stream, &key_exchange_init, Some(&mut exchange))
+            .await
+        {
+            warn!(addr = %self.addr, %error, "failed to send key exchange init packet");
             return;
         }
 
@@ -93,19 +94,23 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         };
 
-        self.write_buf.clear();
         let mut cx = ConnectionContext {
             addr: self.addr,
             host_key: &self.host_key,
-            write_buf: &mut self.write_buf,
         };
 
-        let Ok((packet, keys)) = state.advance(ecdh_key_exchange_init, exchange, &mut cx) else {
+        let Ok((key_exchange_reply, keys)) =
+            state.advance(ecdh_key_exchange_init, exchange, &mut cx)
+        else {
             return;
         };
 
-        if let Err(error) = self.stream.write_all(packet.without_mac()).await {
-            error!(addr = %self.addr, %error, "failed to send ECDH key exchange reply");
+        if let Err(error) = self
+            .write
+            .write_packet(&mut self.stream, &key_exchange_reply, None)
+            .await
+        {
+            warn!(addr = %self.addr, %error, "failed to send key exchange init packet");
             return;
         }
 
@@ -120,13 +125,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         };
 
-        self.write_buf.clear();
-        let Ok(packet) = OutgoingPacket::new(&mut self.write_buf, &NewKeys) else {
-            error!(addr = %self.addr, "failed to build newkeys packet");
-            return;
-        };
-
-        if let Err(error) = self.stream.write_all(packet.without_mac()).await {
+        if let Err(error) = self
+            .write
+            .write_packet(&mut self.stream, &NewKeys, None)
+            .await
+        {
             warn!(addr = %self.addr, %error, "failed to send newkeys packet");
             return;
         }
@@ -134,6 +137,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Cipher and MAC algorithms are negotiated during key exchange.
         // Currently this hard codes AES-128-CTR and HMAC-SHA256.
         self.read.decryption_key = Some(AesCtrReadKeys::new(keys.client_to_server));
+        self.write.keys = Some(AesCtrWriteKeys::new(keys.server_to_client));
+
+        self.write
+            .write_packet(&mut self.stream, &MessageType::Ignore, None)
+            .await
+            .unwrap();
 
         todo!();
     }
@@ -142,7 +151,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 struct ConnectionContext<'a> {
     addr: SocketAddr,
     host_key: &'a Ed25519KeyPair,
-    write_buf: &'a mut Vec<u8>,
 }
 
 #[derive(Default)]
@@ -177,14 +185,14 @@ impl VersionExchange {
         }
 
         let ident = Identification::outgoing();
-        ident.encode(&mut conn.write_buf);
-        if let Err(error) = conn.stream.write_all(&conn.write_buf).await {
+        let server_ident_bytes = ident.encode();
+        if let Err(error) = conn.stream.write_all(&server_ident_bytes).await {
             warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(error.into());
         }
 
-        let v_s_len = conn.write_buf.len() - 2;
-        if let Some(v_s) = conn.write_buf.get(..v_s_len) {
+        let v_s_len = server_ident_bytes.len() - 2;
+        if let Some(v_s) = server_ident_bytes.get(..v_s_len) {
             exchange.prefixed(v_s);
         }
 
@@ -252,8 +260,9 @@ impl<'a> Identification<'a> {
     }
 }
 
-impl Encode for Identification<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
+impl Identification<'_> {
+    fn encode(&self) -> Vec<u8> {
+        let mut buf = vec![];
         buf.extend_from_slice(b"SSH-");
         buf.extend_from_slice(self.protocol.as_bytes());
         buf.push(b'-');
@@ -263,6 +272,7 @@ impl Encode for Identification<'_> {
             buf.extend_from_slice(self.comments.as_bytes());
         }
         buf.extend_from_slice(b"\r\n");
+        buf
     }
 }
 
