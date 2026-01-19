@@ -281,7 +281,7 @@ impl WriteState {
         let pending_length = self.encrypted_buf.len();
 
         let Some(keys) = &mut self.keys else {
-            let packet = OutgoingPacket::new(&mut self.encrypted_buf, payload)?;
+            let packet = OutgoingPacket::new(&mut self.encrypted_buf, payload, 1)?;
             if let Some(exchange_hash) = exchange_hash {
                 exchange_hash.prefixed(packet.payload());
             }
@@ -290,7 +290,7 @@ impl WriteState {
 
         let block_len = keys.encryption.algorithm().block_len();
 
-        let packet = OutgoingPacket::new(&mut self.buf, payload)?;
+        let packet = OutgoingPacket::new(&mut self.buf, payload, block_len)?;
         if let Some(exchange_hash) = exchange_hash {
             exchange_hash.prefixed(packet.payload());
         }
@@ -458,7 +458,11 @@ pub(crate) struct OutgoingPacket<'a> {
 }
 
 impl<'a> OutgoingPacket<'a> {
-    fn new(buf: &'a mut Vec<u8>, payload: &impl Encode) -> Result<Self, Error> {
+    fn new(
+        buf: &'a mut Vec<u8>,
+        payload: &impl Encode,
+        cipher_block_len: usize,
+    ) -> Result<Self, Error> {
         let start = buf.len();
 
         buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
@@ -484,9 +488,10 @@ impl<'a> OutgoingPacket<'a> {
         // decrypt the length after receiving the first 8 (or cipher block size,
         // whichever is larger) bytes of a packet.
 
-        let min_padding = 8 - (buf.len() - start) % 8;
+        let block_size = cipher_block_len.max(8);
+        let min_padding = block_size - (buf.len() - start) % block_size;
         let padding_len = match min_padding < 4 {
-            true => min_padding + 8,
+            true => min_padding + block_size,
             false => min_padding,
         };
 
