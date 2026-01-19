@@ -9,7 +9,7 @@ use tracing::{debug, error, warn};
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
-use proto::{Decode, Decoded, Encode, ReadState};
+use proto::{Completion, Decoded, Encode, ReadState};
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit},
@@ -126,8 +126,8 @@ impl VersionExchange {
         let Decoded { value: ident, next } = loop {
             let bytes = conn.read.buffer(&mut conn.stream).await?;
             match Identification::decode(bytes) {
-                Ok(decoded) => break decoded,
-                Err(Error::Incomplete(_)) => continue,
+                Ok(Completion::Complete(decoded)) => break decoded,
+                Ok(Completion::Incomplete(_length)) => continue,
                 Err(error) => return Err(error),
             }
         };
@@ -178,8 +178,8 @@ impl Identification<'_> {
     }
 }
 
-impl<'a> Decode<'a> for Identification<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+impl<'a> Identification<'a> {
+    fn decode(bytes: &'a [u8]) -> Result<Completion<Decoded<'a, Self>>, Error> {
         let Ok(message) = str::from_utf8(bytes) else {
             return Err(IdentificationError::InvalidUtf8.into());
         };
@@ -187,10 +187,10 @@ impl<'a> Decode<'a> for Identification<'a> {
         let Some((message, next)) = message.split_once("\r\n") else {
             // The maximum length is 255 bytes including CRLF. message excludes
             // the CRLF, so subtract 2.
-            return Err(match message.len() > 255 - 2 {
-                true => IdentificationError::TooLong.into(),
-                false => Error::Incomplete(None),
-            });
+            return match message.len() > 255 - 2 {
+                true => Err(IdentificationError::TooLong.into()),
+                false => Ok(Completion::Incomplete(None)),
+            };
         };
 
         let Some(rest) = message.strip_prefix("SSH-") else {
@@ -212,10 +212,10 @@ impl<'a> Decode<'a> for Identification<'a> {
             comments,
         };
 
-        Ok(Decoded {
+        Ok(Completion::Complete(Decoded {
             value: out,
             next: next.as_bytes(),
-        })
+        }))
     }
 }
 

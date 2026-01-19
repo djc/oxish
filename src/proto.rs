@@ -98,6 +98,11 @@ impl<T> Deref for Packeted<'_, T> {
     }
 }
 
+pub(crate) enum Completion<T> {
+    Complete(T),
+    Incomplete(Option<usize>),
+}
+
 pub(crate) struct HandshakeHash(digest::Context);
 
 impl HandshakeHash {
