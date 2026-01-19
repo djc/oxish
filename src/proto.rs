@@ -37,12 +37,7 @@ impl ReadState {
         loop {
             match self.poll_packet()? {
                 Completion::Complete(packet_length) => {
-                    let Decoded {
-                        value: packet,
-                        next,
-                    } = Packet::decode(&self.decrypted_buf[..4 + packet_length.inner as usize])?;
-                    assert!(next.is_empty());
-                    return Ok(packet);
+                    return self.decode_packet(packet_length);
                 }
                 Completion::Incomplete(_amount) => {
                     let read = stream.read_buf(&mut self.incoming_buf()).await?;
@@ -161,6 +156,35 @@ impl ReadState {
         self.last_length = 4 + packet_length.inner as usize + mac_len;
 
         Ok(Completion::Complete(packet_length))
+    }
+
+    pub(crate) fn decode_packet<'a>(
+        &'a self,
+        packet_length: PacketLength,
+    ) -> Result<Packet<'a>, Error> {
+        let Decoded {
+            value: padding_length,
+            next,
+        } = PaddingLength::decode(&self.decrypted_buf[4..4 + packet_length.inner as usize])?;
+
+        let payload_len = (packet_length.inner - 1 - padding_length.inner as u32) as usize;
+        let Some(payload) = next.get(..payload_len) else {
+            return Err(Error::Incomplete(Some(payload_len - next.len())));
+        };
+
+        let Some(next) = next.get(payload_len..) else {
+            return Err(Error::Unreachable(
+                "unable to extract rest after fixed-length slice",
+            ));
+        };
+
+        let Some(_) = next.get(..padding_length.inner as usize) else {
+            return Err(Error::Incomplete(Some(
+                padding_length.inner as usize - next.len(),
+            )));
+        };
+
+        Ok(Packet { payload })
     }
 
     /// The buffer to read data into.
@@ -303,48 +327,6 @@ impl Packet<'_> {
         buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
         buf.push(0); // padding_length
         PacketBuilder { buf, start }
-    }
-}
-
-impl<'a> Decode<'a> for Packet<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
-        let Decoded {
-            value: packet_length,
-            next,
-        } = PacketLength::decode(bytes)?;
-
-        let Decoded {
-            value: padding_length,
-            next,
-        } = PaddingLength::decode(next)?;
-
-        let payload_len = (packet_length.inner - 1 - padding_length.inner as u32) as usize;
-        let Some(payload) = next.get(..payload_len) else {
-            return Err(Error::Incomplete(Some(payload_len - next.len())));
-        };
-
-        let Some(next) = next.get(payload_len..) else {
-            return Err(Error::Unreachable(
-                "unable to extract rest after fixed-length slice",
-            ));
-        };
-
-        let Some(_) = next.get(..padding_length.inner as usize) else {
-            return Err(Error::Incomplete(Some(
-                padding_length.inner as usize - next.len(),
-            )));
-        };
-
-        let Some(next) = next.get(padding_length.inner as usize..) else {
-            return Err(Error::Unreachable("unable to extract rest after padding"));
-        };
-
-        // No MAC support yet
-
-        Ok(Decoded {
-            value: Self { payload },
-            next,
-        })
     }
 }
 
