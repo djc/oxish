@@ -42,14 +42,8 @@ impl ReadState {
                     return self.decode_packet(packet_length);
                 }
                 Completion::Incomplete(_amount) => {
-                    let read = stream.read_buf(&mut self.incoming_buf()).await?;
-                    debug!(read, "read from stream");
-                    if read == 0 {
-                        return Err(Error::Io(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "EOF",
-                        )));
-                    }
+                    let _ = self.buffer(stream).await?;
+                    continue;
                 }
             }
         }
@@ -186,11 +180,23 @@ impl ReadState {
         Ok(Packet { payload })
     }
 
-    /// The buffer to read data into.
-    ///
-    /// You may not touch existing data and must only append new data at the end.
-    pub(crate) fn incoming_buf(&mut self) -> &mut Vec<u8> {
-        &mut self.buf
+    pub(crate) async fn buffer<'a>(
+        &'a mut self,
+        stream: &mut (impl AsyncRead + Unpin),
+    ) -> Result<&'a [u8], Error> {
+        let read = stream.read_buf(&mut self.buf).await?;
+        debug!(read, "read from stream");
+        match read {
+            0 => Err(Error::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "EOF",
+            ))),
+            _ => Ok(&self.buf),
+        }
+    }
+
+    pub(crate) fn set_last_length(&mut self, len: usize) {
+        self.last_length = len;
     }
 }
 

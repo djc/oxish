@@ -3,7 +3,7 @@ use std::{io, str, sync::Arc};
 
 use aws_lc_rs::signature::Ed25519KeyPair;
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, warn};
 
 mod key_exchange;
@@ -157,15 +157,11 @@ impl VersionExchange {
         exchange: &mut HandshakeHash,
         conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> Result<KeyExchange, Error> {
-        let buf = conn.read.incoming_buf();
-        assert!(buf.is_empty());
-
         // TODO: enforce timeout if this is taking too long
-        let Decoded { value: ident, next } = loop {
-            let read = conn.stream.read_buf(buf).await?;
-            debug!(bytes = read, "read from stream");
-            match Identification::decode(buf) {
-                Ok(Completion::Complete(decoded)) => break decoded,
+        let (buf, Decoded { value: ident, next }) = loop {
+            let bytes = conn.read.buffer(&mut conn.stream).await?;
+            match Identification::decode(bytes) {
+                Ok(Completion::Complete(decoded)) => break (bytes, decoded),
                 Ok(Completion::Incomplete(_length)) => continue,
                 Err(error) => return Err(error),
             }
@@ -195,10 +191,8 @@ impl VersionExchange {
             exchange.prefixed(v_s);
         }
 
-        let read_len = buf.len() - rest;
-        buf.copy_within(read_len.., 0);
-        buf.truncate(rest);
-
+        let last_length = buf.len() - rest;
+        conn.read.set_last_length(last_length);
         Ok(KeyExchange::default())
     }
 }
