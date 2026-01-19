@@ -403,19 +403,7 @@ pub(crate) enum MessageType {
 
 impl Encode for MessageType {
     fn encode(&self, buf: &mut Vec<u8>) {
-        match self {
-            Self::Disconnect => buf.push(1),
-            Self::Ignore => buf.push(2),
-            Self::Unimplemented => buf.push(3),
-            Self::Debug => buf.push(4),
-            Self::ServiceRequest => buf.push(5),
-            Self::ServiceAccept => buf.push(6),
-            Self::KeyExchangeInit => buf.push(20),
-            Self::NewKeys => buf.push(21),
-            Self::KeyExchangeEcdhInit => buf.push(30),
-            Self::KeyExchangeEcdhReply => buf.push(31),
-            Self::Unknown(value) => buf.push(*value),
-        }
+        buf.push(u8::from(*self));
     }
 }
 
@@ -443,6 +431,24 @@ impl From<u8> for MessageType {
             30 => Self::KeyExchangeEcdhInit,
             31 => Self::KeyExchangeEcdhReply,
             value => Self::Unknown(value),
+        }
+    }
+}
+
+impl From<MessageType> for u8 {
+    fn from(value: MessageType) -> Self {
+        match value {
+            MessageType::Disconnect => 1,
+            MessageType::Ignore => 2,
+            MessageType::Unimplemented => 3,
+            MessageType::Debug => 4,
+            MessageType::ServiceRequest => 5,
+            MessageType::ServiceAccept => 6,
+            MessageType::KeyExchangeInit => 20,
+            MessageType::NewKeys => 21,
+            MessageType::KeyExchangeEcdhInit => 30,
+            MessageType::KeyExchangeEcdhReply => 31,
+            MessageType::Unknown(value) => value,
         }
     }
 }
