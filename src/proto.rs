@@ -11,18 +11,20 @@ use tracing::debug;
 use crate::{key_exchange::RawKeys, Error};
 
 /// The reader and decryption state for an SSH connection.
-// FIXME implement in-place decryption once aws-lc-rs supports this for AES-CTR.
 pub(crate) struct ReadState {
+    /// Buffer for incoming data from the transport stream.
     buf: Vec<u8>,
-    /// The buffer with already decrypted contents.
-    decrypted_buf: Vec<u8>,
-    /// If a full packet was decoded in `poll_packet`` previously, this is the
-    /// full length of this packet including packet length field and MAC.
-    /// Will be reset to 0 at the start of every `poll_packet` by moving the
-    /// contents of `buf` by this much bytes back.
+    /// Full length of the last decoded packet, including packet length and MAC.
+    ///
+    /// Set after decoding and decrypting a packet successfully in `poll_packet()`; reduced at
+    /// the start of each call to `poll_packet()`.
     last_length: usize,
-    /// If this is true the first block of the data with the length field must
-    /// be stored in `decrypted_buf`.
+
+    /// Buffer with blocks of decrypted data.
+    ///
+    /// aws-lc-rs does not support in-place decryption for AES-CTR.
+    decrypted_buf: Vec<u8>,
+    /// Whether the a first block including the packet length has been decrypted.
     decrypted_first_block: bool,
 
     sequence_number: u32,
