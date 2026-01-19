@@ -10,21 +10,21 @@ use tracing::debug;
 
 use crate::{key_exchange::RawKeys, Error};
 
-/// The reader and decryption state for an SSH connection.
+/// The reader and decryption state for an SSH connection
 pub(crate) struct ReadState {
-    /// Buffer for incoming data from the transport stream.
+    /// Buffer for incoming data from the transport stream
     buf: Vec<u8>,
-    /// Full length of the last decoded packet, including packet length and MAC.
+    /// Full length of the last decoded packet, including packet length and MAC
     ///
     /// Set after decoding and decrypting a packet successfully in `poll_packet()`; reduced at
     /// the start of each call to `poll_packet()`.
     last_length: usize,
 
-    /// Buffer with blocks of decrypted data.
+    /// Buffer with blocks of decrypted data
     ///
     /// aws-lc-rs does not support in-place decryption for AES-CTR.
     decrypted_buf: Vec<u8>,
-    /// Whether the a first block including the packet length has been decrypted.
+    /// Whether the a first block including the packet length has been decrypted
     decrypted_first_block: bool,
 
     sequence_number: u32,
@@ -38,9 +38,7 @@ impl ReadState {
     ) -> Result<Packet<'a>, Error> {
         loop {
             match self.poll_packet()? {
-                Completion::Complete(packet_length) => {
-                    return self.decode_packet(packet_length);
-                }
+                Completion::Complete(packet_length) => return self.decode_packet(packet_length),
                 Completion::Incomplete(_amount) => {
                     let _ = self.buffer(stream).await?;
                     continue;
@@ -49,7 +47,7 @@ impl ReadState {
         }
     }
 
-    // This and decode_packet are split because of a borrowck limitation.
+    // This and decode_packet are split because of a borrowck limitation
     pub(crate) fn poll_packet(&mut self) -> Result<Completion<PacketLength>, Error> {
         // Compact the internal buffer
         if self.last_length > 0 {
@@ -145,9 +143,7 @@ impl ReadState {
         // Note: this needs to be done AFTER the IO to ensure
         // this async function is cancel-safe
         self.sequence_number = self.sequence_number.wrapping_add(1);
-
         self.last_length = 4 + packet_length.inner as usize + mac_len;
-
         Ok(Completion::Complete(packet_length))
     }
 
@@ -213,7 +209,7 @@ impl Default for ReadState {
     }
 }
 
-/// Decryption and HMAC key for AES-128-CTR + HMAC-SHA256.
+/// Decryption and HMAC key for AES-128-CTR + HMAC-SHA256
 pub(crate) struct AesCtrReadKeys {
     decryption: StreamingDecryptingKey,
     mac: hmac::Key,
