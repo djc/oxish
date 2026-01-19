@@ -1,8 +1,8 @@
-use core::{iter, net::SocketAddr, ops::Deref};
+use core::{iter, ops::Deref};
 
 use aws_lc_rs::{digest, rand};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::Error;
 
@@ -12,35 +12,19 @@ pub(crate) struct ReadState {
 }
 
 impl ReadState {
-    pub(crate) async fn packet<'a, T: TryFrom<Packet<'a>, Error = Error> + 'a>(
+    pub(crate) async fn packet<'a>(
         &'a mut self,
         stream: &mut (impl AsyncRead + Unpin),
-        addr: SocketAddr,
-    ) -> Result<Packeted<'a, T>, Error> {
-        let bytes = self.buffer(stream).await?;
-        let (packet, rest) = match Packet::decode(bytes) {
-            Ok(Decoded {
-                value: packet,
-                next,
-            }) => (packet, next.len()),
-            Err(error) => {
-                error!(%addr, %error, "failed to read packet");
-                return Err(error);
-            }
-        };
+    ) -> Result<Packet<'a>, Error> {
+        self.buffer(stream).await?;
+        let Decoded {
+            value: packet,
+            next,
+        } = Packet::decode(&self.buf)?;
 
-        let payload = packet.payload;
-        match T::try_from(packet) {
-            Ok(decoded) => Ok(Packeted {
-                payload,
-                decoded,
-                rest,
-            }),
-            Err(error) => {
-                error!(%addr, %error, "failed to parse packet");
-                Err(error)
-            }
-        }
+        self.used = self.buf.len() - next.len();
+
+        Ok(packet)
     }
 
     pub(crate) async fn buffer<'a>(
@@ -65,36 +49,6 @@ impl Default for ReadState {
             buf: Vec::with_capacity(16_384),
             used: 0,
         }
-    }
-}
-
-pub(crate) struct Packeted<'a, T: 'a> {
-    payload: &'a [u8],
-    decoded: T,
-    rest: usize,
-}
-
-impl<'a, T> Packeted<'a, T> {
-    pub(crate) fn hash(self, hash: &mut HandshakeHash) -> (T, usize) {
-        let Self {
-            payload,
-            decoded,
-            rest,
-        } = self;
-        hash.prefixed(payload);
-        (decoded, rest)
-    }
-
-    pub(crate) fn into_inner(self) -> T {
-        self.decoded
-    }
-}
-
-impl<T> Deref for Packeted<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.decoded
     }
 }
 
