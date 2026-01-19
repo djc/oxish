@@ -67,7 +67,7 @@ impl ReadState {
         }
 
         let (packet_length, mac_len) = if let Some(keys) = &mut self.decryption_key {
-            let block_len = keys.decrypting_key.algorithm().block_len();
+            let block_len = keys.decryption.algorithm().block_len();
 
             let needed = block_len;
             if self.buf.len() < needed {
@@ -78,7 +78,7 @@ impl ReadState {
             if !self.decrypted_first_block {
                 // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
                 let update = keys
-                    .decrypting_key
+                    .decryption
                     .less_safe_update(&self.buf[..block_len], &mut self.decrypted_buf[..block_len])
                     .unwrap();
                 assert_eq!(update.remainder().len(), 0);
@@ -100,7 +100,7 @@ impl ReadState {
 
             // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
             let update = keys
-                .decrypting_key
+                .decryption
                 .less_safe_update(
                     &self.buf[block_len..4 + packet_length.inner as usize],
                     &mut self.decrypted_buf[block_len..4 + packet_length.inner as usize],
@@ -209,14 +209,14 @@ impl Default for ReadState {
 
 /// Decryption and HMAC key for AES-128-CTR + HMAC-SHA256.
 pub(crate) struct AesCtrReadKeys {
-    decrypting_key: StreamingDecryptingKey,
+    decryption: StreamingDecryptingKey,
     mac: hmac::Key,
 }
 
 impl AesCtrReadKeys {
     pub(crate) fn new(keys: RawKeys) -> Self {
         Self {
-            decrypting_key: StreamingDecryptingKey::ctr(
+            decryption: StreamingDecryptingKey::ctr(
                 UnboundCipherKey::new(&cipher::AES_128, &keys.encryption_key.derive::<16>())
                     .unwrap(),
                 cipher::DecryptionContext::Iv128(keys.initial_iv.derive::<16>().into()),
