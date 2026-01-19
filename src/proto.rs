@@ -2,7 +2,7 @@ use core::future;
 use core::iter;
 use core::pin::Pin;
 use core::task::{ready, Context, Poll};
-use std::io;
+use std::{borrow::Cow, io};
 
 use aws_lc_rs::{
     cipher::{self, StreamingDecryptingKey, StreamingEncryptingKey, UnboundCipherKey},
@@ -478,17 +478,27 @@ impl From<MessageType> for u8 {
 }
 
 pub(crate) struct IncomingPacket<'a> {
-    #[expect(unused)]
     pub(crate) sequence_number: u32,
     pub(crate) message_type: MessageType,
     pub(crate) payload: &'a [u8],
 }
 
+impl IncomingPacket<'_> {
+    #[expect(unused)]
+    pub(crate) fn unimplemented(self) -> OutgoingPacket<'static> {
+        OutgoingPacket {
+            message_type: MessageType::Unimplemented,
+            payload: Cow::Owned(self.sequence_number.to_be_bytes().to_vec()),
+        }
+    }
+}
+
 pub(crate) struct OutgoingPacket<'a> {
     #[expect(unused)]
     pub(crate) message_type: MessageType,
+    // FIXME: Figure out a way to encode the payload requiring fewer boxes/copies.
     #[expect(unused)]
-    pub(crate) payload: &'a [u8],
+    pub(crate) payload: Cow<'a, [u8]>,
 }
 
 /// An encoded outgoing packet including length field and padding, but
