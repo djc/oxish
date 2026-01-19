@@ -83,10 +83,7 @@ impl EcdhKeyExchange {
             },
         };
 
-        let result = Packet::builder(conn.write_buf)
-            .with_payload(&key_exchange_reply)
-            .without_mac();
-        let Ok(outgoing) = result else {
+        let Ok(outgoing) = OutgoingPacket::new(conn.write_buf, &key_exchange_reply) else {
             error!(addr = %conn.addr, "failed to build key exchange init packet");
             return Err(());
         };
@@ -218,16 +215,12 @@ impl KeyExchange {
         };
 
         conn.write_buf.clear();
-        let builder = Packet::builder(conn.write_buf).with_payload(&key_exchange_init);
-
-        if let Ok(kex_init_payload) = builder.payload() {
-            exchange.prefixed(kex_init_payload);
-        };
-
-        let Ok(packet) = builder.without_mac() else {
+        let Ok(packet) = OutgoingPacket::new(conn.write_buf, &key_exchange_init) else {
             error!(addr = %conn.addr, "failed to build key exchange init packet");
             return Err(());
         };
+
+        exchange.prefixed(packet.payload());
 
         let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
             Ok(algorithms) => {
