@@ -66,13 +66,8 @@ impl ReadState {
             self.decrypted_first_block = false;
         }
 
-        let (packet_length, mac_len) = if let Some(AesCtrReadKeys {
-            decrypting_key,
-            mac: integrity_key,
-        }) = &mut self.decryption_key
-        // comment to prevent rustfmt indenting the entire if
-        {
-            let block_len = decrypting_key.algorithm().block_len();
+        let (packet_length, mac_len) = if let Some(keys) = &mut self.decryption_key {
+            let block_len = keys.decrypting_key.algorithm().block_len();
 
             let needed = block_len;
             if self.buf.len() < needed {
@@ -82,7 +77,8 @@ impl ReadState {
 
             if !self.decrypted_first_block {
                 // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
-                let update = decrypting_key
+                let update = keys
+                    .decrypting_key
                     .less_safe_update(&self.buf[..block_len], &mut self.decrypted_buf[..block_len])
                     .unwrap();
                 assert_eq!(update.remainder().len(), 0);
@@ -97,13 +93,14 @@ impl ReadState {
 
             let needed = 4
                 + packet_length.inner as usize
-                + integrity_key.algorithm().digest_algorithm().output_len;
+                + keys.mac.algorithm().digest_algorithm().output_len;
             if self.buf.len() < needed {
                 return Ok(Completion::Incomplete(Some(needed)));
             }
 
             // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
-            let update = decrypting_key
+            let update = keys
+                .decrypting_key
                 .less_safe_update(
                     &self.buf[block_len..4 + packet_length.inner as usize],
                     &mut self.decrypted_buf[block_len..4 + packet_length.inner as usize],
@@ -113,20 +110,20 @@ impl ReadState {
 
             let packet_excl_mac = &self.decrypted_buf[..4 + packet_length.inner as usize];
 
-            let mut hmac_ctx = hmac::Context::with_key(integrity_key);
+            let mut hmac_ctx = hmac::Context::with_key(&keys.mac);
             hmac_ctx.update(&self.sequence_number.to_be_bytes());
             hmac_ctx.update(packet_excl_mac);
             let actual_mac = hmac_ctx.sign();
             let expected_mac = &self.buf[4 + packet_length.inner as usize
                 ..4 + packet_length.inner as usize
-                    + integrity_key.algorithm().digest_algorithm().output_len];
+                    + keys.mac.algorithm().digest_algorithm().output_len];
             if constant_time::verify_slices_are_equal(actual_mac.as_ref(), expected_mac).is_err() {
                 return Err(Error::InvalidMac);
             }
 
             (
                 packet_length,
-                integrity_key.algorithm().digest_algorithm().output_len,
+                keys.mac.algorithm().digest_algorithm().output_len,
             )
         } else {
             let needed = 4;
