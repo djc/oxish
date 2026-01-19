@@ -49,13 +49,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        let future = self
-            .read
-            .packet::<KeyExchangeInit<'_>>(&mut self.stream, self.addr);
-        let (peer_key_exchange_init, rest) = match future.await {
-            Ok(packeted) => packeted.hash(&mut exchange),
+        let packet = match self.read.packet(&mut self.stream).await {
+            Ok(packet) => packet,
             Err(error) => {
-                error!(addr = %self.addr, %error, "failed to read key exchange init");
+                warn!(addr = %self.addr, %error, "failed to read packet");
+                return;
+            }
+        };
+        exchange.prefixed(packet.payload);
+        let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
+            Ok(key_exchange_init) => key_exchange_init,
+            Err(error) => {
+                warn!(addr = %self.addr, %error, "failed to read key exchange init");
                 return;
             }
         };
@@ -77,14 +82,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         }
 
-        self.read.used = self.read.buf.len() - rest;
-
-        let future = self
-            .read
-            .packet::<EcdhKeyExchangeInit<'_>>(&mut self.stream, self.addr);
-        let ecdh_key_exchange_init = match future.await {
-            Ok(packet) => packet.into_inner(),
-            Err(_) => return,
+        let packet = match self.read.packet(&mut self.stream).await {
+            Ok(packet) => packet,
+            Err(error) => {
+                warn!(addr = %self.addr, %error, "failed to read packet");
+                return;
+            }
+        };
+        let Ok(ecdh_key_exchange_init) = EcdhKeyExchangeInit::try_from(packet) else {
+            return;
         };
 
         self.write_buf.clear();
