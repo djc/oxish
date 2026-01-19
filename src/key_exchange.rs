@@ -9,10 +9,7 @@ use aws_lc_rs::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{
-        with_mpint_bytes, Decode, Decoded, Encode, HandshakeHash, MessageType, OutgoingPacket,
-        Packet,
-    },
+    proto::{with_mpint_bytes, Decode, Decoded, Encode, HandshakeHash, MessageType, Packet},
     ConnectionContext, Error,
 };
 
@@ -27,7 +24,7 @@ impl EcdhKeyExchange {
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
         conn: &'out mut ConnectionContext<'out>,
-    ) -> Result<(OutgoingPacket<'out>, RawKeySet), ()> {
+    ) -> Result<(EcdhKeyExchangeReply<'out>, RawKeySet), ()> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
@@ -76,16 +73,11 @@ impl EcdhKeyExchange {
                 algorithm: PublicKeyAlgorithm::Ed25519,
                 key: conn.host_key.public_key().as_ref(),
             },
-            server_ephemeral_public_key: kx_public_key.as_ref(),
+            server_ephemeral_public_key: kx_public_key.as_ref().to_owned(),
             exchange_hash_signature: TaggedSignature {
                 algorithm: PublicKeyAlgorithm::Ed25519,
-                signature: signature.as_ref(),
+                signature: signature.as_ref().to_owned(),
             },
-        };
-
-        let Ok(outgoing) = OutgoingPacket::new(conn.write_buf, &key_exchange_reply) else {
-            error!(addr = %conn.addr, "failed to build key exchange init packet");
-            return Err(());
         };
 
         // The first exchange hash is used as session id.
@@ -96,7 +88,7 @@ impl EcdhKeyExchange {
         };
 
         Ok((
-            outgoing,
+            key_exchange_reply,
             RawKeySet {
                 client_to_server: RawKeys::client_to_server(&derivation),
                 server_to_client: RawKeys::server_to_client(&derivation),
@@ -142,7 +134,7 @@ impl<'a> TryFrom<Packet<'a>> for EcdhKeyExchangeInit<'a> {
 #[derive(Debug)]
 pub(crate) struct EcdhKeyExchangeReply<'a> {
     server_public_host_key: TaggedPublicKey<'a>,
-    server_ephemeral_public_key: &'a [u8],
+    server_ephemeral_public_key: Vec<u8>,
     exchange_hash_signature: TaggedSignature<'a>,
 }
 
@@ -177,7 +169,7 @@ impl Encode for TaggedPublicKey<'_> {
 #[derive(Debug)]
 struct TaggedSignature<'a> {
     algorithm: PublicKeyAlgorithm<'a>,
-    signature: &'a [u8],
+    signature: Vec<u8>,
 }
 
 impl Encode for TaggedSignature<'_> {
@@ -203,9 +195,8 @@ impl KeyExchange {
     pub(crate) fn advance<'out>(
         self,
         peer_key_exchange_init: KeyExchangeInit<'_>,
-        exchange: &mut HandshakeHash,
         conn: &'out mut ConnectionContext<'out>,
-    ) -> Result<(OutgoingPacket<'out>, EcdhKeyExchange), ()> {
+    ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ()> {
         let key_exchange_init = match KeyExchangeInit::new() {
             Ok(kex_init) => kex_init,
             Err(error) => {
@@ -214,15 +205,7 @@ impl KeyExchange {
             }
         };
 
-        conn.write_buf.clear();
-        let Ok(packet) = OutgoingPacket::new(conn.write_buf, &key_exchange_init) else {
-            error!(addr = %conn.addr, "failed to build key exchange init packet");
-            return Err(());
-        };
-
-        exchange.prefixed(packet.payload());
-
-        let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
+        let algorithms = match Algorithms::choose(peer_key_exchange_init, &key_exchange_init) {
             Ok(algorithms) => {
                 debug!(addr = %conn.addr, ?algorithms, "chosen algorithms");
                 algorithms
@@ -239,7 +222,7 @@ impl KeyExchange {
         }
 
         Ok((
-            packet,
+            key_exchange_init,
             EcdhKeyExchange {
                 session_id: self.session_id,
             },
@@ -255,7 +238,7 @@ struct Algorithms {
 impl Algorithms {
     fn choose(
         client: KeyExchangeInit<'_>,
-        server: KeyExchangeInit<'static>,
+        server: &KeyExchangeInit<'static>,
     ) -> Result<Self, Error> {
         let key_exchange = client
             .key_exchange_algorithms
@@ -518,7 +501,6 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 /// The raw hashes from which we will derive the crypto keys.
 ///
 /// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
-#[expect(dead_code)] // FIXME implement encryption/decryption and MAC
 pub(crate) struct RawKeySet {
     pub(crate) client_to_server: RawKeys,
     pub(crate) server_to_client: RawKeys,
