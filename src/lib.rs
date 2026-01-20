@@ -19,8 +19,7 @@ use crate::{
 /// A single SSH connection
 pub struct Connection<T> {
     stream: T,
-    addr: SocketAddr,
-    host_key: Arc<Ed25519KeyPair>,
+    context: ConnectionContext,
     read: ReadState,
     write: WriteState,
 }
@@ -30,8 +29,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     pub fn new(stream: T, addr: SocketAddr, host_key: Arc<Ed25519KeyPair>) -> anyhow::Result<Self> {
         Ok(Self {
             stream,
-            addr,
-            host_key,
+            context: ConnectionContext { addr, host_key },
             read: ReadState::default(),
             write: WriteState::default(),
         })
@@ -44,7 +42,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let state = match state.advance(&mut exchange, &mut self).await {
             Ok(state) => state,
             Err(error) => {
-                error!(addr = %self.addr, %error, "failed to complete version exchange");
+                error!(addr = %self.context.addr, %error, "failed to complete version exchange");
                 return;
             }
         };
@@ -52,7 +50,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
-                warn!(addr = %self.addr, %error, "failed to read packet");
+                warn!(addr = %self.context.addr, %error, "failed to read packet");
                 return;
             }
         };
@@ -60,17 +58,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
-                warn!(addr = %self.addr, %error, "failed to read key exchange init");
+                warn!(addr = %self.context.addr, %error, "failed to read key exchange init");
                 return;
             }
         };
 
-        let mut cx = ConnectionContext {
-            addr: self.addr,
-            host_key: &self.host_key,
-        };
-
-        let Ok((key_exchange_init, state)) = state.advance(peer_key_exchange_init, &mut cx) else {
+        let Ok((key_exchange_init, state)) = state.advance(peer_key_exchange_init, &self.context)
+        else {
             return;
         };
 
@@ -79,14 +73,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .write_packet(&mut self.stream, &key_exchange_init, Some(&mut exchange))
             .await
         {
-            warn!(addr = %self.addr, %error, "failed to send key exchange init packet");
+            warn!(addr = %self.context.addr, %error, "failed to send key exchange init packet");
             return;
         }
 
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
-                warn!(addr = %self.addr, %error, "failed to read packet");
+                warn!(addr = %self.context.addr, %error, "failed to read packet");
                 return;
             }
         };
@@ -94,18 +88,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
-                warn!(addr = %self.addr, %error, "failed to read ecdh key exchange init");
+                warn!(addr = %self.context.addr, %error, "failed to read ecdh key exchange init");
                 return;
             }
         };
 
-        let mut cx = ConnectionContext {
-            addr: self.addr,
-            host_key: &self.host_key,
-        };
-
         let Ok((key_exchange_reply, keys)) =
-            state.advance(ecdh_key_exchange_init, exchange, &mut cx)
+            state.advance(ecdh_key_exchange_init, exchange, &self.context)
         else {
             return;
         };
@@ -115,20 +104,20 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .write_packet(&mut self.stream, &key_exchange_reply, None)
             .await
         {
-            warn!(addr = %self.addr, %error, "failed to send key exchange init packet");
+            warn!(addr = %self.context.addr, %error, "failed to send key exchange init packet");
             return;
         }
 
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
-                warn!(addr = %self.addr, %error, "failed to read packet");
+                warn!(addr = %self.context.addr, %error, "failed to read packet");
                 return;
             }
         };
 
         if let Err(error) = NewKeys::try_from(packet) {
-            warn!(addr = %self.addr, %error, "failed to read new keys packet");
+            warn!(addr = %self.context.addr, %error, "failed to read new keys packet");
             return;
         };
 
@@ -137,7 +126,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .write_packet(&mut self.stream, &NewKeys, None)
             .await
         {
-            warn!(addr = %self.addr, %error, "failed to send newkeys packet");
+            warn!(addr = %self.context.addr, %error, "failed to send newkeys packet");
             return;
         }
 
@@ -163,9 +152,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 }
 
-struct ConnectionContext<'a> {
+struct ConnectionContext {
     addr: SocketAddr,
-    host_key: &'a Ed25519KeyPair,
+    host_key: Arc<Ed25519KeyPair>,
 }
 
 #[derive(Default)]
@@ -187,9 +176,9 @@ impl VersionExchange {
             }
         };
 
-        debug!(addr = %conn.addr, ?ident, "received identification");
+        debug!(addr = %conn.context.addr, ?ident, "received identification");
         if ident.protocol != PROTOCOL {
-            warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
+            warn!(addr = %conn.context.addr, ?ident, "unsupported protocol version");
             return Err(IdentificationError::UnsupportedVersion(ident.protocol.to_owned()).into());
         }
 
@@ -202,7 +191,7 @@ impl VersionExchange {
         let ident = Identification::outgoing();
         let server_ident_bytes = ident.encode();
         if let Err(error) = conn.stream.write_all(&server_ident_bytes).await {
-            warn!(addr = %conn.addr, %error, "failed to send version exchange");
+            warn!(addr = %conn.context.addr, %error, "failed to send version exchange");
             return Err(error.into());
         }
 
