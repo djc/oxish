@@ -52,7 +52,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
-                warn!(addr = %self.context.addr, %error, "failed to read packet");
+                error!(addr = %self.context.addr, %error, "failed to read packet");
                 return;
             }
         };
@@ -60,7 +60,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
-                warn!(addr = %self.context.addr, %error, "failed to read key exchange init");
+                error!(addr = %self.context.addr, %error, "failed to read key exchange init");
                 return;
             }
         };
@@ -75,7 +75,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .write_packet(&mut self.stream, &key_exchange_init, Some(&mut exchange))
             .await
         {
-            warn!(addr = %self.context.addr, %error, "failed to send key exchange init packet");
+            error!(addr = %self.context.addr, %error, "failed to send key exchange init packet");
             return;
         }
 
@@ -84,7 +84,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
-                warn!(addr = %self.context.addr, %error, "failed to read packet");
+                error!(addr = %self.context.addr, %error, "failed to read packet");
                 return;
             }
         };
@@ -92,7 +92,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
-                warn!(addr = %self.context.addr, %error, "failed to read ecdh key exchange init");
+                error!(addr = %self.context.addr, %error, "failed to read ecdh key exchange init");
                 return;
             }
         };
@@ -117,13 +117,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
-                warn!(addr = %self.context.addr, %error, "failed to read packet");
+                error!(addr = %self.context.addr, %error, "failed to read packet");
                 return;
             }
         };
 
         if let Err(error) = NewKeys::try_from(packet) {
-            warn!(addr = %self.context.addr, %error, "failed to read new keys packet");
+            error!(addr = %self.context.addr, %error, "failed to read new keys packet");
             return;
         };
 
@@ -132,7 +132,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .write_packet(&mut self.stream, &NewKeys, None)
             .await
         {
-            warn!(addr = %self.context.addr, %error, "failed to send newkeys packet");
+            error!(addr = %self.context.addr, %error, "failed to send newkeys packet");
             return;
         }
 
