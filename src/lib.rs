@@ -90,8 +90,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 return;
             }
         };
-        let Ok(ecdh_key_exchange_init) = EcdhKeyExchangeInit::try_from(packet) else {
-            return;
+
+        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
+            Ok(key_exchange_init) => key_exchange_init,
+            Err(error) => {
+                warn!(addr = %self.addr, %error, "failed to read ecdh key exchange init");
+                return;
+            }
         };
 
         let mut cx = ConnectionContext {
@@ -121,7 +126,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 return;
             }
         };
-        let Ok(NewKeys) = NewKeys::try_from(packet) else {
+
+        if let Err(error) = NewKeys::try_from(packet) {
+            warn!(addr = %self.addr, %error, "failed to read new keys packet");
             return;
         };
 
