@@ -4,7 +4,7 @@ use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
     digest,
     rand::{self, SystemRandom},
-    signature::KeyPair,
+    signature::{KeyPair, Signature},
 };
 use tracing::{debug, error, warn};
 
@@ -78,7 +78,7 @@ impl EcdhKeyExchange {
             server_ephemeral_public_key: kx_public_key.as_ref().to_owned(),
             exchange_hash_signature: TaggedSignature {
                 algorithm: PublicKeyAlgorithm::Ed25519,
-                signature: signature.as_ref().to_owned(),
+                signature,
             },
         };
 
@@ -133,7 +133,6 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct EcdhKeyExchangeReply<'a> {
     server_public_host_key: TaggedPublicKey<'a>,
     server_ephemeral_public_key: Vec<u8>,
@@ -168,10 +167,9 @@ impl Encode for TaggedPublicKey<'_> {
     }
 }
 
-#[derive(Debug)]
 struct TaggedSignature<'a> {
     algorithm: PublicKeyAlgorithm<'a>,
-    signature: Vec<u8>,
+    signature: Signature,
 }
 
 impl Encode for TaggedSignature<'_> {
@@ -179,7 +177,7 @@ impl Encode for TaggedSignature<'_> {
         let start = buf.len();
         buf.extend([0; 4]);
         self.algorithm.as_str().as_bytes().encode(buf);
-        self.signature.encode(buf);
+        self.signature.as_ref().encode(buf);
         let len = (buf.len() - start - 4) as u32;
         if let Some(dst) = buf.get_mut(start..start + 4) {
             dst.copy_from_slice(&len.to_be_bytes());
