@@ -137,10 +137,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         self.update_keys(keys);
-        self.write
+        if let Err(error) = self
+            .write
             .write_packet(&mut self.stream, &MessageType::Ignore, None)
             .await
-            .unwrap();
+        {
+            error!(addr = %self.context.addr, %error, "failed to send ignore packet");
+            return;
+        }
 
         todo!();
     }
