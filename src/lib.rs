@@ -4,7 +4,7 @@ use std::{io, str, sync::Arc};
 use aws_lc_rs::signature::Ed25519KeyPair;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, instrument, warn};
 
 mod key_exchange;
 use key_exchange::KeyExchange;
@@ -36,13 +36,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 
     /// Drive the connection forward
+    #[instrument(name = "connection", skip(self), fields(addr = %self.context.addr))]
     pub async fn run(mut self) {
         let mut exchange = HandshakeHash::default();
         let state = VersionExchange::default();
         let state = match state.advance(&mut exchange, &mut self).await {
             Ok(state) => state,
             Err(error) => {
-                error!(addr = %self.context.addr, %error, "failed to complete version exchange");
+                error!(%error, "failed to complete version exchange");
                 return;
             }
         };
@@ -52,7 +53,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
-                error!(addr = %self.context.addr, %error, "failed to read packet");
+                error!(%error, "failed to read packet");
                 return;
             }
         };
@@ -60,7 +61,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
-                error!(addr = %self.context.addr, %error, "failed to read key exchange init");
+                error!(%error, "failed to read key exchange init");
                 return;
             }
         };
@@ -75,7 +76,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .write_packet(&mut self.stream, &key_exchange_init, Some(&mut exchange))
             .await
         {
-            error!(addr = %self.context.addr, %error, "failed to send key exchange init packet");
+            error!(%error, "failed to send key exchange init packet");
             return;
         }
 
@@ -84,7 +85,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
-                error!(addr = %self.context.addr, %error, "failed to read packet");
+                error!(%error, "failed to read packet");
                 return;
             }
         };
@@ -92,7 +93,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
-                error!(addr = %self.context.addr, %error, "failed to read ecdh key exchange init");
+                error!(%error, "failed to read ecdh key exchange init");
                 return;
             }
         };
@@ -108,14 +109,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .write_packet(&mut self.stream, &key_exchange_reply, None)
             .await
         {
-            warn!(addr = %self.context.addr, %error, "failed to send key exchange init packet");
+            warn!(%error, "failed to send key exchange init packet");
             return;
         }
 
         // Exchange new keys packets and install new keys
 
         if let Err(error) = self.update_keys(keys).await {
-            error!(addr = %self.context.addr, %error, "failed to update keys");
+            error!(%error, "failed to update keys");
             return;
         }
 
@@ -124,7 +125,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .write_packet(&mut self.stream, &MessageType::Ignore, None)
             .await
         {
-            error!(addr = %self.context.addr, %error, "failed to send ignore packet");
+            error!(%error, "failed to send ignore packet");
             return;
         }
 
