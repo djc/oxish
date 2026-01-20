@@ -12,7 +12,7 @@ mod proto;
 use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteState};
 
 use crate::{
-    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys},
+    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
     proto::{AesCtrReadKeys, HandshakeHash},
 };
 
@@ -134,17 +134,25 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         }
 
-        // Cipher and MAC algorithms are negotiated during key exchange.
-        // Currently this hard codes AES-128-CTR and HMAC-SHA256.
-        self.read.decryption_key = Some(AesCtrReadKeys::new(keys.client_to_server));
-        self.write.keys = Some(AesCtrWriteKeys::new(keys.server_to_client));
-
+        self.update_keys(keys);
         self.write
             .write_packet(&mut self.stream, &MessageType::Ignore, None)
             .await
             .unwrap();
 
         todo!();
+    }
+
+    fn update_keys(&mut self, keys: RawKeySet) {
+        let RawKeySet {
+            client_to_server,
+            server_to_client,
+        } = keys;
+
+        // Cipher and MAC algorithms are negotiated during key exchange.
+        // Currently this hard codes AES-128-CTR and HMAC-SHA256.
+        self.read.decryption_key = Some(AesCtrReadKeys::new(client_to_server));
+        self.write.keys = Some(AesCtrWriteKeys::new(server_to_client));
     }
 }
 
