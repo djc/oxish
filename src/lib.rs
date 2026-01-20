@@ -10,6 +10,7 @@ mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
 use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteState};
+mod service;
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},

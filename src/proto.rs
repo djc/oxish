@@ -471,6 +471,11 @@ pub(crate) struct IncomingPacket<'a> {
     pub(crate) payload: &'a [u8],
 }
 
+pub(crate) struct OutgoingPacket<'a> {
+    #[expect(unused)]
+    pub(crate) payload: &'a [u8],
+}
+
 /// An encoded outgoing packet including length field and padding, but
 /// excluding encryption and MAC
 #[must_use]
