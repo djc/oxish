@@ -281,7 +281,7 @@ impl WriteState {
         let pending_length = self.encrypted_buf.len();
 
         let Some(keys) = &mut self.keys else {
-            let packet = OutgoingPacket::new(&mut self.encrypted_buf, payload, 1)?;
+            let packet = EncodedPacket::new(&mut self.encrypted_buf, payload, 1)?;
             if let Some(exchange_hash) = exchange_hash {
                 exchange_hash.prefixed(packet.payload());
             }
@@ -290,7 +290,7 @@ impl WriteState {
 
         let block_len = keys.encryption.algorithm().block_len();
 
-        let packet = OutgoingPacket::new(&mut self.buf, payload, block_len)?;
+        let packet = EncodedPacket::new(&mut self.buf, payload, block_len)?;
         if let Some(exchange_hash) = exchange_hash {
             exchange_hash.prefixed(packet.payload());
         }
@@ -451,13 +451,15 @@ pub(crate) struct IncomingPacket<'a> {
     pub(crate) payload: &'a [u8],
 }
 
+/// An encoded outgoing packet including length field and padding, but
+/// excluding encryption and MAC
 #[must_use]
-pub(crate) struct OutgoingPacket<'a> {
+struct EncodedPacket<'a> {
     packet: &'a [u8],
     payload: &'a [u8],
 }
 
-impl<'a> OutgoingPacket<'a> {
+impl<'a> EncodedPacket<'a> {
     fn new(
         buf: &'a mut Vec<u8>,
         payload: &impl Encode,
@@ -512,7 +514,7 @@ impl<'a> OutgoingPacket<'a> {
             packet_length_dst.copy_from_slice(&packet_len.to_be_bytes());
         }
 
-        Ok(OutgoingPacket {
+        Ok(EncodedPacket {
             packet: &buf[start..],
             payload: &buf[payload_range],
         })
