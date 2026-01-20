@@ -261,6 +261,18 @@ impl WriteState {
         payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,
     ) -> Result<(), Error> {
+        self.handle_packet(payload, exchange_hash)?;
+
+        future::poll_fn(|cx| self.poll_write_to(cx, stream)).await?;
+
+        Ok(())
+    }
+
+    fn handle_packet(
+        &mut self,
+        payload: &impl Encode,
+        exchange_hash: Option<&mut HandshakeHash>,
+    ) -> Result<(), Error> {
         self.buf.clear();
 
         let sequence_number = self.sequence_number;
@@ -298,8 +310,6 @@ impl WriteState {
         hmac_ctx.update(data);
         let mac = hmac_ctx.sign();
         self.encrypted_buf.extend_from_slice(mac.as_ref());
-
-        future::poll_fn(|cx| self.poll_write_to(cx, stream)).await?;
 
         Ok(())
     }
