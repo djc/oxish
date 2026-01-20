@@ -319,6 +319,11 @@ impl WriteState {
 
         Poll::Ready(Ok(()))
     }
+
+    pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
+        payload.encode(&mut self.buf);
+        &self.buf
+    }
 }
 
 impl Default for WriteState {
