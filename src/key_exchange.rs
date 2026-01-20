@@ -25,14 +25,14 @@ impl EcdhKeyExchange {
         self,
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
-        conn: &'out mut ConnectionContext<'out>,
+        cx: &'out ConnectionContext,
     ) -> Result<(EcdhKeyExchangeReply<'out>, RawKeySet), ()> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
         TaggedPublicKey {
             algorithm: PublicKeyAlgorithm::Ed25519,
-            key: conn.host_key.public_key().as_ref(),
+            key: cx.host_key.public_key().as_ref(),
         }
         .encode(&mut host_key_buf);
         exchange.update(&host_key_buf);
@@ -43,12 +43,12 @@ impl EcdhKeyExchange {
 
         let random = SystemRandom::new();
         let Ok(kx_private_key) = EphemeralPrivateKey::generate(&X25519, &random) else {
-            warn!(addr = %conn.addr, "failed to generate key exchange private key");
+            warn!(addr = %cx.addr, "failed to generate key exchange private key");
             return Err(());
         };
 
         let Ok(kx_public_key) = kx_private_key.compute_public_key() else {
-            warn!(addr = %conn.addr, "failed to compute key exchange public key");
+            warn!(addr = %cx.addr, "failed to compute key exchange public key");
             return Err(());
         };
 
@@ -62,18 +62,18 @@ impl EcdhKeyExchange {
             aws_lc_rs::error::Unspecified,
             |shared_secret| Ok(shared_secret.to_vec()),
         ) else {
-            warn!(addr = %conn.addr, "key exchange failed");
+            warn!(addr = %cx.addr, "key exchange failed");
             return Err(());
         };
 
         with_mpint_bytes(&shared_secret, |bytes| exchange.update(bytes));
 
         let exchange_hash = exchange.finish();
-        let signature = conn.host_key.sign(exchange_hash.as_ref());
+        let signature = cx.host_key.sign(exchange_hash.as_ref());
         let key_exchange_reply = EcdhKeyExchangeReply {
             server_public_host_key: TaggedPublicKey {
                 algorithm: PublicKeyAlgorithm::Ed25519,
-                key: conn.host_key.public_key().as_ref(),
+                key: cx.host_key.public_key().as_ref(),
             },
             server_ephemeral_public_key: kx_public_key.as_ref().to_owned(),
             exchange_hash_signature: TaggedSignature {
@@ -195,29 +195,29 @@ impl KeyExchange {
     pub(crate) fn advance<'out>(
         self,
         peer_key_exchange_init: KeyExchangeInit<'_>,
-        conn: &'out mut ConnectionContext<'out>,
+        cx: &ConnectionContext,
     ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ()> {
         let key_exchange_init = match KeyExchangeInit::new() {
             Ok(kex_init) => kex_init,
             Err(error) => {
-                error!(addr = %conn.addr, %error, "failed to create key exchange init");
+                error!(addr = %cx.addr, %error, "failed to create key exchange init");
                 return Err(());
             }
         };
 
         let algorithms = match Algorithms::choose(peer_key_exchange_init, &key_exchange_init) {
             Ok(algorithms) => {
-                debug!(addr = %conn.addr, ?algorithms, "chosen algorithms");
+                debug!(addr = %cx.addr, ?algorithms, "chosen algorithms");
                 algorithms
             }
             Err(error) => {
-                warn!(addr = %conn.addr, %error, "failed to choose algorithms");
+                warn!(addr = %cx.addr, %error, "failed to choose algorithms");
                 return Err(());
             }
         };
 
         if algorithms.key_exchange != KeyExchangeAlgorithm::Curve25519Sha256 {
-            warn!(addr = %conn.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
+            warn!(addr = %cx.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
             return Err(());
         }
 
