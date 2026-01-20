@@ -9,7 +9,9 @@ use aws_lc_rs::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{with_mpint_bytes, Decode, Decoded, Encode, HandshakeHash, MessageType, Packet},
+    proto::{
+        with_mpint_bytes, Decode, Decoded, Encode, HandshakeHash, IncomingPacket, MessageType,
+    },
     ConnectionContext, Error,
 };
 
@@ -103,10 +105,10 @@ pub(crate) struct EcdhKeyExchangeInit<'a> {
     client_ephemeral_public_key: &'a [u8],
 }
 
-impl<'a> TryFrom<Packet<'a>> for EcdhKeyExchangeInit<'a> {
+impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
     type Error = Error;
 
-    fn try_from(packet: Packet<'a>) -> Result<Self, Error> {
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Error> {
         let Decoded {
             value: r#type,
             next,
@@ -299,10 +301,10 @@ impl KeyExchangeInit<'static> {
     }
 }
 
-impl<'a> TryFrom<Packet<'a>> for KeyExchangeInit<'a> {
+impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
     type Error = Error;
 
-    fn try_from(packet: Packet<'a>) -> Result<Self, Self::Error> {
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         let Decoded {
             value: r#type,
             next,
@@ -422,10 +424,10 @@ impl Encode for KeyExchangeInit<'_> {
 
 pub(crate) struct NewKeys;
 
-impl<'a> TryFrom<Packet<'a>> for NewKeys {
+impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
     type Error = Error;
 
-    fn try_from(packet: Packet<'a>) -> Result<Self, Self::Error> {
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         let Decoded {
             value: r#type,
             next,

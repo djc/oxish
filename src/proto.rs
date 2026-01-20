@@ -38,7 +38,7 @@ impl ReadState {
     pub(crate) async fn packet<'a>(
         &'a mut self,
         stream: &mut (impl AsyncRead + Unpin),
-    ) -> Result<Packet<'a>, Error> {
+    ) -> Result<IncomingPacket<'a>, Error> {
         loop {
             match self.poll_packet()? {
                 Completion::Complete(packet_length) => return self.decode_packet(packet_length),
@@ -153,7 +153,7 @@ impl ReadState {
     pub(crate) fn decode_packet<'a>(
         &'a self,
         packet_length: PacketLength,
-    ) -> Result<Packet<'a>, Error> {
+    ) -> Result<IncomingPacket<'a>, Error> {
         let Decoded {
             value: padding_length,
             next,
@@ -176,7 +176,7 @@ impl ReadState {
             )));
         };
 
-        Ok(Packet { payload })
+        Ok(IncomingPacket { payload })
     }
 
     pub(crate) async fn buffer<'a>(
@@ -447,7 +447,7 @@ impl From<u8> for MessageType {
     }
 }
 
-pub(crate) struct Packet<'a> {
+pub(crate) struct IncomingPacket<'a> {
     pub(crate) payload: &'a [u8],
 }
 
