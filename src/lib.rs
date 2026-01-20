@@ -13,7 +13,7 @@ use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteS
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
-    proto::{AesCtrReadKeys, HandshakeHash},
+    proto::{AesCtrReadKeys, Encode, HandshakeHash},
 };
 
 /// A single SSH connection
@@ -188,8 +188,8 @@ impl VersionExchange {
         }
 
         let ident = Identification::outgoing();
-        let server_ident_bytes = ident.encode();
-        if let Err(error) = conn.stream.write_all(&server_ident_bytes).await {
+        let server_ident_bytes = conn.write.encoded(&ident);
+        if let Err(error) = conn.stream.write_all(server_ident_bytes).await {
             warn!(addr = %conn.context.addr, %error, "failed to send version exchange");
             return Err(error.into());
         }
@@ -263,9 +263,8 @@ impl<'a> Identification<'a> {
     }
 }
 
-impl Identification<'_> {
-    fn encode(&self) -> Vec<u8> {
-        let mut buf = vec![];
+impl Encode for Identification<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(b"SSH-");
         buf.extend_from_slice(self.protocol.as_bytes());
         buf.push(b'-');
@@ -275,7 +274,6 @@ impl Identification<'_> {
             buf.extend_from_slice(self.comments.as_bytes());
         }
         buf.extend_from_slice(b"\r\n");
-        buf
     }
 }
 
