@@ -114,29 +114,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Exchange new keys packets and install new keys
 
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(addr = %self.context.addr, %error, "failed to read packet");
-                return;
-            }
-        };
-
-        if let Err(error) = NewKeys::try_from(packet) {
-            error!(addr = %self.context.addr, %error, "failed to read new keys packet");
-            return;
-        };
-
-        if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &NewKeys, None)
-            .await
-        {
-            error!(addr = %self.context.addr, %error, "failed to send newkeys packet");
+        if let Err(error) = self.update_keys(keys).await {
+            error!(addr = %self.context.addr, %error, "failed to update keys");
             return;
         }
 
-        self.update_keys(keys);
         if let Err(error) = self
             .write
             .write_packet(&mut self.stream, &MessageType::Ignore, None)
@@ -149,7 +131,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         todo!();
     }
 
-    fn update_keys(&mut self, keys: RawKeySet) {
+    async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), Error> {
+        let packet = self.read.packet(&mut self.stream).await?;
+        NewKeys::try_from(packet)?;
+        self.write
+            .write_packet(&mut self.stream, &NewKeys, None)
+            .await?;
+
         let RawKeySet {
             client_to_server,
             server_to_client,
@@ -159,6 +147,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Currently this hard codes AES-128-CTR and HMAC-SHA256.
         self.read.decryption_key = Some(AesCtrReadKeys::new(client_to_server));
         self.write.keys = Some(AesCtrWriteKeys::new(server_to_client));
+        Ok(())
     }
 }
 
