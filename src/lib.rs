@@ -47,6 +47,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
+        // Receive and send key exchange init packets
+
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
@@ -76,6 +78,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             warn!(addr = %self.context.addr, %error, "failed to send key exchange init packet");
             return;
         }
+
+        // Perform ECDH key exchange
 
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
@@ -107,6 +111,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             warn!(addr = %self.context.addr, %error, "failed to send key exchange init packet");
             return;
         }
+
+        // Exchange new keys packets and install new keys
 
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
