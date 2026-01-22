@@ -1,86 +1,169 @@
-use std::{str, sync::Arc};
+use std::{io::Write, str, sync::Arc};
 
 use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
-    digest,
+    cipher::{StreamingDecryptingKey, StreamingEncryptingKey, UnboundCipherKey, AES_128},
+    digest, hmac,
     rand::{self, SystemRandom},
-    signature::{KeyPair, Signature},
+    signature::KeyPair,
 };
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{
-        with_mpint_bytes, Decode, Decoded, Encode, HandshakeHash, IncomingPacket, MessageType,
-    },
-    ConnectionContext, Error,
+    proto::{with_mpint_bytes, Decode, Decoded, Encode, MessageType, Packet},
+    Error, SshTransportConnection,
 };
 
 pub(crate) struct EcdhKeyExchange {
+    cookie: [u8; 16],
     /// The current session id or `None` if this is the initial key exchange.
     session_id: Option<digest::Digest>,
 }
 
 impl EcdhKeyExchange {
-    pub(crate) fn advance<'out>(
+    pub(crate) async fn advance(
         self,
-        ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
-        mut exchange: HandshakeHash,
-        cx: &'out ConnectionContext,
-    ) -> Result<(EcdhKeyExchangeReply<'out>, RawKeySet), ()> {
+        mut exchange: digest::Context,
+        conn: &mut SshTransportConnection,
+    ) -> Result<(), ()> {
+        let packet = match conn.read.read_packet(&mut conn.stream_read).await {
+            Ok(packet) => packet,
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read packet");
+                return Err(());
+            }
+        };
+
+        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
+            Ok(ecdh_key_exchange_init) => {
+                debug!(addr = %conn.addr, "received ECDH key exchange start");
+                ecdh_key_exchange_init
+            }
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read ECDH key exchange start");
+                return Err(());
+            }
+        };
+
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
         TaggedPublicKey {
             algorithm: PublicKeyAlgorithm::Ed25519,
-            key: cx.host_key.public_key().as_ref(),
+            key: conn.host_key.public_key().as_ref(),
         }
         .encode(&mut host_key_buf);
         exchange.update(&host_key_buf);
 
         // Write the client's ephemeral public key (`Q_C`) to the exchange hash
 
-        exchange.prefixed(ecdh_key_exchange_init.client_ephemeral_public_key);
+        exchange.update(
+            &(ecdh_key_exchange_init.client_ephemeral_public_key.len() as u32).to_be_bytes(),
+        );
+        exchange.update(ecdh_key_exchange_init.client_ephemeral_public_key);
 
         let random = SystemRandom::new();
         let Ok(kx_private_key) = EphemeralPrivateKey::generate(&X25519, &random) else {
-            warn!(addr = %cx.addr, "failed to generate key exchange private key");
+            warn!(addr = %conn.addr, "failed to generate key exchange private key");
             return Err(());
         };
 
         let Ok(kx_public_key) = kx_private_key.compute_public_key() else {
-            warn!(addr = %cx.addr, "failed to compute key exchange public key");
+            warn!(addr = %conn.addr, "failed to compute key exchange public key");
             return Err(());
         };
 
         let client_kx_public_key =
             UnparsedPublicKey::new(&X25519, ecdh_key_exchange_init.client_ephemeral_public_key);
 
-        exchange.prefixed(kx_public_key.as_ref());
+        exchange.update(&(kx_public_key.as_ref().len() as u32).to_be_bytes());
+        exchange.update(kx_public_key.as_ref());
         let Ok(shared_secret) = agreement::agree_ephemeral(
             kx_private_key,
             client_kx_public_key,
             aws_lc_rs::error::Unspecified,
             |shared_secret| Ok(shared_secret.to_vec()),
         ) else {
-            warn!(addr = %cx.addr, "key exchange failed");
+            warn!(addr = %conn.addr, "key exchange failed");
             return Err(());
         };
 
         with_mpint_bytes(&shared_secret, |bytes| exchange.update(bytes));
 
         let exchange_hash = exchange.finish();
-        let signature = cx.host_key.sign(exchange_hash.as_ref());
+        let signature = conn.host_key.sign(exchange_hash.as_ref());
         let key_exchange_reply = EcdhKeyExchangeReply {
             server_public_host_key: TaggedPublicKey {
                 algorithm: PublicKeyAlgorithm::Ed25519,
-                key: cx.host_key.public_key().as_ref(),
+                key: conn.host_key.public_key().as_ref(),
             },
-            server_ephemeral_public_key: kx_public_key.as_ref().to_owned(),
+            server_ephemeral_public_key: kx_public_key.as_ref(),
             exchange_hash_signature: TaggedSignature {
                 algorithm: PublicKeyAlgorithm::Ed25519,
-                signature,
+                signature: signature.as_ref(),
             },
         };
+
+        if let Err(error) = conn
+            .stream_write
+            .write_packet(&key_exchange_reply, |_| {})
+            .await
+        {
+            warn!(addr = %conn.addr, %error, "failed to send version exchange");
+            return Err(());
+        }
+
+        let packet = match conn.read.read_packet(&mut conn.stream_read).await {
+            Ok(packet) => packet,
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read packet");
+                return Err(());
+            }
+        };
+        let Decoded {
+            value: r#type,
+            next: _,
+        } = MessageType::decode(packet.payload)
+            .map_err(|error| warn!(addr = %conn.addr, %error, "failed to read packet type"))?;
+        if r#type != MessageType::NewKeys {
+            warn!(addr = %conn.addr,  "unexpected message type {:?}", r#type);
+            return Err(());
+        }
+
+        if let Err(error) = conn
+            .stream_write
+            .write_packet(&MessageType::NewKeys, |_| {})
+            .await
+        {
+            warn!(addr = %conn.addr, %error, "failed to send newkeys packet");
+            return Err(());
+        }
+
+        if std::env::var("OXISH_ENABLE_KEYLOG").as_deref() == Ok("1") {
+            #[allow(clippy::assertions_on_constants)]
+            {
+                assert!(cfg!(debug_assertions));
+            }
+            eprintln!("Logging shared secret to ssh_keylog file!");
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("ssh_keylog")
+                .unwrap()
+                .write_all(
+                    format!(
+                        "{:032x} SHARED_SECRET {}\n",
+                        u128::from_be_bytes(self.cookie),
+                        shared_secret
+                            .iter()
+                            .map(|&byte| format!("{byte:02X}"))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+        }
 
         // The first exchange hash is used as session id.
         let derivation = KeyDerivation {
@@ -88,14 +171,48 @@ impl EcdhKeyExchange {
             exchange_hash,
             session_id: Arc::new(self.session_id.unwrap_or(exchange_hash)),
         };
+        let raw_keys = RawKeySet {
+            client_to_server: RawKeys::client_to_server(&derivation),
+            server_to_client: RawKeys::server_to_client(&derivation),
+        };
 
-        Ok((
-            key_exchange_reply,
-            RawKeySet {
-                client_to_server: RawKeys::client_to_server(&derivation),
-                server_to_client: RawKeys::server_to_client(&derivation),
-            },
-        ))
+        conn.read.decryption_key = Some((
+            StreamingDecryptingKey::ctr(
+                UnboundCipherKey::new(
+                    &AES_128,
+                    &raw_keys.client_to_server.encryption_key.derive::<16>(),
+                )
+                .unwrap(),
+                aws_lc_rs::cipher::DecryptionContext::Iv128(
+                    raw_keys.client_to_server.initial_iv.derive::<16>().into(),
+                ),
+            )
+            .unwrap(),
+            hmac::Key::new(
+                hmac::HMAC_SHA256,
+                &raw_keys.client_to_server.integrity_key.derive::<32>(),
+            ),
+        ));
+
+        conn.stream_write.set_encryption_key(
+            StreamingEncryptingKey::less_safe_ctr(
+                UnboundCipherKey::new(
+                    &AES_128,
+                    &raw_keys.server_to_client.encryption_key.derive::<16>(),
+                )
+                .unwrap(),
+                aws_lc_rs::cipher::EncryptionContext::Iv128(
+                    raw_keys.server_to_client.initial_iv.derive::<16>().into(),
+                ),
+            )
+            .unwrap(),
+            hmac::Key::new(
+                hmac::HMAC_SHA256,
+                &raw_keys.server_to_client.integrity_key.derive::<32>(),
+            ),
+        );
+
+        Ok(())
     }
 }
 
@@ -105,10 +222,10 @@ pub(crate) struct EcdhKeyExchangeInit<'a> {
     client_ephemeral_public_key: &'a [u8],
 }
 
-impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
+impl<'a> TryFrom<Packet<'a>> for EcdhKeyExchangeInit<'a> {
     type Error = Error;
 
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Error> {
+    fn try_from(packet: Packet<'a>) -> Result<Self, Error> {
         let Decoded {
             value: r#type,
             next,
@@ -133,9 +250,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct EcdhKeyExchangeReply<'a> {
     server_public_host_key: TaggedPublicKey<'a>,
-    server_ephemeral_public_key: Vec<u8>,
+    server_ephemeral_public_key: &'a [u8],
     exchange_hash_signature: TaggedSignature<'a>,
 }
 
@@ -167,9 +285,10 @@ impl Encode for TaggedPublicKey<'_> {
     }
 }
 
+#[derive(Debug)]
 struct TaggedSignature<'a> {
     algorithm: PublicKeyAlgorithm<'a>,
-    signature: Signature,
+    signature: &'a [u8],
 }
 
 impl Encode for TaggedSignature<'_> {
@@ -177,7 +296,7 @@ impl Encode for TaggedSignature<'_> {
         let start = buf.len();
         buf.extend([0; 4]);
         self.algorithm.as_str().as_bytes().encode(buf);
-        self.signature.as_ref().encode(buf);
+        self.signature.encode(buf);
         let len = (buf.len() - start - 4) as u32;
         if let Some(dst) = buf.get_mut(start..start + 4) {
             dst.copy_from_slice(&len.to_be_bytes());
@@ -185,48 +304,83 @@ impl Encode for TaggedSignature<'_> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct KeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
     session_id: Option<digest::Digest>,
 }
 
 impl KeyExchange {
-    pub(crate) fn advance<'out>(
+    pub(crate) fn for_new_session() -> Self {
+        Self { session_id: None }
+    }
+
+    pub(crate) async fn advance(
         self,
-        peer_key_exchange_init: KeyExchangeInit<'_>,
-        cx: &ConnectionContext,
-    ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ()> {
-        let key_exchange_init = match KeyExchangeInit::new() {
-            Ok(kex_init) => kex_init,
+        exchange: &mut digest::Context,
+        conn: &mut SshTransportConnection,
+    ) -> Result<EcdhKeyExchange, ()> {
+        let packet = match conn.read.read_packet(&mut conn.stream_read).await {
+            Ok(packet) => packet,
             Err(error) => {
-                error!(addr = %cx.addr, %error, "failed to create key exchange init");
+                warn!(addr = %conn.addr, %error, "failed to read packet");
                 return Err(());
             }
         };
 
-        let algorithms = match Algorithms::choose(peer_key_exchange_init, &key_exchange_init) {
+        exchange.update(&(packet.payload.len() as u32).to_be_bytes());
+        exchange.update(packet.payload);
+
+        let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
+            Ok(key_exchange_init) => key_exchange_init,
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read key exchange init");
+                return Err(());
+            }
+        };
+
+        let key_exchange_init = match KeyExchangeInit::new() {
+            Ok(kex_init) => kex_init,
+            Err(error) => {
+                error!(addr = %conn.addr, %error, "failed to create key exchange init");
+                return Err(());
+            }
+        };
+
+        let cookie = key_exchange_init.cookie;
+
+        if let Err(error) = conn
+            .stream_write
+            .write_packet(&key_exchange_init, |kex_init_payload| {
+                exchange.update(&(kex_init_payload.len() as u32).to_be_bytes());
+                exchange.update(kex_init_payload);
+            })
+            .await
+        {
+            warn!(addr = %conn.addr, %error, "failed to send key exchange init packet");
+            return Err(());
+        }
+
+        let algorithms = match Algorithms::choose(peer_key_exchange_init, key_exchange_init) {
             Ok(algorithms) => {
-                debug!(addr = %cx.addr, ?algorithms, "chosen algorithms");
+                debug!(addr = %conn.addr, ?algorithms, "chosen algorithms");
                 algorithms
             }
             Err(error) => {
-                warn!(addr = %cx.addr, %error, "failed to choose algorithms");
+                warn!(addr = %conn.addr, %error, "failed to choose algorithms");
                 return Err(());
             }
         };
 
         if algorithms.key_exchange != KeyExchangeAlgorithm::Curve25519Sha256 {
-            warn!(addr = %cx.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
+            warn!(addr = %conn.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
             return Err(());
         }
 
-        Ok((
-            key_exchange_init,
-            EcdhKeyExchange {
-                session_id: self.session_id,
-            },
-        ))
+        Ok(EcdhKeyExchange {
+            cookie,
+            session_id: self.session_id,
+        })
     }
 }
 
@@ -238,7 +392,7 @@ struct Algorithms {
 impl Algorithms {
     fn choose(
         client: KeyExchangeInit<'_>,
-        server: &KeyExchangeInit<'static>,
+        server: KeyExchangeInit<'static>,
     ) -> Result<Self, Error> {
         let key_exchange = client
             .key_exchange_algorithms
@@ -299,10 +453,10 @@ impl KeyExchangeInit<'static> {
     }
 }
 
-impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
+impl<'a> TryFrom<Packet<'a>> for KeyExchangeInit<'a> {
     type Error = Error;
 
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+    fn try_from(packet: Packet<'a>) -> Result<Self, Self::Error> {
         let Decoded {
             value: r#type,
             next,
@@ -420,35 +574,6 @@ impl Encode for KeyExchangeInit<'_> {
     }
 }
 
-pub(crate) struct NewKeys;
-
-impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
-    type Error = Error;
-
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        let Decoded {
-            value: r#type,
-            next,
-        } = MessageType::decode(packet.payload)?;
-        if r#type != MessageType::NewKeys {
-            return Err(Error::InvalidPacket("unexpected message type"));
-        }
-
-        if !next.is_empty() {
-            debug!(bytes = ?next, "unexpected trailing bytes");
-            return Err(Error::InvalidPacket("unexpected trailing bytes"));
-        }
-
-        Ok(Self)
-    }
-}
-
-impl Encode for NewKeys {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        MessageType::NewKeys.encode(buf);
-    }
-}
-
 impl<T: Encode> Encode for [T] {
     fn encode(&self, buf: &mut Vec<u8>) {
         let offset = buf.len();
@@ -501,15 +626,15 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
 /// The raw hashes from which we will derive the crypto keys.
 ///
 /// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
-pub(crate) struct RawKeySet {
-    pub(crate) client_to_server: RawKeys,
-    pub(crate) server_to_client: RawKeys,
+struct RawKeySet {
+    client_to_server: RawKeys,
+    server_to_client: RawKeys,
 }
 
-pub(crate) struct RawKeys {
-    pub(crate) initial_iv: Key,
-    pub(crate) encryption_key: Key,
-    pub(crate) integrity_key: Key,
+struct RawKeys {
+    initial_iv: Key,
+    encryption_key: Key,
+    integrity_key: Key,
 }
 
 impl RawKeys {
@@ -550,14 +675,14 @@ impl KeyDerivation {
     }
 }
 
-pub(crate) struct Key {
+struct Key {
     base: digest::Context,
     session_id: Arc<digest::Digest>,
     input: KeyInput,
 }
 
 impl Key {
-    pub(crate) fn derive<const N: usize>(self) -> [u8; N] {
+    fn derive<const N: usize>(self) -> [u8; N] {
         let block_len = digest::SHA256.output_len();
 
         let mut key = [0; N];

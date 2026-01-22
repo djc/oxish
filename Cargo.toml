@@ -9,11 +9,13 @@ license = "Apache-2.0 OR MIT"
 anyhow = "1.0.95"
 aws-lc-rs = { version = "1.12", features = ["prebuilt-nasm"] }
 clap = { version = "4.5.24", features = ["derive"] }
+futures = "0.3.31"
 listenfd = "1.0.2"
 thiserror = "2.0.9"
-tokio = { version = "1.42", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+tokio = { version = "1.42", features = ["io-util", "macros", "net", "rt-multi-thread", "time", "sync"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+libc = "0.2.180"
 
 [lints.rust]
 elided_lifetimes_in_paths = "warn"
