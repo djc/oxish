@@ -1,86 +1,96 @@
-use core::future;
 use core::iter;
-use core::pin::Pin;
-use core::task::{ready, Context, Poll};
-use std::{borrow::Cow, io};
+use std::io;
 
 use aws_lc_rs::{
-    cipher::{self, StreamingDecryptingKey, StreamingEncryptingKey, UnboundCipherKey},
-    constant_time, digest, hmac, rand,
+    cipher::{StreamingDecryptingKey, StreamingEncryptingKey},
+    constant_time, hmac, rand,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tracing::debug;
 
-use crate::{key_exchange::RawKeys, Error};
+use crate::Error;
 
-/// The reader and decryption state for an SSH connection
+/// The reader and decryption state for an SSH connection.
+// FIXME implement in-place decryption once aws-lc-rs supports this for AES-CTR.
 pub(crate) struct ReadState {
-    /// Buffer for incoming data from the transport stream
     buf: Vec<u8>,
-    /// Full length of the last decoded packet, including packet length and MAC
-    ///
-    /// Set after decoding and decrypting a packet successfully in `poll_packet()`; reduced at
-    /// the start of each call to `poll_packet()`.
-    last_length: usize,
-
-    /// Buffer with blocks of decrypted data
-    ///
-    /// aws-lc-rs does not support in-place decryption for AES-CTR.
     decrypted_buf: Vec<u8>,
-    /// Whether the a first block including the packet length has been decrypted
-    decrypted_first_block: bool,
+    unread_start: usize,
+    needed: usize,
 
     sequence_number: u32,
-    pub(crate) decryption_key: Option<AesCtrReadKeys>,
+    pub(crate) decryption_key: Option<(StreamingDecryptingKey, hmac::Key)>,
+}
+
+impl Default for ReadState {
+    fn default() -> Self {
+        Self {
+            buf: Vec::with_capacity(16_384),
+            decrypted_buf: Vec::with_capacity(16_384),
+            unread_start: 0,
+            needed: 0,
+            sequence_number: 0,
+            decryption_key: None,
+        }
+    }
 }
 
 impl ReadState {
-    pub(crate) async fn packet<'a>(
+    pub(crate) async fn read_packet<'a>(
         &'a mut self,
         stream: &mut (impl AsyncRead + Unpin),
-    ) -> Result<IncomingPacket<'a>, Error> {
+    ) -> Result<Packet<'a>, Error> {
         loop {
             match self.poll_packet()? {
-                Completion::Complete((sequence_number, packet_length)) => {
-                    return self.decode_packet(sequence_number, packet_length)
+                Some((sequence_number, packet_length)) => {
+                    return self.decode_packet(sequence_number, packet_length);
                 }
-                Completion::Incomplete(_amount) => {
-                    let _ = self.buffer(stream).await?;
-                    continue;
+                None => {
+                    let read = stream.read_buf(&mut self.incoming_buf()).await?;
+                    debug!(read, "read from stream");
+                    if read == 0 {
+                        return Err(Error::Io(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "EOF",
+                        )));
+                    }
                 }
             }
         }
     }
 
-    // This and decode_packet are split because of a borrowck limitation
-    pub(crate) fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, Error> {
+    // This and decode_packet are split because of a borrowck limitation.
+    pub(crate) fn poll_packet(&mut self) -> Result<Option<(u32, PacketLength)>, Error> {
         // Compact the internal buffer
-        if self.last_length > 0 {
-            self.buf.copy_within(self.last_length.., 0);
-            self.buf.truncate(self.buf.len() - self.last_length);
-            self.last_length = 0;
+        if self.unread_start > 0 {
+            debug_assert!(self.needed == 0);
+            self.buf.copy_within(self.unread_start.., 0);
+            self.buf.truncate(self.buf.len() - self.unread_start);
+            self.unread_start = 0;
             self.decrypted_buf.clear();
-            self.decrypted_first_block = false;
         }
 
-        let (packet_length, mac_len) = if let Some(keys) = &mut self.decryption_key {
-            let block_len = keys.decryption.algorithm().block_len();
+        if self.buf.len() < self.needed {
+            return Ok(None);
+        }
 
-            let needed = block_len;
-            if self.buf.len() < needed {
-                return Ok(Completion::Incomplete(Some(needed)));
+        let (packet_length, mac_len) = if let Some((decrypting_key, integrity_key)) =
+            &mut self.decryption_key
+        // comment to prevent rustfmt indenting the entire if
+        {
+            let block_len = decrypting_key.algorithm().block_len();
+
+            self.needed = block_len;
+            if self.buf.len() < self.needed {
+                return Ok(None);
             }
             self.decrypted_buf.resize(self.buf.len() + block_len, 0);
 
-            if !self.decrypted_first_block {
-                // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
-                let update = keys
-                    .decryption
-                    .less_safe_update(&self.buf[..block_len], &mut self.decrypted_buf[..block_len])
-                    .unwrap();
-                assert_eq!(update.remainder().len(), 0);
-                self.decrypted_first_block = true;
-            }
+            // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
+            let update = decrypting_key
+                .less_safe_update(&self.buf[..block_len], &mut self.decrypted_buf[..block_len])
+                .unwrap();
+            assert_eq!(update.remainder().len(), 0);
 
             let Decoded {
                 value: packet_length,
@@ -88,16 +98,15 @@ impl ReadState {
             } = PacketLength::decode(&self.decrypted_buf[..4])?;
             assert!(next.is_empty());
 
-            let needed = 4
+            self.needed = 4
                 + packet_length.inner as usize
-                + keys.mac.algorithm().digest_algorithm().output_len;
-            if self.buf.len() < needed {
-                return Ok(Completion::Incomplete(Some(needed)));
+                + integrity_key.algorithm().digest_algorithm().output_len;
+            if self.buf.len() < self.needed {
+                return Ok(None);
             }
 
             // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
-            let update = keys
-                .decryption
+            let update = decrypting_key
                 .less_safe_update(
                     &self.buf[block_len..4 + packet_length.inner as usize],
                     &mut self.decrypted_buf[block_len..4 + packet_length.inner as usize],
@@ -107,25 +116,25 @@ impl ReadState {
 
             let packet_excl_mac = &self.decrypted_buf[..4 + packet_length.inner as usize];
 
-            let mut hmac_ctx = hmac::Context::with_key(&keys.mac);
+            let mut hmac_ctx = hmac::Context::with_key(integrity_key);
             hmac_ctx.update(&self.sequence_number.to_be_bytes());
             hmac_ctx.update(packet_excl_mac);
             let actual_mac = hmac_ctx.sign();
             let expected_mac = &self.buf[4 + packet_length.inner as usize
                 ..4 + packet_length.inner as usize
-                    + keys.mac.algorithm().digest_algorithm().output_len];
+                    + integrity_key.algorithm().digest_algorithm().output_len];
             if constant_time::verify_slices_are_equal(actual_mac.as_ref(), expected_mac).is_err() {
                 return Err(Error::InvalidMac);
             }
 
             (
                 packet_length,
-                keys.mac.algorithm().digest_algorithm().output_len,
+                integrity_key.algorithm().digest_algorithm().output_len,
             )
         } else {
-            let needed = 4;
-            if self.buf.len() < needed {
-                return Ok(Completion::Incomplete(Some(needed)));
+            self.needed = 4;
+            if self.buf.len() < self.needed {
+                return Ok(None);
             }
             let Decoded {
                 value: packet_length,
@@ -133,9 +142,9 @@ impl ReadState {
             } = PacketLength::decode(&self.buf[..4])?;
             assert!(next.is_empty());
 
-            let needed = 4 + packet_length.inner as usize;
-            if self.buf.len() < needed {
-                return Ok(Completion::Incomplete(Some(needed)));
+            self.needed = 4 + packet_length.inner as usize;
+            if self.buf.len() < self.needed {
+                return Ok(None);
             }
 
             self.decrypted_buf.clear();
@@ -149,15 +158,18 @@ impl ReadState {
         // this async function is cancel-safe
         let sequence_number = self.sequence_number;
         self.sequence_number = self.sequence_number.wrapping_add(1);
-        self.last_length = 4 + packet_length.inner as usize + mac_len;
-        Ok(Completion::Complete((sequence_number, packet_length)))
+
+        self.unread_start = 4 + packet_length.inner as usize + mac_len;
+        self.needed = 0;
+
+        Ok(Some((sequence_number, packet_length)))
     }
 
     pub(crate) fn decode_packet<'a>(
         &'a self,
         sequence_number: u32,
         packet_length: PacketLength,
-    ) -> Result<IncomingPacket<'a>, Error> {
+    ) -> Result<Packet<'a>, Error> {
         let Decoded {
             value: padding_length,
             next,
@@ -167,17 +179,6 @@ impl ReadState {
         let Some(payload) = next.get(..payload_len) else {
             return Err(Error::Incomplete(Some(payload_len - next.len())));
         };
-
-        let Decoded {
-            value: message_type,
-            next: payload,
-        } = MessageType::decode(payload).map_err(|e| {
-            if matches!(e, Error::Incomplete(_)) {
-                Error::InvalidPacket("Packet without message type")
-            } else {
-                e
-            }
-        })?;
 
         let Some(next) = next.get(payload_len..) else {
             return Err(Error::Unreachable(
@@ -191,225 +192,23 @@ impl ReadState {
             )));
         };
 
-        Ok(IncomingPacket {
-            sequence_number,
-            message_type,
+        Ok(Packet {
+            number: sequence_number,
             payload,
         })
     }
 
-    pub(crate) async fn buffer<'a>(
-        &'a mut self,
-        stream: &mut (impl AsyncRead + Unpin),
-    ) -> Result<&'a [u8], Error> {
-        let read = stream.read_buf(&mut self.buf).await?;
-        debug!(read, "read from stream");
-        match read {
-            0 => Err(Error::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "EOF",
-            ))),
-            _ => Ok(&self.buf),
-        }
-    }
-
-    pub(crate) fn set_last_length(&mut self, len: usize) {
-        self.last_length = len;
-    }
-}
-
-impl Default for ReadState {
-    fn default() -> Self {
-        Self {
-            buf: Vec::with_capacity(16_384),
-            decrypted_buf: Vec::with_capacity(16_384),
-            last_length: 0,
-            decrypted_first_block: false,
-            sequence_number: 0,
-            decryption_key: None,
-        }
-    }
-}
-
-/// Decryption and HMAC key for AES-128-CTR + HMAC-SHA256
-pub(crate) struct AesCtrReadKeys {
-    decryption: StreamingDecryptingKey,
-    mac: hmac::Key,
-}
-
-impl AesCtrReadKeys {
-    pub(crate) fn new(keys: RawKeys) -> Self {
-        Self {
-            decryption: StreamingDecryptingKey::ctr(
-                UnboundCipherKey::new(&cipher::AES_128, &keys.encryption_key.derive::<16>())
-                    .unwrap(),
-                cipher::DecryptionContext::Iv128(keys.initial_iv.derive::<16>().into()),
-            )
-            .unwrap(),
-            mac: hmac::Key::new(hmac::HMAC_SHA256, &keys.integrity_key.derive::<32>()),
-        }
-    }
-}
-
-pub(crate) enum Completion<T> {
-    Complete(T),
-    Incomplete(Option<usize>),
-}
-
-pub(crate) struct WriteState {
-    /// Buffer for encoded but unencrypted packets
-    buf: Vec<u8>,
-
-    /// Buffer with encrypted data ready to be sent to the transport stream
+    /// The buffer to read data into.
     ///
-    /// aws-lc-rs does not support in-place encryption for AES-CTR.
-    encrypted_buf: Vec<u8>,
-
-    /// The amount of bytes at the start of `encrypted_buf`` that have already
-    /// been sent to the transport stream
-    written: usize,
-
-    sequence_number: u32,
-    pub(crate) keys: Option<AesCtrWriteKeys>,
-}
-
-impl WriteState {
-    pub(crate) async fn write_packet(
-        &mut self,
-        stream: &mut (impl AsyncWrite + Unpin),
-        payload: &impl Encode,
-        exchange_hash: Option<&mut HandshakeHash>,
-    ) -> Result<(), Error> {
-        self.handle_packet(payload, exchange_hash)?;
-
-        future::poll_fn(|cx| self.poll_write_to(cx, stream)).await?;
-
-        Ok(())
-    }
-
-    fn handle_packet(
-        &mut self,
-        payload: &impl Encode,
-        exchange_hash: Option<&mut HandshakeHash>,
-    ) -> Result<(), Error> {
-        self.buf.clear();
-
-        let sequence_number = self.sequence_number;
-        self.sequence_number = self.sequence_number.wrapping_add(1);
-
-        let pending_length = self.encrypted_buf.len();
-
-        let Some(keys) = &mut self.keys else {
-            let packet = EncodedPacket::new(&mut self.encrypted_buf, payload, 1)?;
-            if let Some(exchange_hash) = exchange_hash {
-                exchange_hash.prefixed(packet.payload());
-            }
-            return Ok(());
-        };
-
-        let block_len = keys.encryption.algorithm().block_len();
-
-        let packet = EncodedPacket::new(&mut self.buf, payload, block_len)?;
-        if let Some(exchange_hash) = exchange_hash {
-            exchange_hash.prefixed(packet.payload());
-        }
-        let data = packet.without_mac();
-
-        self.encrypted_buf
-            .resize(pending_length + data.len() + block_len, 0);
-        let update = keys
-            .encryption
-            .update(data, &mut self.encrypted_buf[pending_length..])
-            .unwrap();
-        assert_eq!(update.remainder().len(), block_len);
-        self.encrypted_buf.truncate(pending_length + data.len());
-
-        let mut hmac_ctx = hmac::Context::with_key(&keys.mac);
-        hmac_ctx.update(&sequence_number.to_be_bytes());
-        hmac_ctx.update(data);
-        let mac = hmac_ctx.sign();
-        self.encrypted_buf.extend_from_slice(mac.as_ref());
-
-        Ok(())
-    }
-
-    pub(crate) fn poll_write_to(
-        &mut self,
-        cx: &mut Context<'_>,
-        stream: &mut (impl AsyncWrite + Unpin),
-    ) -> Poll<Result<(), Error>> {
-        self.written +=
-            ready!(Pin::new(stream).poll_write(cx, &self.encrypted_buf[self.written..]))?;
-
-        if self.written == self.encrypted_buf.len() {
-            self.encrypted_buf.clear();
-            self.written = 0;
-        }
-
-        Poll::Ready(Ok(()))
-    }
-
-    pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
-        payload.encode(&mut self.buf);
-        &self.buf
+    /// You may not touch existing data and must only append new data at the end.
+    pub(crate) fn incoming_buf(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
     }
 }
 
-impl Default for WriteState {
-    fn default() -> Self {
-        Self {
-            buf: Vec::with_capacity(16_384),
-            encrypted_buf: Vec::with_capacity(16_384),
-            written: 0,
-            sequence_number: 0,
-            keys: None,
-        }
-    }
-}
-
-/// Encryption and HMAC key for AES-128-CTR + HMAC-SHA256
-pub(crate) struct AesCtrWriteKeys {
-    encryption: StreamingEncryptingKey,
-    mac: hmac::Key,
-}
-
-impl AesCtrWriteKeys {
-    pub(crate) fn new(keys: RawKeys) -> Self {
-        Self {
-            encryption: StreamingEncryptingKey::less_safe_ctr(
-                UnboundCipherKey::new(&cipher::AES_128, &keys.encryption_key.derive::<16>())
-                    .unwrap(),
-                cipher::EncryptionContext::Iv128(keys.initial_iv.derive::<16>().into()),
-            )
-            .unwrap(),
-            mac: hmac::Key::new(hmac::HMAC_SHA256, &keys.integrity_key.derive::<32>()),
-        }
-    }
-}
-
-pub(crate) struct HandshakeHash(digest::Context);
-
-impl HandshakeHash {
-    pub(crate) fn prefixed(&mut self, data: &[u8]) {
-        self.0.update(&(data.len() as u32).to_be_bytes());
-        self.0.update(data);
-    }
-
-    pub(crate) fn update(&mut self, data: &[u8]) {
-        self.0.update(data);
-    }
-
-    pub(crate) fn finish(self) -> digest::Digest {
-        self.0.finish()
-    }
-}
-
-impl Default for HandshakeHash {
-    fn default() -> Self {
-        Self(digest::Context::new(&digest::SHA256))
-    }
-}
-
+// Message type for the transport layer and key exchange messages.
+// Note: this MUST map service messages to the unknown type, otherwise
+// the service manager will not work right.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MessageType {
     Disconnect,
@@ -422,30 +221,24 @@ pub(crate) enum MessageType {
     NewKeys,
     KeyExchangeEcdhInit,
     KeyExchangeEcdhReply,
-    UserauthRequest,
-    UserauthFailure,
-    UserauthSuccess,
-    UserauthBanner,
-    GlobalRequest,
-    RequestSuccess,
-    RequestFailure,
-    ChannelOpen,
-    ChannelOpenConfirmation,
-    ChannelOpenFailure,
-    ChannelWindowAdjust,
-    ChannelData,
-    ChannelExtendedData,
-    ChannelEof,
-    ChannelClose,
-    ChannelRequest,
-    ChannelSuccess,
-    ChannelFailure,
     Unknown(u8),
 }
 
 impl Encode for MessageType {
     fn encode(&self, buf: &mut Vec<u8>) {
-        buf.push(u8::from(*self));
+        match self {
+            Self::Disconnect => buf.push(1),
+            Self::Ignore => buf.push(2),
+            Self::Unimplemented => buf.push(3),
+            Self::Debug => buf.push(4),
+            Self::ServiceRequest => buf.push(5),
+            Self::ServiceAccept => buf.push(6),
+            Self::KeyExchangeInit => buf.push(20),
+            Self::NewKeys => buf.push(21),
+            Self::KeyExchangeEcdhInit => buf.push(30),
+            Self::KeyExchangeEcdhReply => buf.push(31),
+            Self::Unknown(value) => buf.push(*value),
+        }
     }
 }
 
@@ -472,110 +265,147 @@ impl From<u8> for MessageType {
             21 => Self::NewKeys,
             30 => Self::KeyExchangeEcdhInit,
             31 => Self::KeyExchangeEcdhReply,
-            50 => Self::UserauthRequest,
-            51 => Self::UserauthFailure,
-            52 => Self::UserauthSuccess,
-            53 => Self::UserauthBanner,
-            80 => Self::GlobalRequest,
-            81 => Self::RequestSuccess,
-            82 => Self::RequestFailure,
-            90 => Self::ChannelOpen,
-            91 => Self::ChannelOpenConfirmation,
-            92 => Self::ChannelOpenFailure,
-            93 => Self::ChannelWindowAdjust,
-            94 => Self::ChannelData,
-            95 => Self::ChannelExtendedData,
-            96 => Self::ChannelEof,
-            97 => Self::ChannelClose,
-            98 => Self::ChannelRequest,
-            99 => Self::ChannelSuccess,
-            100 => Self::ChannelFailure,
             value => Self::Unknown(value),
         }
     }
 }
 
-impl From<MessageType> for u8 {
-    fn from(value: MessageType) -> Self {
-        match value {
-            MessageType::Disconnect => 1,
-            MessageType::Ignore => 2,
-            MessageType::Unimplemented => 3,
-            MessageType::Debug => 4,
-            MessageType::ServiceRequest => 5,
-            MessageType::ServiceAccept => 6,
-            MessageType::KeyExchangeInit => 20,
-            MessageType::NewKeys => 21,
-            MessageType::KeyExchangeEcdhInit => 30,
-            MessageType::KeyExchangeEcdhReply => 31,
-            MessageType::UserauthRequest => 50,
-            MessageType::UserauthFailure => 51,
-            MessageType::UserauthSuccess => 52,
-            MessageType::UserauthBanner => 53,
-            MessageType::GlobalRequest => 80,
-            MessageType::RequestSuccess => 81,
-            MessageType::RequestFailure => 82,
-            MessageType::ChannelOpen => 90,
-            MessageType::ChannelOpenConfirmation => 91,
-            MessageType::ChannelOpenFailure => 92,
-            MessageType::ChannelWindowAdjust => 93,
-            MessageType::ChannelData => 94,
-            MessageType::ChannelExtendedData => 95,
-            MessageType::ChannelEof => 96,
-            MessageType::ChannelClose => 97,
-            MessageType::ChannelRequest => 98,
-            MessageType::ChannelSuccess => 99,
-            MessageType::ChannelFailure => 100,
-            MessageType::Unknown(value) => value,
+pub(crate) struct EncryptingWriter<W: AsyncWriteExt + Unpin> {
+    stream: W,
+    buf: Vec<u8>,
+    encrypted_buf: Vec<u8>,
+
+    packet_number: u32,
+    encryption_key: Option<(StreamingEncryptingKey, hmac::Key)>,
+}
+
+impl<W: AsyncWriteExt + Unpin> EncryptingWriter<W> {
+    pub(crate) fn new(stream: W) -> Self {
+        Self {
+            stream,
+            buf: Vec::with_capacity(16_384),
+            encrypted_buf: Vec::with_capacity(16_384),
+            packet_number: 0,
+            encryption_key: None,
         }
+    }
+
+    /// Write raw bytes without packet structure or encryption.
+    ///
+    /// This should only be used for writing the identification string.
+    pub(crate) async fn write_raw_cleartext(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        assert!(self.encryption_key.is_none());
+        self.stream.write_all(bytes).await?;
+        Ok(())
+    }
+
+    pub(crate) fn set_encryption_key(
+        &mut self,
+        encryption_key: StreamingEncryptingKey,
+        integrity_key: hmac::Key,
+    ) {
+        self.encryption_key = Some((encryption_key, integrity_key));
+    }
+
+    /// Write a packet. Returns written [`Packet`].
+    pub(crate) async fn write_packet(
+        &mut self,
+        payload: &(impl Encode + ?Sized),
+        update_exchange_hash: impl FnOnce(&[u8]),
+    ) -> Result<(), Error> {
+        self.buf.clear();
+        self.encrypted_buf.clear();
+
+        let packet_number = self.packet_number;
+        self.packet_number = self.packet_number.wrapping_add(1);
+
+        let packet = Packet::builder(&mut self.buf).with_payload(payload);
+        update_exchange_hash(packet.payload()?);
+
+        if let Some((encryption_key, integrity_key)) = &mut self.encryption_key {
+            let block_len = encryption_key.algorithm().block_len();
+
+            let data = packet.without_mac(block_len)?;
+
+            self.encrypted_buf.resize(data.len() + block_len, 0);
+            let update = encryption_key
+                .update(data, &mut self.encrypted_buf)
+                .unwrap();
+            assert_eq!(update.remainder().len(), block_len);
+            self.encrypted_buf.truncate(data.len());
+
+            let mut hmac_ctx = hmac::Context::with_key(integrity_key);
+            hmac_ctx.update(&packet_number.to_be_bytes());
+            hmac_ctx.update(data);
+            let mac = hmac_ctx.sign();
+            self.encrypted_buf.extend_from_slice(mac.as_ref());
+
+            self.stream.write_all(&self.encrypted_buf).await?;
+        } else {
+            self.stream.write_all(packet.without_mac(0)?).await?;
+        };
+
+        Ok(())
     }
 }
 
-pub(crate) struct IncomingPacket<'a> {
-    pub(crate) sequence_number: u32,
-    pub(crate) message_type: MessageType,
+pub struct Packet<'a> {
+    pub(crate) number: u32,
     pub(crate) payload: &'a [u8],
 }
 
-impl IncomingPacket<'_> {
-    pub(crate) fn unimplemented(self) -> OutgoingPacket<'static> {
-        OutgoingPacket {
-            message_type: MessageType::Unimplemented,
-            payload: Cow::Owned(self.sequence_number.to_be_bytes().to_vec()),
+pub struct OwnedPacket {
+    #[expect(unused)]
+    pub(crate) number: u32,
+    pub(crate) payload: Vec<u8>,
+}
+
+impl<'a> Packet<'a> {
+    pub(crate) fn builder(buf: &'a mut Vec<u8>) -> PacketBuilder<'a> {
+        let start = buf.len();
+        buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
+        buf.push(0); // padding_length
+        PacketBuilder { buf, start }
+    }
+
+    pub(crate) fn to_owned(&self) -> OwnedPacket {
+        OwnedPacket {
+            number: self.number,
+            payload: self.payload.to_owned(),
         }
     }
 }
 
-pub(crate) struct OutgoingPacket<'a> {
-    #[expect(unused)]
-    pub(crate) message_type: MessageType,
-    // FIXME: Figure out a way to encode the payload requiring fewer boxes/copies.
-    #[expect(unused)]
-    pub(crate) payload: Cow<'a, [u8]>,
+pub(crate) struct PacketBuilder<'a> {
+    buf: &'a mut Vec<u8>,
+    start: usize,
 }
 
-/// An encoded outgoing packet including length field and padding, but
-/// excluding encryption and MAC
-#[must_use]
-struct EncodedPacket<'a> {
-    packet: &'a [u8],
-    payload: &'a [u8],
-}
-
-impl<'a> EncodedPacket<'a> {
-    fn new(
-        buf: &'a mut Vec<u8>,
-        payload: &impl Encode,
-        cipher_block_len: usize,
-    ) -> Result<Self, Error> {
-        let start = buf.len();
-
-        buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
-        buf.push(0); // padding_length
-
-        let payload_start = buf.len();
+impl<'a> PacketBuilder<'a> {
+    pub(crate) fn with_payload(
+        self,
+        payload: &(impl Encode + ?Sized),
+    ) -> PacketBuilderWithPayload<'a> {
+        let Self { buf, start } = self;
         payload.encode(buf);
-        let payload_range = payload_start..buf.len();
+        PacketBuilderWithPayload { buf, start }
+    }
+}
+
+pub(crate) struct PacketBuilderWithPayload<'a> {
+    buf: &'a mut Vec<u8>,
+    start: usize,
+}
+
+impl<'a> PacketBuilderWithPayload<'a> {
+    pub(crate) fn payload(&self) -> Result<&[u8], Error> {
+        self.buf
+            .get(self.start + 5..)
+            .ok_or(Error::Unreachable("unable to extract packet"))
+    }
+
+    pub(crate) fn without_mac(self, cipher_block_len: usize) -> Result<&'a [u8], Error> {
+        let Self { buf, start } = self;
 
         // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
         //
@@ -618,22 +448,12 @@ impl<'a> EncodedPacket<'a> {
             packet_length_dst.copy_from_slice(&packet_len.to_be_bytes());
         }
 
-        Ok(EncodedPacket {
-            packet: &buf[start..],
-            payload: &buf[payload_range],
-        })
-    }
-
-    fn payload(&self) -> &[u8] {
-        self.payload
-    }
-
-    fn without_mac(&self) -> &[u8] {
-        self.packet
+        buf.get(start..)
+            .ok_or(Error::Unreachable("unable to extract packet"))
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct PacketLength {
     inner: u32,
 }
@@ -757,7 +577,7 @@ impl<'a> Decode<'a> for u8 {
     }
 }
 
-pub(crate) trait Encode {
+pub trait Encode {
     fn encode(&self, buf: &mut Vec<u8>);
 }
 

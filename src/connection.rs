@@ -1,362 +1,103 @@
-use core::sync::atomic::AtomicU64;
-use std::{
-    borrow::Cow,
-    collections::{HashMap, VecDeque},
+use core::pin::Pin;
+use std::collections::HashMap;
+
+use futures::FutureExt;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf},
+    select,
 };
 
 use crate::{
-    proto::{Decode, Decoded, Encode, IncomingPacket, MessageType, OutgoingPacket},
-    service::{ConnectionEvent, Service},
+    buffered_stream::{buffered_stream, BufferedStream},
+    proto::{Decode, Decoded, Encode, OwnedPacket, Packet},
+    service::Service,
     Error,
 };
 
 const BUFFER_SIZE: u32 = 1024;
 
-pub(crate) struct SshConnectionService {
-    connection_id: ConnectionId,
-    next_channel_id: u32,
-    channels: HashMap<u32, ChannelState>,
-    pending_channels: VecDeque<PendingChannelData>,
-    pending_packets: VecDeque<OutgoingPacket<'static>>,
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ConnectionMessageType {
+    GlobalRequest,
+    RequestSuccess,
+    RequestFailure,
+    ChannelOpen,
+    ChannelOpenConfirmation,
+    ChannelOpenFailure,
+    ChannelWindowAdjust,
+    ChannelData,
+    ChannelExtendedData,
+    ChannelEof,
+    ChannelClose,
+    ChannelRequest,
+    ChannelSuccess,
+    ChannelFailure,
+    Unknown(u8),
 }
 
-impl Service for SshConnectionService {
-    const NAME: &'static [u8] = b"ssh-connection";
-
-    fn poll_transmit(&mut self) -> Option<OutgoingPacket<'_>> {
-        self.pending_packets.pop_front()
-    }
-
-    fn poll_event(&mut self) -> Option<ConnectionEvent> {
-        // FIXME: Implement clean closing of connections.
-        None
-    }
-
-    fn handle_packet(&mut self, packet: IncomingPacket<'_>) -> Result<(), Error> {
-        match packet.message_type {
-            MessageType::ChannelOpen => {
-                let message = ChannelOpen::try_from(packet)?;
-                self.pending_channels.push_back(PendingChannelData {
-                    channel_type: message.channel_type.to_vec(),
-                    remote_id: message.remote_id,
-                    initial_window_size: message.initial_window_size,
-                    max_packet_size: message.max_packet_size,
-                    type_specific_data: message.type_specific_data.to_vec(),
-                });
-            }
-            MessageType::ChannelData => {
-                let message = ChannelData::try_from(packet)?;
-                if let Some(ChannelState::Active(channel_state)) =
-                    self.channels.get_mut(&message.channel_id)
-                {
-                    channel_state.stdin.extend_from_slice(message.data);
-                }
-            }
-            MessageType::ChannelWindowAdjust => {
-                let message = ChannelWindowAdjust::try_from(packet)?;
-                if let Some(ChannelState::Active(channel_state)) =
-                    self.channels.get_mut(&message.channel_id)
-                {
-                    channel_state.window_size = channel_state
-                        .window_size
-                        .saturating_add(message.bytes_to_add);
-                }
-            }
-            MessageType::ChannelClose => {
-                let message = ChannelClose::try_from(packet)?;
-                if let Some(ChannelState::Active(channel_state)) =
-                    self.channels.get_mut(&message.channel_id)
-                {
-                    self.pending_packets.push_back(
-                        ChannelClose {
-                            channel_id: channel_state.remote_id,
-                        }
-                        .into_packet(),
-                    );
-                }
-                self.channels.remove(&message.channel_id);
-            }
-            MessageType::ChannelRequest => {
-                let message = ChannelRequest::try_from(packet)?;
-                if let Some(ChannelState::Active(channel_state)) =
-                    self.channels.get_mut(&message.channel_id)
-                {
-                    // FIXME: Implement proper handling instead of this shim to make the remote happy
-                    match message.request_type {
-                        b"pty-req" | b"shell" if message.want_reply => {
-                            self.pending_packets.push_back(
-                                ChannelSuccess {
-                                    channel_id: channel_state.remote_id,
-                                }
-                                .into_packet(),
-                            );
-                        }
-                        _ if message.want_reply => {
-                            self.pending_packets.push_back(
-                                ChannelFailure {
-                                    channel_id: channel_state.remote_id,
-                                }
-                                .into_packet(),
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => self.pending_packets.push_back(packet.unimplemented()),
-        }
-
-        Ok(())
-    }
-}
-
-impl SshConnectionService {
-    #[expect(unused)]
-    pub(crate) fn new() -> Self {
-        Self {
-            connection_id: ConnectionId::new(),
-            next_channel_id: 0,
-            channels: HashMap::new(),
-            pending_channels: VecDeque::new(),
-            pending_packets: VecDeque::new(),
-        }
-    }
-
-    #[expect(unused)]
-    pub(crate) fn poll_pending_channel<'a>(&'a mut self) -> Option<PendingChannel<'a>> {
-        self.pending_channels
-            .pop_front()
-            .map(|data| PendingChannel {
-                data,
-                connection: self,
-            })
-    }
-
-    fn get_next_channel_id(&mut self) -> u32 {
-        loop {
-            let id = self.next_channel_id;
-            self.next_channel_id += 1;
-            if !self.channels.contains_key(&id) {
-                return id;
-            }
+impl Encode for ConnectionMessageType {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::GlobalRequest => buf.push(80),
+            Self::RequestSuccess => buf.push(81),
+            Self::RequestFailure => buf.push(82),
+            Self::ChannelOpen => buf.push(90),
+            Self::ChannelOpenConfirmation => buf.push(91),
+            Self::ChannelOpenFailure => buf.push(92),
+            Self::ChannelWindowAdjust => buf.push(93),
+            Self::ChannelData => buf.push(94),
+            Self::ChannelExtendedData => buf.push(95),
+            Self::ChannelEof => buf.push(96),
+            Self::ChannelClose => buf.push(97),
+            Self::ChannelRequest => buf.push(98),
+            Self::ChannelSuccess => buf.push(99),
+            Self::ChannelFailure => buf.push(100),
+            Self::Unknown(value) => buf.push(*value),
         }
     }
 }
 
-pub(crate) struct PendingChannel<'a> {
-    data: PendingChannelData,
-    connection: &'a mut SshConnectionService,
-}
-
-impl PendingChannel<'_> {
-    #[expect(unused)]
-    pub(crate) fn channel_type(&self) -> &[u8] {
-        &self.data.channel_type
-    }
-
-    #[expect(unused)]
-    pub(crate) fn type_specific_data(&self) -> &[u8] {
-        &self.data.type_specific_data
-    }
-
-    #[expect(unused)]
-    pub(crate) fn accept(self) -> ChannelId {
-        let our_id = self.connection.get_next_channel_id();
-        self.connection.pending_packets.push_back(
-            ChannelOpenConfirmation {
-                remote_id: self.data.remote_id,
-                our_id,
-                initial_window_size: BUFFER_SIZE,
-                maximum_packet_size: BUFFER_SIZE,
-            }
-            .into_packet(),
-        );
-        self.connection.channels.insert(
-            our_id,
-            ChannelState::Active(ActiveChannelData {
-                remote_id: self.data.remote_id,
-                window_size: self.data.initial_window_size,
-                max_packet_size: self.data.max_packet_size,
-                stdin: vec![],
-            }),
-        );
-
-        let result = ChannelId {
-            connection_id: self.connection.connection_id,
-            our_channel_id: our_id,
-        };
-        //Inhibit drop
-        core::mem::forget(self);
-        result
-    }
-
-    #[expect(unused)]
-    pub(crate) fn decline(self) {
-        // Actual logic is in drop of self.
-    }
-}
-
-impl Drop for PendingChannel<'_> {
-    fn drop(&mut self) {
-        self.connection.pending_packets.push_back(
-            ChannelOpenFailure {
-                remote_id: self.data.remote_id,
-            }
-            .into_packet(),
-        );
-    }
-}
-
-pub(crate) struct Channel<'a> {
-    id: u32,
-    connection: &'a mut SshConnectionService,
-}
-
-impl Channel<'_> {
-    #[expect(unused)]
-    pub(crate) fn poll_recv(&mut self) -> Option<Vec<u8>> {
-        let Some(ChannelState::Active(state)) = self.connection.channels.get_mut(&self.id) else {
-            unreachable!("Channel struct for non-existing channel");
-        };
-
-        if state.stdin.is_empty() {
-            None
-        } else {
-            let mut result = vec![];
-            core::mem::swap(&mut result, &mut state.stdin);
-            self.connection.pending_packets.push_back(
-                ChannelWindowAdjust {
-                    channel_id: state.remote_id,
-                    bytes_to_add: state.stdin.len() as u32,
-                }
-                .into_packet(),
-            );
-            Some(result)
-        }
-    }
-
-    #[expect(unused)]
-    fn send(&mut self, buf: &[u8]) -> usize {
-        let Some(ChannelState::Active(state)) = self.connection.channels.get_mut(&self.id) else {
-            unreachable!("Channel struct for non-existing channel");
-        };
-
-        let output_len = buf
-            .len()
-            .min(state.max_packet_size.min(state.window_size) as usize);
-        if output_len > 0 {
-            self.connection.pending_packets.push_back(
-                ChannelData {
-                    channel_id: state.remote_id,
-                    data: &buf[..output_len],
-                }
-                .into_packet(),
-            );
-            state.window_size -= output_len as u32;
-        }
-
-        output_len
-    }
-
-    #[expect(unused)]
-    fn close(self) {
-        let Some(ChannelState::Active(state)) = self.connection.channels.get_mut(&self.id) else {
-            unreachable!("Channel struct for non-existing channel");
-        };
-
-        self.connection.pending_packets.push_back(
-            ChannelClose {
-                channel_id: state.remote_id,
-            }
-            .into_packet(),
-        );
-        *self.connection.channels.get_mut(&self.id).unwrap() = ChannelState::Closing;
-    }
-}
-
-struct PendingChannelData {
-    channel_type: Vec<u8>,
-    remote_id: u32,
-    initial_window_size: u32,
-    max_packet_size: u32,
-    type_specific_data: Vec<u8>,
-}
-
-enum ChannelState {
-    Closing,
-    Active(ActiveChannelData),
-}
-
-struct ActiveChannelData {
-    remote_id: u32,
-    window_size: u32,
-    max_packet_size: u32,
-    stdin: Vec<u8>,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ChannelId {
-    connection_id: ConnectionId,
-    our_channel_id: u32,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct ConnectionId {
-    id: u64,
-}
-
-impl ConnectionId {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        Self {
-            id: NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
-        }
-    }
-}
-
-#[expect(
-    unused,
-    reason = "Use marking from the service trait is failing in the compiler"
-)]
-struct ChannelOpen<'a> {
-    channel_type: &'a [u8],
-    remote_id: u32,
-    initial_window_size: u32,
-    max_packet_size: u32,
-    type_specific_data: &'a [u8],
-}
-
-impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
-    type Error = Error;
-
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelOpen {
-            return Err(Error::InvalidPacket("unexpected message type"));
-        }
-
-        let Decoded {
-            value: channel_type,
+impl<'a> Decode<'a> for ConnectionMessageType {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value, next } = u8::decode(bytes)?;
+        Ok(Decoded {
+            value: Self::from(value),
             next,
-        } = <&[u8]>::decode(packet.payload)?;
-        let Decoded {
-            value: remote_id,
-            next,
-        } = u32::decode(next)?;
-        let Decoded {
-            value: initial_window_size,
-            next,
-        } = u32::decode(next)?;
-        let Decoded {
-            value: max_packet_size,
-            next: type_specific_data,
-        } = u32::decode(next)?;
-        Ok(ChannelOpen {
-            channel_type,
-            remote_id,
-            initial_window_size,
-            max_packet_size,
-            type_specific_data,
         })
+    }
+}
+
+impl From<u8> for ConnectionMessageType {
+    fn from(value: u8) -> Self {
+        match value {
+            80 => Self::GlobalRequest,
+            81 => Self::RequestSuccess,
+            82 => Self::RequestFailure,
+            90 => Self::ChannelOpen,
+            91 => Self::ChannelOpenConfirmation,
+            92 => Self::ChannelOpenFailure,
+            93 => Self::ChannelWindowAdjust,
+            94 => Self::ChannelData,
+            95 => Self::ChannelExtendedData,
+            96 => Self::ChannelEof,
+            97 => Self::ChannelClose,
+            98 => Self::ChannelRequest,
+            99 => Self::ChannelSuccess,
+            100 => Self::ChannelFailure,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+struct ChannelOpenFailure(u32);
+
+impl Encode for ChannelOpenFailure {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelOpenFailure.encode(buf);
+        self.0.encode(buf);
+        2u32.encode(buf);
+        b"".encode(buf);
+        b"".encode(buf);
     }
 }
 
@@ -367,217 +108,475 @@ struct ChannelOpenConfirmation {
     maximum_packet_size: u32,
 }
 
-impl ChannelOpenConfirmation {
-    fn into_packet(self) -> OutgoingPacket<'static> {
-        let mut payload = Vec::with_capacity(16);
-        self.remote_id.encode(&mut payload);
-        self.our_id.encode(&mut payload);
-        self.initial_window_size.encode(&mut payload);
-        self.maximum_packet_size.encode(&mut payload);
-        OutgoingPacket {
-            message_type: MessageType::ChannelOpenConfirmation,
-            payload: Cow::Owned(payload),
-        }
-    }
-}
-
-struct ChannelOpenFailure {
-    remote_id: u32,
-}
-
-impl ChannelOpenFailure {
-    fn into_packet(self) -> OutgoingPacket<'static> {
-        let mut payload = Vec::with_capacity(16);
-        self.remote_id.encode(&mut payload);
-        2u32.encode(&mut payload);
-        b"".encode(&mut payload);
-        b"".encode(&mut payload);
-        OutgoingPacket {
-            message_type: MessageType::ChannelOpenFailure,
-            payload: Cow::Owned(payload),
-        }
-    }
-}
-
-struct ChannelData<'a> {
-    channel_id: u32,
-    data: &'a [u8],
-}
-
-impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
-    type Error = Error;
-
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelData {
-            return Err(Error::InvalidPacket("unexpected message type"));
-        }
-
-        let Decoded {
-            value: channel_id,
-            next,
-        } = u32::decode(packet.payload)?;
-        let Decoded { value: data, .. } = <&[u8]>::decode(next)?;
-
-        Ok(ChannelData { channel_id, data })
-    }
-}
-
-impl ChannelData<'_> {
-    fn into_packet(self) -> OutgoingPacket<'static> {
-        let mut payload = Vec::with_capacity(self.data.len() + 8);
-        self.channel_id.encode(&mut payload);
-        self.data.encode(&mut payload);
-        OutgoingPacket {
-            message_type: MessageType::ChannelData,
-            payload: Cow::Owned(payload),
-        }
+impl Encode for ChannelOpenConfirmation {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelOpenConfirmation.encode(buf);
+        self.remote_id.encode(buf);
+        self.our_id.encode(buf);
+        self.initial_window_size.encode(buf);
+        self.maximum_packet_size.encode(buf);
     }
 }
 
 struct ChannelWindowAdjust {
-    channel_id: u32,
-    bytes_to_add: u32,
+    remote_id: u32,
+    additional_bytes: u32,
 }
 
-impl TryFrom<IncomingPacket<'_>> for ChannelWindowAdjust {
-    type Error = Error;
-
-    fn try_from(packet: IncomingPacket<'_>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelWindowAdjust {
-            return Err(Error::InvalidPacket("unexpected message type"));
-        }
-
-        let Decoded {
-            value: channel_id,
-            next,
-        } = u32::decode(packet.payload)?;
-        let Decoded {
-            value: bytes_to_add,
-            ..
-        } = u32::decode(next)?;
-
-        Ok(Self {
-            channel_id,
-            bytes_to_add,
-        })
+impl Encode for ChannelWindowAdjust {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelWindowAdjust.encode(buf);
+        self.remote_id.encode(buf);
+        self.additional_bytes.encode(buf);
     }
 }
 
-impl ChannelWindowAdjust {
-    fn into_packet(self) -> OutgoingPacket<'static> {
-        let mut payload = Vec::with_capacity(8);
-        self.channel_id.encode(&mut payload);
-        self.bytes_to_add.encode(&mut payload);
-        OutgoingPacket {
-            message_type: MessageType::ChannelWindowAdjust,
-            payload: Cow::Owned(payload),
-        }
+struct ChannelData {
+    remote_id: u32,
+    data: Vec<u8>,
+}
+
+impl Encode for ChannelData {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelData.encode(buf);
+        self.remote_id.encode(buf);
+        self.data.encode(buf);
+    }
+}
+
+struct ChannelExtendedDataStderr {
+    remote_id: u32,
+    data: Vec<u8>,
+}
+
+impl Encode for ChannelExtendedDataStderr {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelExtendedData.encode(buf);
+        self.remote_id.encode(buf);
+        1u32.encode(buf);
+        self.data.encode(buf);
     }
 }
 
 struct ChannelClose {
-    channel_id: u32,
+    remote_id: u32,
 }
 
-impl TryFrom<IncomingPacket<'_>> for ChannelClose {
-    type Error = Error;
-
-    fn try_from(packet: IncomingPacket<'_>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelClose {
-            return Err(Error::InvalidPacket("unexpected message type"));
-        }
-
-        let Decoded {
-            value: channel_id, ..
-        } = u32::decode(packet.payload)?;
-
-        Ok(Self { channel_id })
+impl Encode for ChannelClose {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelClose.encode(buf);
+        self.remote_id.encode(buf);
     }
 }
 
-impl ChannelClose {
-    fn into_packet(self) -> OutgoingPacket<'static> {
-        let mut payload = Vec::with_capacity(4);
-        self.channel_id.encode(&mut payload);
-        OutgoingPacket {
-            message_type: MessageType::ChannelClose,
-            payload: Cow::Owned(payload),
-        }
+struct ChannelRequestExitStatus {
+    remote_id: u32,
+    exit_status: u32,
+}
+
+impl Encode for ChannelRequestExitStatus {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelRequest.encode(buf);
+        self.remote_id.encode(buf);
+        b"exit-status".encode(buf);
+        false.encode(buf);
+        self.exit_status.encode(buf);
     }
 }
 
-#[expect(
-    unused,
-    reason = "Use marking from the service trait is failing in the compiler"
-)]
-struct ChannelRequest<'a> {
-    channel_id: u32,
-    request_type: &'a [u8],
-    want_reply: bool,
-}
+struct ChannelSuccess(u32);
 
-impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
-    type Error = Error;
-
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelRequest {
-            return Err(Error::InvalidPacket("unexpected message type"));
-        }
-
-        let Decoded {
-            value: channel_id,
-            next,
-        } = u32::decode(packet.payload)?;
-        let Decoded {
-            value: request_type,
-            next,
-        } = <&[u8]>::decode(next)?;
-        let Decoded {
-            value: want_reply, ..
-        } = bool::decode(next)?;
-
-        Ok(ChannelRequest {
-            channel_id,
-            request_type,
-            want_reply,
-        })
+impl Encode for ChannelSuccess {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelSuccess.encode(buf);
+        self.0.encode(buf);
     }
 }
 
-struct ChannelSuccess {
-    channel_id: u32,
-}
+struct ChannelFailure(u32);
 
-impl ChannelSuccess {
-    #[expect(
-        unused,
-        reason = "Use marking from the service trait is failing in the compiler"
-    )]
-    fn into_packet(self) -> OutgoingPacket<'static> {
-        let mut payload = Vec::with_capacity(4);
-        self.channel_id.encode(&mut payload);
-        OutgoingPacket {
-            message_type: MessageType::ChannelSuccess,
-            payload: Cow::Owned(payload),
-        }
+impl Encode for ChannelFailure {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        ConnectionMessageType::ChannelFailure.encode(buf);
+        self.0.encode(buf);
     }
 }
 
-struct ChannelFailure {
-    channel_id: u32,
+pub struct ChannelStreams {
+    pub exit_status: tokio::sync::oneshot::Sender<u32>,
+    pub stdin: tokio::io::ReadHalf<BufferedStream<{ BUFFER_SIZE as usize }>>,
+    pub stdout: tokio::io::WriteHalf<BufferedStream<{ BUFFER_SIZE as usize }>>,
+    pub stderr: tokio::io::WriteHalf<BufferedStream<{ BUFFER_SIZE as usize }>>,
 }
 
-impl ChannelFailure {
-    #[expect(
-        unused,
-        reason = "Use marking from the service trait is failing in the compiler"
-    )]
-    fn into_packet(self) -> OutgoingPacket<'static> {
-        let mut payload = Vec::with_capacity(4);
-        self.channel_id.encode(&mut payload);
-        OutgoingPacket {
-            message_type: MessageType::ChannelFailure,
-            payload: Cow::Owned(payload),
+enum ChannelInternalState {
+    Open {
+        exit_status: tokio::sync::oneshot::Receiver<u32>,
+        stdin: tokio::io::WriteHalf<BufferedStream<{ BUFFER_SIZE as usize }>>,
+        stdout: tokio::io::ReadHalf<BufferedStream<{ BUFFER_SIZE as usize }>>,
+        stderr: tokio::io::ReadHalf<BufferedStream<{ BUFFER_SIZE as usize }>>,
+    },
+    ServerClosed,
+}
+
+struct ChannelInternalData {
+    remote_id: u32,
+    state: ChannelInternalState,
+    pending_in: Option<u32>,
+    allowed_out: u32,
+    max_packet_size: u32,
+}
+
+struct AbortingJoinHandle<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortingJoinHandle<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+pub struct ConnectionService {
+    packet_stream: tokio::sync::mpsc::UnboundedSender<OwnedPacket>,
+    #[allow(unused)]
+    handling_task: AbortingJoinHandle<()>,
+}
+
+impl Service for ConnectionService {
+    fn packet_types(&self) -> std::borrow::Cow<'static, [u8]> {
+        (&[90, 93, 94, 97]).into()
+    }
+
+    fn handle_packet(&mut self, packet: Packet<'_>) {
+        let _ = self.packet_stream.send(packet.to_owned());
+    }
+}
+
+impl ConnectionService {
+    pub fn new<F: 'static + Send + FnMut(&[u8], &[u8], ChannelStreams) -> bool>(
+        mut channel_handler: F,
+        packet_sender: tokio::sync::mpsc::UnboundedSender<Box<dyn Encode + Send + 'static>>,
+    ) -> Self {
+        let (packet_stream, mut packet_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handling_task = AbortingJoinHandle(tokio::task::spawn(async move {
+            let mut channels: HashMap<u32, ChannelInternalData> = HashMap::new();
+            let mut next_channel_id = 0u32;
+
+            enum SelectResult {
+                Packet(Option<OwnedPacket>),
+            }
+
+            loop {
+                let channel_future = core::future::poll_fn(|context| {
+                    let mut buf = [0u8; BUFFER_SIZE as usize];
+                    let mut read_buf = ReadBuf::new(&mut buf);
+                    for (_, channel) in channels.iter_mut() {
+                        let (exit_status, mut stdin, mut stdout, mut stderr) =
+                            match &mut channel.state {
+                                ChannelInternalState::Open {
+                                    exit_status,
+                                    stdin,
+                                    stdout,
+                                    stderr,
+                                } => (exit_status, stdin, stdout, stderr),
+                                ChannelInternalState::ServerClosed => continue,
+                            };
+
+                        if let core::task::Poll::Ready(exit_status) =
+                            exit_status.poll_unpin(context)
+                        {
+                            if let Ok(exit_status) = exit_status {
+                                let _ = packet_sender.send(Box::new(ChannelRequestExitStatus {
+                                    remote_id: channel.remote_id,
+                                    exit_status,
+                                }));
+                            }
+                            let _ = packet_sender.send(Box::new(ChannelClose {
+                                remote_id: channel.remote_id,
+                            }));
+                            channel.state = ChannelInternalState::ServerClosed;
+                            continue;
+                        }
+
+                        if let Some(pending_in) = channel.pending_in {
+                            if matches!(
+                                Pin::new(&mut stdin).poll_flush(context),
+                                core::task::Poll::Ready(_)
+                            ) {
+                                let _ = packet_sender.send(Box::new(ChannelWindowAdjust {
+                                    remote_id: channel.remote_id,
+                                    additional_bytes: pending_in,
+                                }));
+                                channel.pending_in = None;
+                            }
+                        }
+
+                        loop {
+                            let acceptable_out = BUFFER_SIZE
+                                .min(channel.allowed_out)
+                                .min(channel.max_packet_size);
+                            read_buf.clear();
+                            if acceptable_out > 0
+                                && matches!(
+                                    Pin::new(&mut stderr).poll_read(context, &mut read_buf),
+                                    core::task::Poll::Ready(_)
+                                )
+                            {
+                                let data = read_buf.filled();
+                                channel.allowed_out = channel
+                                    .allowed_out
+                                    .saturating_sub(data.len().try_into().unwrap());
+                                let _ = packet_sender.send(Box::new(ChannelExtendedDataStderr {
+                                    remote_id: channel.remote_id,
+                                    data: data.into(),
+                                }));
+                                continue;
+                            }
+                            break;
+                        }
+
+                        loop {
+                            let acceptable_out = BUFFER_SIZE
+                                .min(channel.allowed_out)
+                                .min(channel.max_packet_size);
+                            read_buf.clear();
+                            if acceptable_out > 0
+                                && matches!(
+                                    Pin::new(&mut stdout).poll_read(context, &mut read_buf),
+                                    core::task::Poll::Ready(_)
+                                )
+                            {
+                                let data = read_buf.filled();
+                                channel.allowed_out = channel
+                                    .allowed_out
+                                    .saturating_sub(data.len().try_into().unwrap());
+                                let _ = packet_sender.send(Box::new(ChannelData {
+                                    remote_id: channel.remote_id,
+                                    data: data.into(),
+                                }));
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    core::task::Poll::Pending::<()>
+                });
+
+                let select_result = select! {
+                    r = packet_receiver.recv() => SelectResult::Packet(r),
+                    _ = channel_future => unreachable!(),
+                };
+
+                match select_result {
+                    SelectResult::Packet(Some(packet)) => {
+                        let Ok(Decoded {
+                            value: packet_type,
+                            next,
+                        }) = ConnectionMessageType::decode(&packet.payload)
+                        else {
+                            continue;
+                        };
+
+                        match packet_type {
+                            ConnectionMessageType::ChannelOpen => {
+                                let Ok(Decoded {
+                                    value: channel_type,
+                                    next,
+                                }) = <&[u8]>::decode(next)
+                                else {
+                                    continue;
+                                };
+                                let Ok(Decoded {
+                                    value: remote_id,
+                                    next,
+                                }) = u32::decode(next)
+                                else {
+                                    continue;
+                                };
+                                let Ok(Decoded {
+                                    value: initial_window_size,
+                                    next,
+                                }) = u32::decode(next)
+                                else {
+                                    continue;
+                                };
+                                let Ok(Decoded {
+                                    value: max_packet_size,
+                                    next: type_specific_data,
+                                }) = u32::decode(next)
+                                else {
+                                    continue;
+                                };
+
+                                let (exit_status_sender, exit_status) =
+                                    tokio::sync::oneshot::channel();
+                                let (stdin, stdin_sender) = buffered_stream();
+                                let (stdout_receiver, stdout) = buffered_stream();
+                                let (stderr_receiver, stderr) = buffered_stream();
+
+                                if channel_handler(
+                                    channel_type,
+                                    type_specific_data,
+                                    ChannelStreams {
+                                        exit_status: exit_status_sender,
+                                        stdin,
+                                        stdout,
+                                        stderr,
+                                    },
+                                ) {
+                                    let channel_id = loop {
+                                        let channel_id = next_channel_id;
+                                        next_channel_id = next_channel_id.wrapping_add(1);
+                                        if !channels.contains_key(&channel_id) {
+                                            break channel_id;
+                                        }
+                                    };
+
+                                    channels.insert(
+                                        channel_id,
+                                        ChannelInternalData {
+                                            remote_id,
+                                            pending_in: None,
+                                            allowed_out: initial_window_size,
+                                            max_packet_size,
+                                            state: ChannelInternalState::Open {
+                                                exit_status,
+                                                stdin: stdin_sender,
+                                                stdout: stdout_receiver,
+                                                stderr: stderr_receiver,
+                                            },
+                                        },
+                                    );
+
+                                    let _ = packet_sender.send(Box::new(ChannelOpenConfirmation {
+                                        remote_id,
+                                        our_id: channel_id,
+                                        initial_window_size: BUFFER_SIZE,
+                                        maximum_packet_size: BUFFER_SIZE,
+                                    }));
+                                } else {
+                                    let _ =
+                                        packet_sender.send(Box::new(ChannelOpenFailure(remote_id)));
+                                }
+                            }
+                            ConnectionMessageType::ChannelWindowAdjust => {
+                                let Ok(Decoded {
+                                    value: channel_id,
+                                    next,
+                                }) = u32::decode(next)
+                                else {
+                                    continue;
+                                };
+                                let Ok(Decoded {
+                                    value: bytes_to_add,
+                                    ..
+                                }) = u32::decode(next)
+                                else {
+                                    continue;
+                                };
+
+                                if let Some(channel) = channels.get_mut(&channel_id) {
+                                    channel.allowed_out =
+                                        channel.allowed_out.saturating_add(bytes_to_add);
+                                }
+                            }
+                            ConnectionMessageType::ChannelData => {
+                                let Ok(Decoded {
+                                    value: channel_id,
+                                    next,
+                                }) = u32::decode(next)
+                                else {
+                                    continue;
+                                };
+                                let Ok(Decoded { value: data, .. }) = <&[u8]>::decode(next) else {
+                                    continue;
+                                };
+
+                                if let Some(channel) = channels.get_mut(&channel_id) {
+                                    match &mut channel.state {
+                                        ChannelInternalState::Open { stdin, .. } => {
+                                            let _ = stdin.write_all(data).await;
+                                            if let Some(pending_in) = &mut channel.pending_in {
+                                                *pending_in =
+                                                    BUFFER_SIZE.min(pending_in.saturating_add(
+                                                        data.len().try_into().unwrap(),
+                                                    ))
+                                            } else {
+                                                channel.pending_in = Some(
+                                                    BUFFER_SIZE.min(data.len().try_into().unwrap()),
+                                                );
+                                            }
+                                        }
+                                        ChannelInternalState::ServerClosed => {}
+                                    }
+                                }
+                            }
+                            ConnectionMessageType::ChannelRequest => {
+                                let Ok(Decoded {
+                                    value: channel_id,
+                                    next,
+                                }) = u32::decode(next)
+                                else {
+                                    continue;
+                                };
+                                let Ok(Decoded {
+                                    value: request_type,
+                                    next,
+                                }) = <&[u8]>::decode(next)
+                                else {
+                                    continue;
+                                };
+                                let Ok(Decoded {
+                                    value: want_reply, ..
+                                }) = bool::decode(next)
+                                else {
+                                    continue;
+                                };
+
+                                if let Some(channel) = channels.get(&channel_id) {
+                                    match request_type {
+                                        b"pty-req" | b"shell" if want_reply => {
+                                            let _ = packet_sender
+                                                .send(Box::new(ChannelSuccess(channel.remote_id)));
+                                        }
+                                        _ if want_reply => {
+                                            let _ = packet_sender
+                                                .send(Box::new(ChannelFailure(channel.remote_id)));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            ConnectionMessageType::ChannelClose => {
+                                let Ok(Decoded {
+                                    value: channel_id,
+                                    next: _,
+                                }) = u32::decode(next)
+                                else {
+                                    continue;
+                                };
+
+                                if let Some(channel) = channels.remove(&channel_id) {
+                                    match channel.state {
+                                        ChannelInternalState::Open { .. } => {
+                                            let _ = packet_sender.send(Box::new(ChannelClose {
+                                                remote_id: channel.remote_id,
+                                            }));
+                                        }
+                                        ChannelInternalState::ServerClosed => {}
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    SelectResult::Packet(None) => return,
+                }
+            }
+        }));
+
+        Self {
+            packet_stream,
+            handling_task,
         }
     }
 }

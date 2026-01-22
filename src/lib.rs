@@ -1,165 +1,74 @@
 use core::net::SocketAddr;
 use std::{io, str, sync::Arc};
 
-use aws_lc_rs::signature::Ed25519KeyPair;
+use aws_lc_rs::{digest, signature::Ed25519KeyPair};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tracing::{debug, error, instrument, warn};
+use tokio::{
+    io::AsyncReadExt,
+    net::{tcp, TcpStream},
+};
+use tracing::{debug, warn};
 
-mod connection;
+pub mod auth;
+mod buffered_stream;
+pub use buffered_stream::{buffered_stream, BufferedStream};
+pub mod connection;
 mod key_exchange;
 use key_exchange::KeyExchange;
-mod proto;
-use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteState};
-mod service;
-mod userauth;
+pub mod proto;
+use proto::{Encode, EncryptingWriter, Packet, ReadState};
+pub mod service;
 
-use crate::{
-    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
-    proto::{AesCtrReadKeys, Encode, HandshakeHash},
-};
-
-/// A single SSH connection
-pub struct Connection<T> {
-    stream: T,
-    context: ConnectionContext,
-    read: ReadState,
-    write: WriteState,
-}
-
-impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
-    /// Create a new [`Connection`]
-    pub fn new(stream: T, addr: SocketAddr, host_key: Arc<Ed25519KeyPair>) -> anyhow::Result<Self> {
-        Ok(Self {
-            stream,
-            context: ConnectionContext { addr, host_key },
-            read: ReadState::default(),
-            write: WriteState::default(),
-        })
-    }
-
-    /// Drive the connection forward
-    #[instrument(name = "connection", skip(self), fields(addr = %self.context.addr))]
-    pub async fn run(mut self) {
-        let mut exchange = HandshakeHash::default();
-        let state = VersionExchange::default();
-        let state = match state.advance(&mut exchange, &mut self).await {
-            Ok(state) => state,
-            Err(error) => {
-                error!(%error, "failed to complete version exchange");
-                return;
-            }
-        };
-
-        // Receive and send key exchange init packets
-
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(%error, "failed to read packet");
-                return;
-            }
-        };
-        exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
-        exchange.update(&[u8::from(packet.message_type)]);
-        exchange.update(packet.payload);
-        let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
-            Ok(key_exchange_init) => key_exchange_init,
-            Err(error) => {
-                error!(%error, "failed to read key exchange init");
-                return;
-            }
-        };
-
-        let Ok((key_exchange_init, state)) = state.advance(peer_key_exchange_init, &self.context)
-        else {
-            return;
-        };
-
-        if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &key_exchange_init, Some(&mut exchange))
-            .await
-        {
-            error!(%error, "failed to send key exchange init packet");
-            return;
-        }
-
-        // Perform ECDH key exchange
-
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(%error, "failed to read packet");
-                return;
-            }
-        };
-
-        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
-            Ok(key_exchange_init) => key_exchange_init,
-            Err(error) => {
-                error!(%error, "failed to read ecdh key exchange init");
-                return;
-            }
-        };
-
-        let Ok((key_exchange_reply, keys)) =
-            state.advance(ecdh_key_exchange_init, exchange, &self.context)
-        else {
-            return;
-        };
-
-        if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &key_exchange_reply, None)
-            .await
-        {
-            warn!(%error, "failed to send key exchange init packet");
-            return;
-        }
-
-        // Exchange new keys packets and install new keys
-
-        if let Err(error) = self.update_keys(keys).await {
-            error!(%error, "failed to update keys");
-            return;
-        }
-
-        if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &MessageType::Ignore, None)
-            .await
-        {
-            error!(%error, "failed to send ignore packet");
-            return;
-        }
-
-        todo!();
-    }
-
-    async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), Error> {
-        let packet = self.read.packet(&mut self.stream).await?;
-        NewKeys::try_from(packet)?;
-        self.write
-            .write_packet(&mut self.stream, &NewKeys, None)
-            .await?;
-
-        let RawKeySet {
-            client_to_server,
-            server_to_client,
-        } = keys;
-
-        // Cipher and MAC algorithms are negotiated during key exchange.
-        // Currently this hard codes AES-128-CTR and HMAC-SHA256.
-        self.read.decryption_key = Some(AesCtrReadKeys::new(client_to_server));
-        self.write.keys = Some(AesCtrWriteKeys::new(server_to_client));
-        Ok(())
-    }
-}
-
-struct ConnectionContext {
+/// A low level ssh transport layer protocol connection
+pub struct SshTransportConnection {
+    stream_read: tcp::OwnedReadHalf,
+    stream_write: EncryptingWriter<tcp::OwnedWriteHalf>,
     addr: SocketAddr,
     host_key: Arc<Ed25519KeyPair>,
+    read: ReadState,
+}
+
+impl SshTransportConnection {
+    /// Create a new [`Connection`] and do the initial key exchange
+    pub async fn connect(
+        stream: TcpStream,
+        addr: SocketAddr,
+        host_key: Arc<Ed25519KeyPair>,
+    ) -> Result<Self, ()> {
+        if let Err(error) = stream.set_nodelay(true) {
+            warn!(addr = %addr, %error, "failed to set nodelay");
+            return Err(());
+        }
+
+        let (stream_read, stream_write) = stream.into_split();
+
+        let mut connection = Self {
+            stream_read,
+            stream_write: EncryptingWriter::new(stream_write),
+            addr,
+            host_key,
+            read: ReadState::default(),
+        };
+
+        let mut exchange = digest::Context::new(&digest::SHA256);
+        let state = VersionExchange::default();
+        let state = state.advance(&mut exchange, &mut connection).await?;
+        let state = state.advance(&mut exchange, &mut connection).await?;
+        state.advance(exchange, &mut connection).await?;
+
+        Ok(connection)
+    }
+
+    pub(crate) async fn recv_packet(&mut self) -> Result<Packet<'_>, Error> {
+        self.read.read_packet(&mut self.stream_read).await
+    }
+
+    pub(crate) async fn send_packet(
+        &mut self,
+        payload: &(impl Encode + ?Sized),
+    ) -> Result<(), Error> {
+        self.stream_write.write_packet(payload, |_| {}).await
+    }
 }
 
 #[derive(Default)]
@@ -168,46 +77,55 @@ struct VersionExchange(());
 impl VersionExchange {
     async fn advance(
         &self,
-        exchange: &mut HandshakeHash,
-        conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
-    ) -> Result<KeyExchange, Error> {
-        // TODO: enforce timeout if this is taking too long
-        let (buf, Decoded { value: ident, next }) = loop {
-            let bytes = conn.read.buffer(&mut conn.stream).await?;
-            match Identification::decode(bytes) {
-                Ok(Completion::Complete(decoded)) => break (bytes, decoded),
-                Ok(Completion::Incomplete(_length)) => continue,
-                Err(error) => return Err(error),
+        exchange: &mut digest::Context,
+        conn: &mut SshTransportConnection,
+    ) -> Result<KeyExchange, ()> {
+        let ident_bytes =
+            match Identification::read_from_stream(&mut conn.read, &mut conn.stream_read).await {
+                Ok(ident_bytes) => ident_bytes,
+                Err(error) => {
+                    warn!(addr = %conn.addr, %error, "failed to read version exchange");
+                    return Err(());
+                }
+            };
+        let ident = match Identification::decode(&ident_bytes) {
+            Ok(ident) => {
+                debug!(addr = %conn.addr, ?ident, "received identification");
+                ident
+            }
+            Err(error) => {
+                warn!(addr = %conn.addr, %error, "failed to read version exchange");
+                return Err(());
             }
         };
 
-        debug!(addr = %conn.context.addr, ?ident, "received identification");
         if ident.protocol != PROTOCOL {
-            warn!(addr = %conn.context.addr, ?ident, "unsupported protocol version");
-            return Err(IdentificationError::UnsupportedVersion(ident.protocol.to_owned()).into());
+            warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
+            return Err(());
         }
 
-        let rest = next.len();
-        let v_c_len = buf.len() - rest - 2;
-        if let Some(v_c) = buf.get(..v_c_len) {
-            exchange.prefixed(v_c);
-        }
+        let v_c = &ident_bytes;
+        exchange.update(&(v_c.len() as u32).to_be_bytes());
+        exchange.update(v_c);
 
         let ident = Identification::outgoing();
-        let server_ident_bytes = conn.write.encoded(&ident);
-        if let Err(error) = conn.stream.write_all(server_ident_bytes).await {
-            warn!(addr = %conn.context.addr, %error, "failed to send version exchange");
-            return Err(error.into());
+        let server_ident_bytes = ident.encode();
+        if let Err(error) = conn
+            .stream_write
+            .write_raw_cleartext(&server_ident_bytes)
+            .await
+        {
+            warn!(addr = %conn.addr, %error, "failed to send version exchange");
+            return Err(());
         }
 
         let v_s_len = server_ident_bytes.len() - 2;
         if let Some(v_s) = server_ident_bytes.get(..v_s_len) {
-            exchange.prefixed(v_s);
+            exchange.update(&(v_s.len() as u32).to_be_bytes());
+            exchange.update(v_s);
         }
 
-        let last_length = buf.len() - rest;
-        conn.read.set_last_length(last_length);
-        Ok(KeyExchange::default())
+        Ok(KeyExchange::for_new_session())
     }
 }
 
@@ -229,18 +147,41 @@ impl Identification<'_> {
 }
 
 impl<'a> Identification<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Completion<Decoded<'a, Self>>, Error> {
+    /// Read the identification string as raw bytes with the CRLF stripped off.
+    async fn read_from_stream(
+        read: &mut ReadState,
+        stream: &mut (impl AsyncReadExt + Unpin),
+    ) -> Result<Vec<u8>, Error> {
+        let mut buf = Vec::with_capacity(256);
+        let mut ident = vec![];
+        loop {
+            if buf.is_empty() && stream.read_buf(&mut buf).await? == 0 {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "EOF",
+                )));
+            }
+            ident.push(buf.remove(0));
+            if ident.len() > 255 {
+                return Err(IdentificationError::TooLong.into());
+            }
+            if let Some((_, b"\r\n")) = ident.split_last_chunk::<2>() {
+                ident.pop().unwrap();
+                ident.pop().unwrap();
+                break;
+            }
+        }
+        debug!(bytes = ident.len(), "read from stream");
+
+        // Give all data we read but isn't part of the identification string to the ReadState.
+        read.incoming_buf().extend(buf);
+
+        Ok(ident)
+    }
+
+    fn decode(bytes: &'a [u8]) -> Result<Self, Error> {
         let Ok(message) = str::from_utf8(bytes) else {
             return Err(IdentificationError::InvalidUtf8.into());
-        };
-
-        let Some((message, next)) = message.split_once("\r\n") else {
-            // The maximum length is 255 bytes including CRLF. message excludes
-            // the CRLF, so subtract 2.
-            return match message.len() > 255 - 2 {
-                true => Err(IdentificationError::TooLong.into()),
-                false => Ok(Completion::Incomplete(None)),
-            };
         };
 
         let Some(rest) = message.strip_prefix("SSH-") else {
@@ -256,21 +197,15 @@ impl<'a> Identification<'a> {
             None => (rest, ""),
         };
 
-        let out = Self {
+        Ok(Self {
             protocol,
             software,
             comments,
-        };
-
-        Ok(Completion::Complete(Decoded {
-            value: out,
-            next: next.as_bytes(),
-        }))
+        })
     }
-}
 
-impl Encode for Identification<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
+    fn encode(&self) -> Vec<u8> {
+        let mut buf = vec![];
         buf.extend_from_slice(b"SSH-");
         buf.extend_from_slice(self.protocol.as_bytes());
         buf.push(b'-');
@@ -280,6 +215,7 @@ impl Encode for Identification<'_> {
             buf.extend_from_slice(self.comments.as_bytes());
         }
         buf.extend_from_slice(b"\r\n");
+        buf
     }
 }
 
@@ -301,12 +237,6 @@ enum Error {
     InvalidMac,
     #[error("unreachable code: {0}")]
     Unreachable(&'static str),
-    #[error("not ready for new packets")]
-    #[expect(
-        unused,
-        reason = "Use marking from the service trait is failing in the compiler"
-    )]
-    NotReady,
 }
 
 #[derive(Debug, Error)]
@@ -319,8 +249,6 @@ enum IdentificationError {
     NoVersion,
     #[error("Identification too long")]
     TooLong,
-    #[error("Unsupported protocol version")]
-    UnsupportedVersion(String),
 }
 
 const PROTOCOL: &str = "2.0";
