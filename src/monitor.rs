@@ -3,13 +3,16 @@ use std::{
     ffi::OsStr,
     io::{self, Read},
     net::TcpStream as StdTcpStream,
-    os::unix::{ffi::OsStrExt, net::UnixStream as StdUnixStream},
+    os::{
+        fd::{AsFd, AsRawFd},
+        unix::{ffi::OsStrExt, net::UnixStream as StdUnixStream},
+    },
     path::Path,
-    process::exit,
+    process::{exit, Command},
     sync::Arc,
 };
 
-use crate::network_main;
+use crate::{network_main, pty::get_pty};
 use aws_lc_rs::signature::Ed25519KeyPair;
 use tokio::{io::AsyncWriteExt, net::UnixStream};
 use tracing::debug;
@@ -113,10 +116,34 @@ pub(crate) fn monitor_main(
 
     let command = OsStr::from_bytes(&buf);
 
-    tracing::debug!("would try to run {command:?}");
+    tracing::debug!("opening PTY");
+    let pty = get_pty()?;
 
-    tracing::debug!("sending fd to network");
-    send_fd(&mut mon_sock, 0)?;
+    // Set the PTY as the controlling terminal of the session.
+    let fd_follower = pty.follower.as_fd().as_raw_fd();
+    if unsafe {
+        #[allow(trivial_numeric_casts)]
+        libc::ioctl(fd_follower, libc::TIOCSCTTY as _, 0)
+    } == -1
+    {
+        return Err(io::Error::last_os_error().into());
+    };
+
+    tracing::debug!("sending PTY to network");
+    send_fd(&mut mon_sock, pty.leader.as_raw_fd())?;
+
+    let mut command = Command::new(command);
+
+    command
+        .stdin(pty.follower.try_clone()?)
+        .stdout(pty.follower.try_clone()?)
+        .stderr(pty.follower);
+
+    tracing::debug!("running command: {:?}", command.get_program());
+    match command.status()?.code() {
+        Some(code) => tracing::debug!("command exited with status code: {}", code),
+        None => tracing::debug!("command exited with unknown status code"),
+    }
 
     exit(0);
 }

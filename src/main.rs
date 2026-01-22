@@ -1,5 +1,6 @@
 mod fd;
 mod monitor;
+mod pty;
 
 use core::{
     net::{Ipv4Addr, SocketAddr},
@@ -174,7 +175,7 @@ async fn network_main(
                                     monitor_stream.clone().lock().await.take().unwrap();
 
                                 let mut term_stream = monitor_stream
-                                    .run_command("message")
+                                    .run_command("/usr/bin/sh")
                                     .await
                                     .unwrap()
                                     .recv_pty()
