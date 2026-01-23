@@ -1,6 +1,7 @@
 use core::{
     fmt, future, iter,
     pin::Pin,
+    str,
     task::{ready, Context, Poll},
 };
 use std::io;
@@ -572,6 +573,35 @@ impl<'a> EncodedPacket<'a> {
 
     fn without_mac(&self) -> &[u8] {
         self.packet
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ServiceRequest<'a> {
+    #[expect(dead_code)]
+    pub(crate) service_name: &'a str,
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
+    type Error = Error;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ServiceRequest {
+            return Err(Error::InvalidPacket("unexpected message type"));
+        }
+
+        let Decoded {
+            value: service_name,
+            next,
+        } = <&[u8]>::decode(packet.payload)?;
+        if !next.is_empty() {
+            return Err(Error::InvalidPacket("extra data in service request"));
+        }
+
+        match str::from_utf8(service_name) {
+            Ok(service_name) => Ok(ServiceRequest { service_name }),
+            Err(_) => Err(Error::InvalidPacket("invalid UTF-8 in service name")),
+        }
     }
 }
 

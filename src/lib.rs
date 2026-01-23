@@ -13,7 +13,7 @@ use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteS
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
-    proto::{AesCtrReadKeys, Encode, HandshakeHash},
+    proto::{AesCtrReadKeys, Encode, HandshakeHash, ServiceRequest},
 };
 
 /// A single SSH connection
@@ -130,6 +130,23 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             error!(%error, "failed to send ignore packet");
             return;
         }
+
+        let packet = match self.read.packet(&mut self.stream).await {
+            Ok(packet) => packet,
+            Err(error) => {
+                error!(%error, "failed to read packet");
+                return;
+            }
+        };
+
+        #[expect(unused_variables)]
+        let service_request = match ServiceRequest::try_from(packet) {
+            Ok(req) => dbg!(req),
+            Err(error) => {
+                error!(%error, "failed to read service request");
+                return;
+            }
+        };
 
         todo!();
     }
