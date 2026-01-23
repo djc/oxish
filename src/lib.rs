@@ -10,13 +10,15 @@ mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
 use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteState};
+mod user_auth;
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
     proto::{
-        AesCtrReadKeys, Disconnect, DisconnectReason, Encode, HandshakeHash, ServiceName,
-        ServiceRequest,
+        AesCtrReadKeys, Disconnect, DisconnectReason, Encode, HandshakeHash, ServiceAccept,
+        ServiceName, ServiceRequest,
     },
+    user_auth::UserAuthRequest,
 };
 
 /// A single SSH connection
@@ -170,7 +172,35 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         }
 
-        todo!();
+        let service_accept = ServiceAccept {
+            service_name: ServiceName::UserAuth,
+        };
+        if let Err(error) = self
+            .write
+            .write_packet(&mut self.stream, &service_accept, None)
+            .await
+        {
+            error!(%error, "failed to send service accept packet");
+            return;
+        }
+
+        let packet = match self.read.packet(&mut self.stream).await {
+            Ok(packet) => packet,
+            Err(error) => {
+                error!(%error, "failed to read packet");
+                return;
+            }
+        };
+
+        let user_auth_request = match UserAuthRequest::try_from(packet) {
+            Ok(req) => req,
+            Err(error) => {
+                error!(%error, "failed to read user auth request");
+                return;
+            }
+        };
+
+        dbg!(user_auth_request);
     }
 
     async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), Error> {

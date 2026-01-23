@@ -588,6 +588,17 @@ impl<'a> EncodedPacket<'a> {
     }
 }
 
+pub(crate) struct ServiceAccept<'a> {
+    pub(crate) service_name: ServiceName<'a>,
+}
+
+impl Encode for ServiceAccept<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::ServiceAccept.encode(buf);
+        self.service_name.encode(buf);
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ServiceRequest<'a> {
     pub(crate) service_name: ServiceName<'a>,
@@ -652,6 +663,7 @@ pub(crate) enum DisconnectReason {
 #[derive(Debug)]
 pub(crate) enum ServiceName<'a> {
     UserAuth,
+    Connection,
     Unknown(&'a str),
 }
 
@@ -659,6 +671,7 @@ impl<'a> ServiceName<'a> {
     pub(crate) fn as_str(&self) -> &'a str {
         match self {
             ServiceName::UserAuth => "ssh-userauth",
+            ServiceName::Connection => "ssh-connection",
             ServiceName::Unknown(name) => name,
         }
     }
@@ -669,6 +682,7 @@ impl<'a> Decode<'a> for ServiceName<'a> {
         let Decoded { value, next } = <&[u8]>::decode(bytes)?;
         let value = match str::from_utf8(value) {
             Ok("ssh-userauth") => ServiceName::UserAuth,
+            Ok("ssh-connection") => ServiceName::Connection,
             Ok(name) => ServiceName::Unknown(name),
             Err(_) => return Err(Error::InvalidPacket("invalid UTF-8 in service name")),
         };
