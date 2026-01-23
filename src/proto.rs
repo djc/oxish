@@ -578,8 +578,7 @@ impl<'a> EncodedPacket<'a> {
 
 #[derive(Debug)]
 pub(crate) struct ServiceRequest<'a> {
-    #[expect(dead_code)]
-    pub(crate) service_name: &'a str,
+    pub(crate) service_name: ServiceName<'a>,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
@@ -593,15 +592,88 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
         let Decoded {
             value: service_name,
             next,
-        } = <&[u8]>::decode(packet.payload)?;
+        } = ServiceName::decode(packet.payload)?;
         if !next.is_empty() {
             return Err(Error::InvalidPacket("extra data in service request"));
         }
 
-        match str::from_utf8(service_name) {
-            Ok(service_name) => Ok(ServiceRequest { service_name }),
-            Err(_) => Err(Error::InvalidPacket("invalid UTF-8 in service name")),
+        Ok(ServiceRequest { service_name })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Disconnect<'a> {
+    pub(crate) reason_code: DisconnectReason,
+    pub(crate) description: &'a str,
+}
+
+impl Encode for Disconnect<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::Disconnect.encode(buf);
+        (self.reason_code as u32).encode(buf);
+        self.description.as_bytes().encode(buf);
+        "en-US".as_bytes().encode(buf);
+    }
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DisconnectReason {
+    HostNotAllowedToConnect = 1,
+    ProtocolError = 2,
+    KeyExchangeFailed = 3,
+    Reserved = 4,
+    MacError = 5,
+    CompressionError = 6,
+    ServiceNotAvailable = 7,
+    ProtocolVersionNotSupported = 8,
+    HostKeyNotVerifiable = 9,
+    ConnectionLost = 10,
+    ByApplication = 11,
+    TooManyConnections = 12,
+    AuthCancelledByUser = 13,
+    NoMoreAuthMethodsAvailable = 14,
+    IllegalUserName = 15,
+}
+
+#[derive(Debug)]
+pub(crate) enum ServiceName<'a> {
+    UserAuth,
+    Unknown(&'a str),
+}
+
+impl<'a> ServiceName<'a> {
+    pub(crate) fn as_str(&self) -> &'a str {
+        match self {
+            ServiceName::UserAuth => "ssh-userauth",
+            ServiceName::Unknown(name) => name,
         }
+    }
+}
+
+impl<'a> Decode<'a> for ServiceName<'a> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value, next } = <&[u8]>::decode(bytes)?;
+        let value = match str::from_utf8(value) {
+            Ok("ssh-userauth") => ServiceName::UserAuth,
+            Ok(name) => ServiceName::Unknown(name),
+            Err(_) => return Err(Error::InvalidPacket("invalid UTF-8 in service name")),
+        };
+
+        Ok(Decoded { value, next })
+    }
+}
+
+impl Encode for ServiceName<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.as_str().as_bytes().encode(buf);
+    }
+}
+
+impl PartialEq for ServiceName<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
     }
 }
 
