@@ -1,7 +1,8 @@
-use core::future;
-use core::iter;
-use core::pin::Pin;
-use core::task::{ready, Context, Poll};
+use core::{
+    fmt, future, iter,
+    pin::Pin,
+    task::{ready, Context, Poll},
+};
 use std::io;
 
 use aws_lc_rs::{
@@ -475,10 +476,24 @@ impl From<MessageType> for u8 {
 }
 
 pub(crate) struct IncomingPacket<'a> {
-    #[expect(unused)]
     pub(crate) sequence_number: u32,
     pub(crate) message_type: MessageType,
     pub(crate) payload: &'a [u8],
+}
+
+impl fmt::Debug for IncomingPacket<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            sequence_number,
+            message_type,
+            payload: _,
+        } = self;
+
+        f.debug_struct("IncomingPacket")
+            .field("sequence_number", sequence_number)
+            .field("message_type", message_type)
+            .finish_non_exhaustive()
+    }
 }
 
 /// An encoded outgoing packet including length field and padding, but
