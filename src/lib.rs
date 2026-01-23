@@ -13,7 +13,10 @@ use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteS
 
 use crate::{
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
-    proto::{AesCtrReadKeys, Encode, HandshakeHash, ServiceRequest},
+    proto::{
+        AesCtrReadKeys, Disconnect, DisconnectReason, Encode, HandshakeHash, ServiceName,
+        ServiceRequest,
+    },
 };
 
 /// A single SSH connection
@@ -139,14 +142,33 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        #[expect(unused_variables)]
         let service_request = match ServiceRequest::try_from(packet) {
-            Ok(req) => dbg!(req),
+            Ok(req) => req,
             Err(error) => {
                 error!(%error, "failed to read service request");
                 return;
             }
         };
+
+        if service_request.service_name != ServiceName::UserAuth {
+            error!(
+                service_name = ?service_request.service_name,
+                "unsupported service requested"
+            );
+
+            let disconnect = Disconnect {
+                reason_code: DisconnectReason::ServiceNotAvailable,
+                description: "only user authentication service is supported",
+            };
+            if let Err(error) = self
+                .write
+                .write_packet(&mut self.stream, &disconnect, None)
+                .await
+            {
+                error!(%error, "failed to send disconnect packet");
+            }
+            return;
+        }
 
         todo!();
     }
