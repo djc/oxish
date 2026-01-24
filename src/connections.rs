@@ -57,10 +57,14 @@ impl Channels {
                 };
 
                 match request.r#type {
-                    ChannelRequestType::PtyReq(_) if request.want_reply => Ok(Some(
-                        OutgoingChannelMessage::RequestSuccess(channel.success()),
-                    )),
-                    ChannelRequestType::PtyReq(_) => Ok(None),
+                    ChannelRequestType::PtyReq(_) | ChannelRequestType::Env(_)
+                        if request.want_reply =>
+                    {
+                        Ok(Some(OutgoingChannelMessage::RequestSuccess(
+                            channel.success(),
+                        )))
+                    }
+                    ChannelRequestType::PtyReq(_) | ChannelRequestType::Env(_) => Ok(None),
                     ChannelRequestType::Unknown(_) => {
                         Err(Error::InvalidPacket("channel request of unknown type"))
                     }
@@ -272,6 +276,13 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     }
                 }
             }
+            b"env" => {
+                let Decoded { value, next } = Env::decode(next)?;
+                match next.is_empty() {
+                    true => ChannelRequestType::Env(value),
+                    false => return Err(Error::InvalidPacket("extra data in env channel request")),
+                }
+            }
             _ => {
                 match str::from_utf8(r#type) {
                     Ok(r#type) => warn!(%r#type, "unknown channel request type"),
@@ -295,7 +306,34 @@ enum ChannelRequestType<'a> {
     #[expect(dead_code)]
     PtyReq(PtyReq<'a>),
     #[expect(dead_code)]
+    Env(Env<'a>),
+    #[expect(dead_code)]
     Unknown(&'a str),
+}
+
+#[derive(Debug)]
+pub(crate) struct Env<'a> {
+    #[expect(dead_code)]
+    name: &'a str,
+    #[expect(dead_code)]
+    value: &'a str,
+}
+
+impl<'a> Decode<'a> for Env<'a> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value: name, next } = <&[u8]>::decode(input)?;
+        let name =
+            str::from_utf8(name).map_err(|_| Error::InvalidPacket("invalid UTF-8 in env name"))?;
+
+        let Decoded { value, next } = <&[u8]>::decode(next)?;
+        let value = str::from_utf8(value)
+            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in env value"))?;
+
+        Ok(Decoded {
+            value: Env { name, value },
+            next,
+        })
+    }
 }
 
 #[derive(Debug)]
