@@ -271,9 +271,20 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        if let Err(error) = self.channels.handle(channel_message) {
-            error!(%error, "failed to handle channel message");
-            return;
+        match self.channels.handle(channel_message) {
+            Ok(outgoing) => {
+                if let Err(error) = self
+                    .write
+                    .write_packet(&mut self.stream, &outgoing, None)
+                    .await
+                {
+                    error!(%error, "failed to send channel message");
+                    return;
+                }
+            }
+            Err(error) => {
+                error!(%error, "failed to handle channel message");
+            }
         }
     }
 

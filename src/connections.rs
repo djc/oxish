@@ -1,8 +1,8 @@
 use core::str;
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 
 use crate::{
-    proto::{Decode, Decoded, IncomingPacket, MessageType},
+    proto::{Decode, Decoded, Encode, IncomingPacket, MessageType},
     Error,
 };
 
@@ -13,31 +13,143 @@ pub(crate) struct Channels {
 }
 
 impl Channels {
-    pub(crate) fn handle(&mut self, message: IncomingChannelMessage<'_>) -> Result<(), Error> {
-        match message {
+    pub(crate) fn handle(
+        &mut self,
+        message: IncomingChannelMessage<'_>,
+    ) -> Result<OutgoingChannelMessage<'static>, Error> {
+        match dbg!(message) {
             IncomingChannelMessage::Open(open) => {
+                if open.r#type != ChannelType::Session {
+                    return Ok(OutgoingChannelMessage::OpenFailure(
+                        ChannelOpenFailure::unknown_type(open.sender_channel),
+                    ));
+                }
+
                 let local_id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1);
-                self.channels.insert(
-                    local_id,
-                    Channel {
-                        remote_id: open.sender_channel,
-                        window_size: open.initial_window_size,
-                        maximum_packet_size: open.maximum_packet_size,
-                    },
-                );
+                let entry = match self.channels.entry(local_id) {
+                    Entry::Vacant(entry) => entry,
+                    Entry::Occupied(_) => {
+                        return Ok(OutgoingChannelMessage::OpenFailure(
+                            ChannelOpenFailure::duplicate_id(open.sender_channel),
+                        ));
+                    }
+                };
+
+                let channel = entry.insert(Channel {
+                    remote_id: open.sender_channel,
+                    window_size: open.initial_window_size,
+                    maximum_packet_size: open.maximum_packet_size,
+                });
+
+                Ok(OutgoingChannelMessage::OpenConfirmation(
+                    channel.confirmation(local_id),
+                ))
             }
         }
-        Ok(())
     }
 }
 
-#[expect(dead_code)]
 #[derive(Debug)]
 pub(crate) struct Channel {
     remote_id: u32,
     window_size: u32,
     maximum_packet_size: u32,
+}
+
+impl Channel {
+    fn confirmation(&self, local_id: u32) -> ChannelOpenConfirmation {
+        ChannelOpenConfirmation {
+            recipient_channel: self.remote_id,
+            sender_channel: local_id,
+            initial_window_size: self.window_size,
+            maximum_packet_size: self.maximum_packet_size,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum OutgoingChannelMessage<'a> {
+    OpenConfirmation(ChannelOpenConfirmation),
+    OpenFailure(ChannelOpenFailure<'a>),
+}
+
+impl Encode for OutgoingChannelMessage<'_> {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        match self {
+            Self::OpenConfirmation(msg) => msg.encode(buffer),
+            Self::OpenFailure(msg) => msg.encode(buffer),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ChannelOpenConfirmation {
+    recipient_channel: u32,
+    sender_channel: u32,
+    initial_window_size: u32,
+    maximum_packet_size: u32,
+}
+
+impl Encode for ChannelOpenConfirmation {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelOpenConfirmation.encode(buffer);
+        self.recipient_channel.encode(buffer);
+        self.sender_channel.encode(buffer);
+        self.initial_window_size.encode(buffer);
+        self.maximum_packet_size.encode(buffer);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ChannelOpenFailure<'a> {
+    recipient_channel: u32,
+    reason_code: ChannelOpenFailureReason,
+    description: &'a str,
+}
+
+impl ChannelOpenFailure<'static> {
+    fn duplicate_id(recipient_channel: u32) -> Self {
+        Self {
+            recipient_channel,
+            reason_code: ChannelOpenFailureReason::AdministrativelyProhibited,
+            description: "channel ID already in use",
+        }
+    }
+
+    fn unknown_type(recipient_channel: u32) -> Self {
+        Self {
+            recipient_channel,
+            reason_code: ChannelOpenFailureReason::UnknownChannelType,
+            description: "only 'session' channel type is supported",
+        }
+    }
+}
+
+impl Encode for ChannelOpenFailure<'_> {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelOpenFailure.encode(buffer);
+        self.recipient_channel.encode(buffer);
+        self.reason_code.encode(buffer);
+        self.description.as_bytes().encode(buffer);
+        "en-US".as_bytes().encode(buffer);
+    }
+}
+
+#[expect(dead_code)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+enum ChannelOpenFailureReason {
+    AdministrativelyProhibited = 1,
+    ConnectFailed = 2,
+    UnknownChannelType = 3,
+    ResourceShortage = 4,
+}
+
+impl Encode for ChannelOpenFailureReason {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        (*self as u32).encode(buffer);
+    }
 }
 
 #[derive(Debug)]
@@ -60,7 +172,6 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
 
 #[derive(Debug)]
 pub(crate) struct ChannelOpen<'a> {
-    #[expect(dead_code)]
     r#type: ChannelType<'a>,
     sender_channel: u32,
     initial_window_size: u32,
@@ -112,10 +223,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum ChannelType<'a> {
     Session,
-    #[expect(dead_code)]
     Unknown(&'a str),
 }
 
