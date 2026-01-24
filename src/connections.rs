@@ -1,4 +1,5 @@
 use core::str;
+use std::borrow::Cow;
 use std::collections::{btree_map::Entry, BTreeMap};
 
 use tracing::{debug, warn};
@@ -43,6 +44,7 @@ impl Channels {
                     remote_id: open.sender_channel,
                     window_size: open.initial_window_size,
                     maximum_packet_size: open.maximum_packet_size,
+                    session: None,
                 });
 
                 Ok(Some(OutgoingChannelMessage::OpenConfirmation(
@@ -50,25 +52,30 @@ impl Channels {
                 )))
             }
             IncomingChannelMessage::Request(request) => {
-                let Some(channel) = self.channels.get(&request.recipient_channel) else {
+                let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
                     return Err(Error::InvalidPacket(
                         "channel request for unknown channel ID",
                     ));
                 };
 
                 match request.r#type {
-                    ChannelRequestType::PtyReq(_)
-                    | ChannelRequestType::Env(_)
-                    | ChannelRequestType::Shell
+                    ChannelRequestType::PtyReq(pty_req) => {
+                        channel.session = Some(SessionState::Requested(pty_req.into_owned()));
+                        match request.want_reply {
+                            true => Ok(Some(OutgoingChannelMessage::RequestSuccess(
+                                channel.success(),
+                            ))),
+                            false => Ok(None),
+                        }
+                    }
+                    ChannelRequestType::Env(_) | ChannelRequestType::Shell
                         if request.want_reply =>
                     {
                         Ok(Some(OutgoingChannelMessage::RequestSuccess(
                             channel.success(),
                         )))
                     }
-                    ChannelRequestType::PtyReq(_)
-                    | ChannelRequestType::Env(_)
-                    | ChannelRequestType::Shell => Ok(None),
+                    ChannelRequestType::Env(_) | ChannelRequestType::Shell => Ok(None),
                 }
             }
             IncomingChannelMessage::Data(data) => {
@@ -88,6 +95,13 @@ pub(crate) struct Channel {
     remote_id: u32,
     window_size: u32,
     maximum_packet_size: u32,
+    session: Option<SessionState>,
+}
+
+#[derive(Debug)]
+enum SessionState {
+    #[expect(dead_code)]
+    Requested(PtyReq<'static>),
 }
 
 impl Channel {
@@ -351,7 +365,6 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
 
 #[derive(Debug)]
 enum ChannelRequestType<'a> {
-    #[expect(dead_code)]
     PtyReq(PtyReq<'a>),
     #[expect(dead_code)]
     Env(Env<'a>),
@@ -385,18 +398,25 @@ impl<'a> Decode<'a> for Env<'a> {
 
 #[derive(Debug)]
 struct PtyReq<'a> {
-    #[expect(dead_code)]
-    term: &'a str,
-    #[expect(dead_code)]
+    term: Cow<'a, str>,
     cols: u32,
-    #[expect(dead_code)]
     rows: u32,
-    #[expect(dead_code)]
     width_px: u32,
-    #[expect(dead_code)]
     height_px: u32,
-    #[expect(dead_code)]
     terminal_modes: BTreeMap<Mode, u32>,
+}
+
+impl<'a> PtyReq<'a> {
+    fn into_owned(self) -> PtyReq<'static> {
+        PtyReq {
+            term: Cow::Owned(self.term.into_owned()),
+            cols: self.cols,
+            rows: self.rows,
+            width_px: self.width_px,
+            height_px: self.height_px,
+            terminal_modes: self.terminal_modes,
+        }
+    }
 }
 
 impl<'a> Decode<'a> for PtyReq<'a> {
@@ -424,7 +444,7 @@ impl<'a> Decode<'a> for PtyReq<'a> {
 
         Ok(Decoded {
             value: PtyReq {
-                term,
+                term: Cow::Borrowed(term),
                 cols,
                 rows,
                 width_px,
