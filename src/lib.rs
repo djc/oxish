@@ -6,6 +6,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, instrument, warn};
 
+mod connections;
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
@@ -13,6 +14,7 @@ use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteS
 mod user_auth;
 
 use crate::{
+    connections::ChannelOpen,
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
     proto::{
         AesCtrReadKeys, Disconnect, DisconnectReason, Encode, HandshakeHash, ServiceAccept,
@@ -259,7 +261,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        dbg!(packet);
+        let channel_open = match ChannelOpen::try_from(packet) {
+            Ok(req) => req,
+            Err(error) => {
+                error!(%error, "failed to read channel open request");
+                return;
+            }
+        };
+
+        dbg!(channel_open);
     }
 
     async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), Error> {
