@@ -16,13 +16,14 @@ impl Channels {
     pub(crate) fn handle(
         &mut self,
         message: IncomingChannelMessage<'_>,
-    ) -> Result<OutgoingChannelMessage<'static>, Error> {
-        match dbg!(message) {
+    ) -> Result<Option<OutgoingChannelMessage<'static>>, Error> {
+        debug!(?message, "handling channel message");
+        match message {
             IncomingChannelMessage::Open(open) => {
                 if open.r#type != ChannelType::Session {
-                    return Ok(OutgoingChannelMessage::OpenFailure(
+                    return Ok(Some(OutgoingChannelMessage::OpenFailure(
                         ChannelOpenFailure::unknown_type(open.sender_channel),
-                    ));
+                    )));
                 }
 
                 let local_id = self.next_id;
@@ -30,9 +31,9 @@ impl Channels {
                 let entry = match self.channels.entry(local_id) {
                     Entry::Vacant(entry) => entry,
                     Entry::Occupied(_) => {
-                        return Ok(OutgoingChannelMessage::OpenFailure(
+                        return Ok(Some(OutgoingChannelMessage::OpenFailure(
                             ChannelOpenFailure::duplicate_id(open.sender_channel),
-                        ));
+                        )));
                     }
                 };
 
@@ -42,9 +43,9 @@ impl Channels {
                     maximum_packet_size: open.maximum_packet_size,
                 });
 
-                Ok(OutgoingChannelMessage::OpenConfirmation(
+                Ok(Some(OutgoingChannelMessage::OpenConfirmation(
                     channel.confirmation(local_id),
-                ))
+                )))
             }
             IncomingChannelMessage::Request(_request) => {
                 todo!()
