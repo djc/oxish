@@ -230,6 +230,32 @@ impl Encode for ChannelRequestFailure {
     }
 }
 
+#[expect(dead_code)]
+#[derive(Debug)]
+pub(crate) struct ChannelEof {
+    pub(crate) recipient_channel: u32,
+}
+
+impl Encode for ChannelEof {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelEof.encode(buffer);
+        self.recipient_channel.encode(buffer);
+    }
+}
+
+#[expect(dead_code)]
+#[derive(Debug)]
+pub(crate) struct ChannelClose {
+    pub(crate) recipient_channel: u32,
+}
+
+impl Encode for ChannelClose {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelClose.encode(buffer);
+        self.recipient_channel.encode(buffer);
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum IncomingChannelMessage<'a> {
     Open(ChannelOpen<'a>),
@@ -261,8 +287,8 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
 
 #[derive(Debug)]
 pub(crate) struct ChannelData<'a> {
-    recipient_channel: u32,
-    data: &'a [u8],
+    pub(crate) recipient_channel: u32,
+    pub(crate) data: Cow<'a, [u8]>,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
@@ -283,10 +309,18 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
         match next.is_empty() {
             true => Ok(ChannelData {
                 recipient_channel,
-                data,
+                data: Cow::Borrowed(data),
             }),
             false => Err(Error::InvalidPacket("extra data in channel data packet")),
         }
+    }
+}
+
+impl Encode for ChannelData<'_> {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelData.encode(buffer);
+        self.recipient_channel.encode(buffer);
+        self.data.as_ref().encode(buffer);
     }
 }
 
