@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 
 use crate::{
     proto::{Decode, Decoded, Encode, IncomingPacket, MessageType},
-    Error,
+    Error, Pretty,
 };
 
 #[derive(Default)]
@@ -19,7 +19,7 @@ impl Channels {
         &mut self,
         message: IncomingChannelMessage<'_>,
     ) -> Result<Option<OutgoingChannelMessage<'static>>, Error> {
-        debug!(?message, "handling channel message");
+        debug!(message = %Pretty(&message), "handling channel message");
         match message {
             IncomingChannelMessage::Open(open) => {
                 if open.r#type != ChannelType::Session {
