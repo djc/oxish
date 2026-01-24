@@ -46,6 +46,9 @@ impl Channels {
                     channel.confirmation(local_id),
                 ))
             }
+            IncomingChannelMessage::Request(_request) => {
+                todo!()
+            }
         }
     }
 }
@@ -155,6 +158,7 @@ impl Encode for ChannelOpenFailureReason {
 #[derive(Debug)]
 pub(crate) enum IncomingChannelMessage<'a> {
     Open(ChannelOpen<'a>),
+    Request(ChannelRequest<'a>),
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
@@ -165,8 +169,287 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
             MessageType::ChannelOpen => {
                 Ok(IncomingChannelMessage::Open(ChannelOpen::try_from(packet)?))
             }
+            MessageType::ChannelRequest => Ok(IncomingChannelMessage::Request(
+                ChannelRequest::try_from(packet)?,
+            )),
             _ => Err(Error::InvalidPacket("unexpected channel message type")),
         }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ChannelRequest<'a> {
+    #[expect(dead_code)]
+    recipient_channel: u32,
+    #[expect(dead_code)]
+    r#type: ChannelRequestType<'a>,
+    #[expect(dead_code)]
+    want_reply: bool,
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
+    type Error = Error;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelRequest {
+            return Err(Error::InvalidPacket("expected channel request packet"));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        let Decoded {
+            value: r#type,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        let Decoded {
+            value: want_reply,
+            next,
+        } = bool::decode(next)?;
+
+        let r#type = match r#type {
+            b"pty-req" => {
+                let Decoded { value, next } = PtyReq::decode(next)?;
+                match next.is_empty() {
+                    true => ChannelRequestType::PtyReq(value),
+                    false => {
+                        return Err(Error::InvalidPacket(
+                            "extra data in pty-req channel request",
+                        ))
+                    }
+                }
+            }
+            _ => return Err(Error::InvalidPacket("unknown channel request type")),
+        };
+
+        Ok(ChannelRequest {
+            recipient_channel,
+            r#type,
+            want_reply,
+        })
+    }
+}
+
+#[derive(Debug)]
+enum ChannelRequestType<'a> {
+    #[expect(dead_code)]
+    PtyReq(PtyReq<'a>),
+    #[expect(dead_code)]
+    Unknown(&'a str),
+}
+
+#[derive(Debug)]
+struct PtyReq<'a> {
+    #[expect(dead_code)]
+    term: &'a str,
+    #[expect(dead_code)]
+    cols: u32,
+    #[expect(dead_code)]
+    rows: u32,
+    #[expect(dead_code)]
+    width_px: u32,
+    #[expect(dead_code)]
+    height_px: u32,
+    #[expect(dead_code)]
+    terminal_modes: BTreeMap<Mode, u32>,
+}
+
+impl<'a> Decode<'a> for PtyReq<'a> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value: term, next } = <&[u8]>::decode(input)?;
+        let term = str::from_utf8(term)
+            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in pty-req data"))?;
+
+        let Decoded { value: cols, next } = u32::decode(next)?;
+        let Decoded { value: rows, next } = u32::decode(next)?;
+        let Decoded {
+            value: width_px,
+            next,
+        } = u32::decode(next)?;
+
+        let Decoded {
+            value: height_px,
+            next,
+        } = u32::decode(next)?;
+
+        let Decoded {
+            value: terminal_modes,
+            next,
+        } = BTreeMap::<Mode, u32>::decode(next)?;
+
+        Ok(Decoded {
+            value: PtyReq {
+                term,
+                cols,
+                rows,
+                width_px,
+                height_px,
+                terminal_modes,
+            },
+            next,
+        })
+    }
+}
+
+impl<'a> Decode<'a> for BTreeMap<Mode, u32> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value, next: rest } = <&[u8]>::decode(input)?;
+        let mut input = value;
+        let mut modes = Self::new();
+
+        loop {
+            let Decoded { value, next } = Option::<Mode>::decode(input)?;
+            input = next;
+
+            match value {
+                Some(mode) => {
+                    let Decoded { value, next } = u32::decode(input)?;
+                    modes.insert(mode, value);
+                    input = next;
+                }
+                None => break,
+            }
+        }
+
+        Ok(Decoded {
+            value: modes,
+            next: rest,
+        })
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Mode {
+    VIntr = 1,
+    VQuit = 2,
+    VErase = 3,
+    VKill = 4,
+    VEof = 5,
+    VEol = 6,
+    VEol2 = 7,
+    VStart = 8,
+    VStop = 9,
+    VSusp = 10,
+    VDSusp = 11,
+    VReprint = 12,
+    VWErase = 13,
+    VLNext = 14,
+    VFlush = 15,
+    VSwtch = 16,
+    VStatus = 17,
+    VDiscard = 18,
+    IgnPar = 30,
+    ParMrk = 31,
+    INPck = 32,
+    IStrip = 33,
+    INlCr = 34,
+    IgnCr = 35,
+    ICrNl = 36,
+    IUcLc = 37,
+    IxOn = 38,
+    IxAny = 39,
+    IxOff = 40,
+    IMaxBel = 41,
+    IUtf8 = 42,
+    ISig = 50,
+    ICanon = 51,
+    XCase = 52,
+    Echo = 53,
+    EchoE = 54,
+    EchoK = 55,
+    EchoNl = 56,
+    NoFlsh = 57,
+    TOStop = 58,
+    IExten = 59,
+    EchoCtl = 60,
+    EchoKe = 61,
+    Pendin = 62,
+    OPost = 70,
+    OLcUc = 71,
+    ONlCr = 72,
+    OCrNl = 73,
+    ONoCr = 74,
+    ONlRet = 75,
+    Cs7 = 90,
+    Cs8 = 91,
+    ParenB = 92,
+    ParOdd = 93,
+    TtyOpISpeed = 128,
+    TtyOpOSpeed = 129,
+}
+
+impl<'a> Decode<'a> for Option<Mode> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value, next } = u8::decode(input)?;
+        let mode = match value {
+            0 => return Ok(Decoded { value: None, next }),
+            1 => Mode::VIntr,
+            2 => Mode::VQuit,
+            3 => Mode::VErase,
+            4 => Mode::VKill,
+            5 => Mode::VEof,
+            6 => Mode::VEol,
+            7 => Mode::VEol2,
+            8 => Mode::VStart,
+            9 => Mode::VStop,
+            10 => Mode::VSusp,
+            11 => Mode::VDSusp,
+            12 => Mode::VReprint,
+            13 => Mode::VWErase,
+            14 => Mode::VLNext,
+            15 => Mode::VFlush,
+            16 => Mode::VSwtch,
+            17 => Mode::VStatus,
+            18 => Mode::VDiscard,
+            30 => Mode::IgnPar,
+            31 => Mode::ParMrk,
+            32 => Mode::INPck,
+            33 => Mode::IStrip,
+            34 => Mode::INlCr,
+            35 => Mode::IgnCr,
+            36 => Mode::ICrNl,
+            37 => Mode::IUcLc,
+            38 => Mode::IxOn,
+            39 => Mode::IxAny,
+            40 => Mode::IxOff,
+            41 => Mode::IMaxBel,
+            42 => Mode::IUtf8,
+            50 => Mode::ISig,
+            51 => Mode::ICanon,
+            52 => Mode::XCase,
+            53 => Mode::Echo,
+            54 => Mode::EchoE,
+            55 => Mode::EchoK,
+            56 => Mode::EchoNl,
+            57 => Mode::NoFlsh,
+            58 => Mode::TOStop,
+            59 => Mode::IExten,
+            60 => Mode::EchoCtl,
+            61 => Mode::EchoKe,
+            62 => Mode::Pendin,
+            70 => Mode::OPost,
+            71 => Mode::OLcUc,
+            72 => Mode::ONlCr,
+            73 => Mode::OCrNl,
+            74 => Mode::ONoCr,
+            75 => Mode::ONlRet,
+            90 => Mode::Cs7,
+            91 => Mode::Cs8,
+            92 => Mode::ParenB,
+            93 => Mode::ParOdd,
+            128 => Mode::TtyOpISpeed,
+            129 => Mode::TtyOpOSpeed,
+            _ => return Err(Error::InvalidPacket("unknown terminal mode code")),
+        };
+
+        Ok(Decoded {
+            value: Some(mode),
+            next,
+        })
     }
 }
 
