@@ -255,35 +255,38 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         }
 
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(%error, "failed to read packet");
-                return;
-            }
-        };
-
-        let channel_message = match IncomingChannelMessage::try_from(packet) {
-            Ok(req) => req,
-            Err(error) => {
-                error!(%error, "failed to read channel open request");
-                return;
-            }
-        };
-
-        match self.channels.handle(channel_message) {
-            Ok(outgoing) => {
-                if let Err(error) = self
-                    .write
-                    .write_packet(&mut self.stream, &outgoing, None)
-                    .await
-                {
-                    error!(%error, "failed to send channel message");
+        loop {
+            let packet = match self.read.packet(&mut self.stream).await {
+                Ok(packet) => packet,
+                Err(error) => {
+                    error!(%error, "failed to read packet");
                     return;
                 }
-            }
-            Err(error) => {
-                error!(%error, "failed to handle channel message");
+            };
+
+            let channel_message = match IncomingChannelMessage::try_from(packet) {
+                Ok(req) => req,
+                Err(error) => {
+                    error!(%error, "failed to read channel messaeg");
+                    return;
+                }
+            };
+
+            match self.channels.handle(channel_message) {
+                Ok(outgoing) => {
+                    if let Err(error) = self
+                        .write
+                        .write_packet(&mut self.stream, &outgoing, None)
+                        .await
+                    {
+                        error!(%error, "failed to send channel message");
+                        return;
+                    }
+                }
+                Err(error) => {
+                    error!(%error, "failed to handle channel message");
+                    return;
+                }
             }
         }
     }
