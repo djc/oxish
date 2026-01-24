@@ -44,6 +44,7 @@ impl Channels {
                     remote_id: open.sender_channel,
                     window_size: open.initial_window_size,
                     maximum_packet_size: open.maximum_packet_size,
+                    env: Vec::new(),
                     session: None,
                 });
 
@@ -61,22 +62,18 @@ impl Channels {
                 match request.r#type {
                     ChannelRequestType::PtyReq(pty_req) => {
                         channel.session = Some(SessionState::Requested(pty_req.into_owned()));
-                        match request.want_reply {
-                            true => Ok(Some(OutgoingChannelMessage::RequestSuccess(
-                                channel.success(),
-                            ))),
-                            false => Ok(None),
-                        }
                     }
-                    ChannelRequestType::Env(_) | ChannelRequestType::Shell
-                        if request.want_reply =>
-                    {
-                        Ok(Some(OutgoingChannelMessage::RequestSuccess(
-                            channel.success(),
-                        )))
+                    ChannelRequestType::Env(env) => {
+                        channel
+                            .env
+                            .push((env.name.to_owned(), env.value.to_owned()));
                     }
-                    ChannelRequestType::Env(_) | ChannelRequestType::Shell => Ok(None),
+                    ChannelRequestType::Shell => {}
                 }
+
+                Ok(request
+                    .want_reply
+                    .then(|| OutgoingChannelMessage::RequestSuccess(channel.success())))
             }
             IncomingChannelMessage::Data(data) => {
                 let Some(_channel) = self.channels.get_mut(&data.recipient_channel) else {
@@ -95,6 +92,7 @@ pub(crate) struct Channel {
     remote_id: u32,
     window_size: u32,
     maximum_packet_size: u32,
+    env: Vec<(String, String)>,
     session: Option<SessionState>,
 }
 
@@ -366,16 +364,13 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
 #[derive(Debug)]
 enum ChannelRequestType<'a> {
     PtyReq(PtyReq<'a>),
-    #[expect(dead_code)]
     Env(Env<'a>),
     Shell,
 }
 
 #[derive(Debug)]
 pub(crate) struct Env<'a> {
-    #[expect(dead_code)]
     name: &'a str,
-    #[expect(dead_code)]
     value: &'a str,
 }
 
