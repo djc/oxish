@@ -1,7 +1,7 @@
 use core::str;
 use std::collections::{btree_map::Entry, BTreeMap};
 
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{
     proto::{Decode, Decoded, Encode, IncomingPacket, MessageType},
@@ -70,6 +70,14 @@ impl Channels {
                     | ChannelRequestType::Env(_)
                     | ChannelRequestType::Shell => Ok(None),
                 }
+            }
+            IncomingChannelMessage::Data(data) => {
+                let Some(_channel) = self.channels.get_mut(&data.recipient_channel) else {
+                    return Err(Error::InvalidPacket("channel data for unknown channel ID"));
+                };
+
+                debug!(len = %data.data.len(), "received channel data");
+                Ok(None)
             }
         }
     }
@@ -214,6 +222,7 @@ impl Encode for ChannelRequestFailure {
 pub(crate) enum IncomingChannelMessage<'a> {
     Open(ChannelOpen<'a>),
     Request(ChannelRequest<'a>),
+    Data(ChannelData<'a>),
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
@@ -227,10 +236,44 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
             MessageType::ChannelRequest => Ok(IncomingChannelMessage::Request(
                 ChannelRequest::try_from(packet)?,
             )),
+            MessageType::ChannelData => {
+                Ok(IncomingChannelMessage::Data(ChannelData::try_from(packet)?))
+            }
             _ => {
                 warn!(?packet.message_type, "unexpected channel message type");
                 Err(Error::InvalidPacket("unexpected channel message type"))
             }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ChannelData<'a> {
+    recipient_channel: u32,
+    data: &'a [u8],
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
+    type Error = Error;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelData {
+            return Err(Error::InvalidPacket("expected channel data packet"));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        let Decoded { value: data, next } = <&[u8]>::decode(next)?;
+
+        match next.is_empty() {
+            true => Ok(ChannelData {
+                recipient_channel,
+                data,
+            }),
+            false => Err(Error::InvalidPacket("extra data in channel data packet")),
         }
     }
 }
