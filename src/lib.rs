@@ -267,28 +267,42 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             let channel_message = match IncomingChannelMessage::try_from(packet) {
                 Ok(req) => req,
                 Err(error) => {
-                    error!(%error, "failed to read channel messaeg");
+                    error!(%error, "failed to read channel message");
                     return;
                 }
             };
 
-            match self.channels.handle(channel_message) {
-                Ok(Some(outgoing)) => {
-                    debug!(outgoing = %Pretty(&outgoing), "sending channel message");
-                    if let Err(error) = self
-                        .write
-                        .write_packet(&mut self.stream, &outgoing, None)
-                        .await
-                    {
-                        error!(%error, "failed to send channel message");
+            debug!(message = %Pretty(&channel_message), "handling channel message");
+            let outgoing = match channel_message {
+                IncomingChannelMessage::Open(open) => Some(self.channels.open(open)),
+                IncomingChannelMessage::Request(request) => match self.channels.request(request) {
+                    Ok(outgoing) => outgoing,
+                    Err(error) => {
+                        error!(%error, "failed to handle channel request");
                         return;
                     }
+                },
+                IncomingChannelMessage::Data(data) => {
+                    if let Err(error) = self.channels.data(&data) {
+                        error!(%error, "failed to handle channel data");
+                        return;
+                    }
+                    None
                 }
-                Ok(None) => {}
-                Err(error) => {
-                    error!(%error, "failed to handle channel message");
-                    return;
-                }
+            };
+
+            let Some(outgoing) = outgoing else {
+                continue;
+            };
+
+            debug!(outgoing = %Pretty(&outgoing), "sending channel message");
+            if let Err(error) = self
+                .write
+                .write_packet(&mut self.stream, &outgoing, None)
+                .await
+            {
+                error!(%error, "failed to send channel message");
+                return;
             }
         }
     }

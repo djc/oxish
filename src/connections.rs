@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use crate::{
     proto::{Decode, Decoded, Encode, IncomingPacket, MessageType},
-    Error, Pretty,
+    Error,
 };
 
 #[derive(Default)]
@@ -16,74 +16,69 @@ pub(crate) struct Channels {
 }
 
 impl Channels {
-    pub(crate) fn handle(
-        &mut self,
-        message: IncomingChannelMessage<'_>,
-    ) -> Result<Option<OutgoingChannelMessage<'static>>, Error> {
-        debug!(message = %Pretty(&message), "handling channel message");
-        match message {
-            IncomingChannelMessage::Open(open) => {
-                if open.r#type != ChannelType::Session {
-                    return Ok(Some(OutgoingChannelMessage::OpenFailure(
-                        ChannelOpenFailure::unknown_type(open.sender_channel),
-                    )));
-                }
-
-                let local_id = self.next_id;
-                self.next_id = self.next_id.wrapping_add(1);
-                let entry = match self.channels.entry(local_id) {
-                    Entry::Vacant(entry) => entry,
-                    Entry::Occupied(_) => {
-                        return Ok(Some(OutgoingChannelMessage::OpenFailure(
-                            ChannelOpenFailure::duplicate_id(open.sender_channel),
-                        )));
-                    }
-                };
-
-                let channel = entry.insert(Channel {
-                    remote_id: open.sender_channel,
-                    window_size: open.initial_window_size,
-                    maximum_packet_size: open.maximum_packet_size,
-                    env: Vec::new(),
-                    session: None,
-                });
-
-                Ok(Some(OutgoingChannelMessage::OpenConfirmation(
-                    channel.confirmation(local_id),
-                )))
-            }
-            IncomingChannelMessage::Request(request) => {
-                let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
-                    return Err(Error::InvalidPacket(
-                        "channel request for unknown channel ID",
-                    ));
-                };
-
-                match request.r#type {
-                    ChannelRequestType::PtyReq(pty_req) => {
-                        channel.session = Some(SessionState::Requested(pty_req.into_owned()));
-                    }
-                    ChannelRequestType::Env(env) => {
-                        channel
-                            .env
-                            .push((env.name.to_owned(), env.value.to_owned()));
-                    }
-                    ChannelRequestType::Shell => {}
-                }
-
-                Ok(request
-                    .want_reply
-                    .then(|| OutgoingChannelMessage::RequestSuccess(channel.success())))
-            }
-            IncomingChannelMessage::Data(data) => {
-                let Some(_channel) = self.channels.get_mut(&data.recipient_channel) else {
-                    return Err(Error::InvalidPacket("channel data for unknown channel ID"));
-                };
-
-                debug!(len = %data.data.len(), "received channel data");
-                Ok(None)
-            }
+    pub(crate) fn open(&mut self, open: ChannelOpen<'_>) -> OutgoingChannelMessage<'static> {
+        if open.r#type != ChannelType::Session {
+            return OutgoingChannelMessage::OpenFailure(ChannelOpenFailure::unknown_type(
+                open.sender_channel,
+            ));
         }
+
+        let local_id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        let entry = match self.channels.entry(local_id) {
+            Entry::Vacant(entry) => entry,
+            Entry::Occupied(_) => {
+                return OutgoingChannelMessage::OpenFailure(ChannelOpenFailure::duplicate_id(
+                    open.sender_channel,
+                ));
+            }
+        };
+
+        let channel = entry.insert(Channel {
+            remote_id: open.sender_channel,
+            window_size: open.initial_window_size,
+            maximum_packet_size: open.maximum_packet_size,
+            env: Vec::new(),
+            session: None,
+        });
+
+        OutgoingChannelMessage::OpenConfirmation(channel.confirmation(local_id))
+    }
+
+    pub(crate) fn request(
+        &mut self,
+        request: ChannelRequest<'_>,
+    ) -> Result<Option<OutgoingChannelMessage<'static>>, Error> {
+        let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
+            return Err(Error::InvalidPacket(
+                "channel request for unknown channel ID",
+            ));
+        };
+
+        match request.r#type {
+            ChannelRequestType::PtyReq(pty_req) => {
+                channel.session = Some(SessionState::Requested(pty_req.into_owned()));
+            }
+            ChannelRequestType::Env(env) => {
+                channel
+                    .env
+                    .push((env.name.to_owned(), env.value.to_owned()));
+            }
+            ChannelRequestType::Shell => {}
+        }
+
+        Ok(request
+            .want_reply
+            .then(|| OutgoingChannelMessage::RequestSuccess(channel.success())))
+    }
+
+    pub(crate) fn data(&mut self, data: &ChannelData<'_>) -> Result<(), Error> {
+        let Some(_channel) = self.channels.get_mut(&data.recipient_channel) else {
+            return Err(Error::InvalidPacket("channel data for unknown channel ID"));
+        };
+
+        debug!(len = %data.data.len(), "received channel data");
+        Ok(())
     }
 }
 
