@@ -47,8 +47,22 @@ impl Channels {
                     channel.confirmation(local_id),
                 )))
             }
-            IncomingChannelMessage::Request(_request) => {
-                todo!()
+            IncomingChannelMessage::Request(request) => {
+                let Some(channel) = self.channels.get(&request.recipient_channel) else {
+                    return Err(Error::InvalidPacket(
+                        "channel request for unknown channel ID",
+                    ));
+                };
+
+                match request.r#type {
+                    ChannelRequestType::PtyReq(_) if request.want_reply => Ok(Some(
+                        OutgoingChannelMessage::RequestSuccess(channel.success()),
+                    )),
+                    ChannelRequestType::PtyReq(_) => Ok(None),
+                    ChannelRequestType::Unknown(_) => {
+                        Err(Error::InvalidPacket("channel request of unknown type"))
+                    }
+                }
             }
         }
     }
@@ -70,12 +84,19 @@ impl Channel {
             maximum_packet_size: self.maximum_packet_size,
         }
     }
+
+    fn success(&self) -> ChannelRequestSuccess {
+        ChannelRequestSuccess {
+            recipient_channel: self.remote_id,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub(crate) enum OutgoingChannelMessage<'a> {
     OpenConfirmation(ChannelOpenConfirmation),
     OpenFailure(ChannelOpenFailure<'a>),
+    RequestSuccess(ChannelRequestSuccess),
 }
 
 impl Encode for OutgoingChannelMessage<'_> {
@@ -83,6 +104,7 @@ impl Encode for OutgoingChannelMessage<'_> {
         match self {
             Self::OpenConfirmation(msg) => msg.encode(buffer),
             Self::OpenFailure(msg) => msg.encode(buffer),
+            Self::RequestSuccess(msg) => msg.encode(buffer),
         }
     }
 }
@@ -157,6 +179,31 @@ impl Encode for ChannelOpenFailureReason {
 }
 
 #[derive(Debug)]
+pub(crate) struct ChannelRequestSuccess {
+    recipient_channel: u32,
+}
+
+impl Encode for ChannelRequestSuccess {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelSuccess.encode(buffer);
+        self.recipient_channel.encode(buffer);
+    }
+}
+
+#[expect(dead_code)]
+#[derive(Debug)]
+pub(crate) struct ChannelRequestFailure {
+    recipient_channel: u32,
+}
+
+impl Encode for ChannelRequestFailure {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelFailure.encode(buffer);
+        self.recipient_channel.encode(buffer);
+    }
+}
+
+#[derive(Debug)]
 pub(crate) enum IncomingChannelMessage<'a> {
     Open(ChannelOpen<'a>),
     Request(ChannelRequest<'a>),
@@ -180,11 +227,8 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
 
 #[derive(Debug)]
 pub(crate) struct ChannelRequest<'a> {
-    #[expect(dead_code)]
     recipient_channel: u32,
-    #[expect(dead_code)]
     r#type: ChannelRequestType<'a>,
-    #[expect(dead_code)]
     want_reply: bool,
 }
 
