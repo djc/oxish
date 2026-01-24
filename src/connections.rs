@@ -1,19 +1,69 @@
 use core::str;
+use std::collections::BTreeMap;
 
 use crate::{
     proto::{Decode, Decoded, IncomingPacket, MessageType},
     Error,
 };
 
+#[derive(Default)]
+pub(crate) struct Channels {
+    next_id: u32,
+    channels: BTreeMap<u32, Channel>,
+}
+
+impl Channels {
+    pub(crate) fn handle(&mut self, message: IncomingChannelMessage<'_>) -> Result<(), Error> {
+        match message {
+            IncomingChannelMessage::Open(open) => {
+                let local_id = self.next_id;
+                self.next_id = self.next_id.wrapping_add(1);
+                self.channels.insert(
+                    local_id,
+                    Channel {
+                        remote_id: open.sender_channel,
+                        window_size: open.initial_window_size,
+                        maximum_packet_size: open.maximum_packet_size,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[expect(dead_code)]
+#[derive(Debug)]
+pub(crate) struct Channel {
+    remote_id: u32,
+    window_size: u32,
+    maximum_packet_size: u32,
+}
+
+#[derive(Debug)]
+pub(crate) enum IncomingChannelMessage<'a> {
+    Open(ChannelOpen<'a>),
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
+    type Error = Error;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        match packet.message_type {
+            MessageType::ChannelOpen => {
+                Ok(IncomingChannelMessage::Open(ChannelOpen::try_from(packet)?))
+            }
+            _ => Err(Error::InvalidPacket("unexpected channel message type")),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ChannelOpen<'a> {
     #[expect(dead_code)]
     r#type: ChannelType<'a>,
-    #[expect(dead_code)]
     sender_channel: u32,
-    #[expect(dead_code)]
     initial_window_size: u32,
-    #[expect(dead_code)]
     maximum_packet_size: u32,
 }
 

@@ -14,7 +14,7 @@ use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteS
 mod user_auth;
 
 use crate::{
-    connections::ChannelOpen,
+    connections::{Channels, IncomingChannelMessage},
     key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
     proto::{
         AesCtrReadKeys, Disconnect, DisconnectReason, Encode, HandshakeHash, ServiceAccept,
@@ -29,6 +29,7 @@ pub struct Connection<T> {
     context: ConnectionContext,
     read: ReadState,
     write: WriteState,
+    channels: Channels,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
@@ -39,6 +40,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             context: ConnectionContext { addr, host_key },
             read: ReadState::default(),
             write: WriteState::default(),
+            channels: Channels::default(),
         })
     }
 
@@ -261,7 +263,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        let channel_open = match ChannelOpen::try_from(packet) {
+        let channel_message = match IncomingChannelMessage::try_from(packet) {
             Ok(req) => req,
             Err(error) => {
                 error!(%error, "failed to read channel open request");
@@ -269,7 +271,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        dbg!(channel_open);
+        if let Err(error) = self.channels.handle(channel_message) {
+            error!(%error, "failed to handle channel message");
+            return;
+        }
     }
 
     async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), Error> {
