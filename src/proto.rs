@@ -11,7 +11,7 @@ use aws_lc_rs::{
     constant_time, digest, hmac, rand,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tracing::debug;
+use tracing::trace;
 
 use crate::{key_exchange::RawKeys, Error};
 
@@ -202,7 +202,7 @@ impl ReadState {
         stream: &mut (impl AsyncRead + Unpin),
     ) -> Result<&'a [u8], Error> {
         let read = stream.read_buf(&mut self.buf).await?;
-        debug!(read, "read from stream");
+        trace!(read, "read from stream");
         match read {
             0 => Err(Error::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
