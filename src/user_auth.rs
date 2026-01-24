@@ -7,11 +7,8 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct UserAuthRequest<'a> {
-    #[expect(dead_code)]
     pub(crate) user_name: &'a str,
-    #[expect(dead_code)]
     pub(crate) service_name: ServiceName<'a>,
-    #[expect(dead_code)]
     pub(crate) method_name: MethodName<'a>,
 }
 
