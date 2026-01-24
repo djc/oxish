@@ -1,4 +1,4 @@
-use core::net::SocketAddr;
+use core::{fmt, net::SocketAddr};
 use std::{io, str, sync::Arc};
 
 use aws_lc_rs::signature::Ed25519KeyPair;
@@ -274,7 +274,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
             match self.channels.handle(channel_message) {
                 Ok(Some(outgoing)) => {
-                    debug!(?outgoing, "sending channel message");
+                    debug!(outgoing = %Pretty(&outgoing), "sending channel message");
                     if let Err(error) = self
                         .write
                         .write_packet(&mut self.stream, &outgoing, None)
@@ -471,6 +471,14 @@ enum IdentificationError {
     TooLong,
     #[error("Unsupported protocol version")]
     UnsupportedVersion(String),
+}
+
+struct Pretty<T>(T);
+
+impl<T: fmt::Debug> fmt::Display for Pretty<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#?}", &self.0)
+    }
 }
 
 const PROTOCOL: &str = "2.0";
