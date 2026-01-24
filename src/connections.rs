@@ -1,11 +1,21 @@
-use core::str;
-use std::borrow::Cow;
-use std::collections::{btree_map::Entry, BTreeMap};
+use core::{
+    fmt,
+    future::Future,
+    mem,
+    pin::Pin,
+    str,
+    task::{Context, Poll},
+};
+use std::{
+    borrow::Cow,
+    collections::{btree_map::Entry, BTreeMap},
+};
 
 use tracing::{debug, warn};
 
 use crate::{
     proto::{Decode, Decoded, Encode, IncomingPacket, MessageType},
+    terminal::Terminal,
     Error,
 };
 
@@ -39,7 +49,8 @@ impl Channels {
             window_size: open.initial_window_size,
             maximum_packet_size: open.maximum_packet_size,
             env: Vec::new(),
-            session: None,
+            terminal: None,
+            closed: ClosedState::default(),
         });
 
         OutgoingChannelMessage::OpenConfirmation(channel.confirmation(local_id))
@@ -57,14 +68,23 @@ impl Channels {
 
         match request.r#type {
             ChannelRequestType::PtyReq(pty_req) => {
-                channel.session = Some(SessionState::Requested(pty_req.into_owned()));
+                channel.terminal = Some(TerminalState::Requested(pty_req.into_owned()));
             }
             ChannelRequestType::Env(env) => {
                 channel
                     .env
                     .push((env.name.to_owned(), env.value.to_owned()));
             }
-            ChannelRequestType::Shell => {}
+            ChannelRequestType::Shell => {
+                let Some(TerminalState::Requested(pty_req)) = channel.terminal.take() else {
+                    return Err(Error::InvalidPacket("shell request without prior pty-req"));
+                };
+
+                channel.terminal = Some(TerminalState::Running(Terminal::spawn(
+                    &pty_req,
+                    &channel.env,
+                )?));
+            }
         }
 
         Ok(request
@@ -72,13 +92,132 @@ impl Channels {
             .then(|| OutgoingChannelMessage::RequestSuccess(channel.success())))
     }
 
-    pub(crate) fn data(&mut self, data: &ChannelData<'_>) -> Result<(), Error> {
-        let Some(_channel) = self.channels.get_mut(&data.recipient_channel) else {
+    pub(crate) fn data<'m, 's>(
+        &'s mut self,
+        data: &'m ChannelData<'m>,
+    ) -> Result<Option<(&'s mut Terminal, &'m [u8])>, Error> {
+        let Some(channel) = self.channels.get_mut(&data.recipient_channel) else {
             return Err(Error::InvalidPacket("channel data for unknown channel ID"));
         };
 
         debug!(len = %data.data.len(), "received channel data");
+        Ok(match &mut channel.terminal {
+            Some(TerminalState::Running(terminal)) => Some((terminal, &data.data)),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn eof(&mut self, eof: &ChannelEof) -> Result<(), Error> {
+        let Some(_) = self.channels.get_mut(&eof.recipient_channel) else {
+            return Err(Error::InvalidPacket("channel eof for unknown channel ID"));
+        };
+
+        debug!(channel_id = %eof.recipient_channel, "received channel eof from client");
         Ok(())
+    }
+
+    pub(crate) fn close(
+        &mut self,
+        close: &ChannelClose,
+    ) -> Option<OutgoingChannelMessage<'static>> {
+        let Some(channel) = self.channels.get_mut(&close.recipient_channel) else {
+            warn!(channel_id = %close.recipient_channel, "channel close for unknown channel ID");
+            return None;
+        };
+
+        debug!(channel_id = %close.recipient_channel, "received channel close from client");
+        channel.closed.received = true;
+        let recipient_channel = channel.remote_id;
+        let sent = channel.closed.sent;
+        if sent {
+            debug!(channel = %close.recipient_channel, "both sides closed channel; removing");
+            self.channels.remove(&close.recipient_channel);
+        }
+
+        (!sent).then_some(OutgoingChannelMessage::Close(ChannelClose {
+            recipient_channel,
+        }))
+    }
+
+    pub(crate) fn poll_terminals<'a>(&'a mut self) -> TerminalsFuture<'a> {
+        TerminalsFuture { channels: self }
+    }
+}
+
+pub(crate) struct TerminalsFuture<'a> {
+    channels: &'a mut Channels,
+}
+
+impl<'a> Future for TerminalsFuture<'a> {
+    type Output = Result<Option<OutgoingChannelMessage<'static>>, Error>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        for (&local_id, channel) in self.channels.channels.iter_mut() {
+            let Some(state) = &mut channel.terminal else {
+                continue;
+            };
+
+            let terminal = match state {
+                TerminalState::Running(terminal) => terminal,
+                TerminalState::Requested(_) => continue,
+                TerminalState::Closing => {
+                    if channel.closed.sent {
+                        continue;
+                    }
+
+                    channel.closed.sent = true;
+                    let recipient_channel = channel.remote_id;
+                    if channel.closed.received {
+                        debug!(channel = local_id, "both sides closed channel; removing");
+                        self.channels.channels.remove(&local_id);
+                    }
+
+                    return Poll::Ready(Ok(Some(OutgoingChannelMessage::Close(ChannelClose {
+                        recipient_channel,
+                    }))));
+                }
+            };
+
+            let mut buf = [0u8; 4096];
+            match terminal.poll_read(&mut buf, cx) {
+                Poll::Ready(Ok(0)) => {
+                    if let TerminalState::Running(terminal) =
+                        mem::replace(state, TerminalState::Closing)
+                    {
+                        if let Poll::Ready(Err(err)) = terminal.poll_kill(cx) {
+                            warn!(%err, "error killing terminal after EOF");
+                            return Poll::Ready(Err(err.into()));
+                        }
+                    }
+
+                    return Poll::Ready(Ok(Some(OutgoingChannelMessage::Eof(ChannelEof {
+                        recipient_channel: channel.remote_id,
+                    }))));
+                }
+                Poll::Ready(Ok(n)) => {
+                    return Poll::Ready(Ok(Some(OutgoingChannelMessage::Data(ChannelData {
+                        recipient_channel: channel.remote_id,
+                        data: Cow::Owned(buf[..n].to_vec()),
+                    }))));
+                }
+                Poll::Ready(Err(err)) => {
+                    warn!(%err, "error reading from terminal");
+                    if let TerminalState::Running(terminal) =
+                        mem::replace(state, TerminalState::Closing)
+                    {
+                        if let Poll::Ready(Err(err)) = terminal.poll_kill(cx) {
+                            warn!(%err, "error killing terminal after EOF");
+                            return Poll::Ready(Err(err.into()));
+                        }
+                    }
+
+                    return Poll::Ready(Err(err.into()));
+                }
+                Poll::Pending => continue,
+            }
+        }
+
+        Poll::Pending
     }
 }
 
@@ -88,13 +227,8 @@ pub(crate) struct Channel {
     window_size: u32,
     maximum_packet_size: u32,
     env: Vec<(String, String)>,
-    session: Option<SessionState>,
-}
-
-#[derive(Debug)]
-enum SessionState {
-    #[expect(dead_code)]
-    Requested(PtyReq<'static>),
+    terminal: Option<TerminalState>,
+    closed: ClosedState,
 }
 
 impl Channel {
@@ -114,11 +248,36 @@ impl Channel {
     }
 }
 
+enum TerminalState {
+    Requested(PtyReq<'static>),
+    Running(Terminal),
+    Closing,
+}
+
+impl fmt::Debug for TerminalState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Requested(req) => f.debug_tuple("Requested").field(req).finish(),
+            Self::Running(_) => f.debug_tuple("Running").field(&"...").finish(),
+            Self::Closing => f.debug_tuple("Closing").finish(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ClosedState {
+    sent: bool,
+    received: bool,
+}
+
 #[derive(Debug)]
 pub(crate) enum OutgoingChannelMessage<'a> {
     OpenConfirmation(ChannelOpenConfirmation),
     OpenFailure(ChannelOpenFailure<'a>),
     RequestSuccess(ChannelRequestSuccess),
+    Data(ChannelData<'a>),
+    Eof(ChannelEof),
+    Close(ChannelClose),
 }
 
 impl Encode for OutgoingChannelMessage<'_> {
@@ -127,6 +286,9 @@ impl Encode for OutgoingChannelMessage<'_> {
             Self::OpenConfirmation(msg) => msg.encode(buffer),
             Self::OpenFailure(msg) => msg.encode(buffer),
             Self::RequestSuccess(msg) => msg.encode(buffer),
+            Self::Data(msg) => msg.encode(buffer),
+            Self::Eof(msg) => msg.encode(buffer),
+            Self::Close(msg) => msg.encode(buffer),
         }
     }
 }
@@ -225,10 +387,29 @@ impl Encode for ChannelRequestFailure {
     }
 }
 
-#[expect(dead_code)]
 #[derive(Debug)]
 pub(crate) struct ChannelEof {
     pub(crate) recipient_channel: u32,
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelEof {
+    type Error = Error;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelEof {
+            return Err(Error::InvalidPacket("expected channel eof packet"));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        match next.is_empty() {
+            true => Ok(Self { recipient_channel }),
+            false => Err(Error::InvalidPacket("extra data in channel eof packet")),
+        }
+    }
 }
 
 impl Encode for ChannelEof {
@@ -238,10 +419,29 @@ impl Encode for ChannelEof {
     }
 }
 
-#[expect(dead_code)]
 #[derive(Debug)]
 pub(crate) struct ChannelClose {
     pub(crate) recipient_channel: u32,
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelClose {
+    type Error = Error;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelClose {
+            return Err(Error::InvalidPacket("expected channel close packet"));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        match next.is_empty() {
+            true => Ok(Self { recipient_channel }),
+            false => Err(Error::InvalidPacket("extra data in channel close packet")),
+        }
+    }
 }
 
 impl Encode for ChannelClose {
@@ -256,6 +456,8 @@ pub(crate) enum IncomingChannelMessage<'a> {
     Open(ChannelOpen<'a>),
     Request(ChannelRequest<'a>),
     Data(ChannelData<'a>),
+    Eof(ChannelEof),
+    Close(ChannelClose),
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
@@ -272,6 +474,12 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
             MessageType::ChannelData => {
                 Ok(IncomingChannelMessage::Data(ChannelData::try_from(packet)?))
             }
+            MessageType::ChannelEof => {
+                Ok(IncomingChannelMessage::Eof(ChannelEof::try_from(packet)?))
+            }
+            MessageType::ChannelClose => Ok(IncomingChannelMessage::Close(ChannelClose::try_from(
+                packet,
+            )?)),
             _ => {
                 warn!(?packet.message_type, "unexpected channel message type");
                 Err(Error::InvalidPacket("unexpected channel message type"))
@@ -280,7 +488,6 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct ChannelData<'a> {
     pub(crate) recipient_channel: u32,
     pub(crate) data: Cow<'a, [u8]>,
@@ -316,6 +523,15 @@ impl Encode for ChannelData<'_> {
         MessageType::ChannelData.encode(buffer);
         self.recipient_channel.encode(buffer);
         self.data.as_ref().encode(buffer);
+    }
+}
+
+impl fmt::Debug for ChannelData<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChannelData")
+            .field("recipient_channel", &self.recipient_channel)
+            .field("data", &format_args!("[{} bytes]", self.data.len()))
+            .finish()
     }
 }
 
@@ -421,13 +637,13 @@ impl<'a> Decode<'a> for Env<'a> {
 }
 
 #[derive(Debug)]
-struct PtyReq<'a> {
-    term: Cow<'a, str>,
-    cols: u32,
-    rows: u32,
-    width_px: u32,
-    height_px: u32,
-    terminal_modes: BTreeMap<Mode, u32>,
+pub(crate) struct PtyReq<'a> {
+    pub(crate) term: Cow<'a, str>,
+    pub(crate) cols: u32,
+    pub(crate) rows: u32,
+    pub(crate) width_px: u32,
+    pub(crate) height_px: u32,
+    pub(crate) terminal_modes: BTreeMap<Mode, u32>,
 }
 
 impl<'a> PtyReq<'a> {
@@ -509,7 +725,7 @@ impl<'a> Decode<'a> for BTreeMap<Mode, u32> {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Mode {
+pub(crate) enum Mode {
     VIntr = 1,
     VQuit = 2,
     VErase = 3,

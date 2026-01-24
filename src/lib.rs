@@ -4,13 +4,14 @@ use std::{io, str, sync::Arc};
 use aws_lc_rs::signature::Ed25519KeyPair;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 mod connections;
 mod key_exchange;
 use key_exchange::KeyExchange;
 mod proto;
 use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteState};
+mod terminal;
 mod user_auth;
 
 use crate::{
@@ -256,53 +257,95 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         loop {
-            let packet = match self.read.packet(&mut self.stream).await {
-                Ok(packet) => packet,
-                Err(error) => {
-                    error!(%error, "failed to read packet");
-                    return;
-                }
-            };
+            tokio::select! {
+                packet = self.read.packet(&mut self.stream) => {
+                    let packet = match packet {
+                        Ok(packet) => packet,
+                        Err(error) => {
+                            error!(%error, "failed to read packet");
+                            return;
+                        }
+                    };
 
-            let channel_message = match IncomingChannelMessage::try_from(packet) {
-                Ok(req) => req,
-                Err(error) => {
-                    error!(%error, "failed to read channel message");
-                    return;
-                }
-            };
-
-            debug!(message = %Pretty(&channel_message), "handling channel message");
-            let outgoing = match channel_message {
-                IncomingChannelMessage::Open(open) => Some(self.channels.open(open)),
-                IncomingChannelMessage::Request(request) => match self.channels.request(request) {
-                    Ok(outgoing) => outgoing,
-                    Err(error) => {
-                        error!(%error, "failed to handle channel request");
+                    if packet.message_type == MessageType::Disconnect {
+                        info!("received disconnect packet, closing connection");
                         return;
                     }
-                },
-                IncomingChannelMessage::Data(data) => {
-                    if let Err(error) = self.channels.data(&data) {
-                        error!(%error, "failed to handle channel data");
-                        return;
+
+                    let channel_message = match IncomingChannelMessage::try_from(packet) {
+                        Ok(req) => req,
+                        Err(error) => {
+                            error!(%error, "failed to read channel message");
+                            return;
+                        }
+                    };
+
+                    debug!(message = %Pretty(&channel_message), "handling channel message");
+                    let outgoing = match channel_message {
+                        IncomingChannelMessage::Open(open) => Some(self.channels.open(open)),
+                        IncomingChannelMessage::Request(request) => match self.channels.request(request) {
+                            Ok(outgoing) => outgoing,
+                            Err(error) => {
+                                error!(%error, "failed to handle channel request");
+                                return;
+                            }
+                        }
+                        IncomingChannelMessage::Data(data) => match self.channels.data(&data) {
+                            Ok(Some((session, data))) => {
+                                if let Err(error) = session.write(data).await {
+                                    error!(%error, "failed to write data to session");
+                                    return;
+                                }
+                                None
+                            }
+                            Ok(None) => None,
+                            Err(error) => {
+                                error!(%error, "failed to handle channel data");
+                                return;
+                            }
+                        }
+                        IncomingChannelMessage::Eof(eof) => {
+                            if let Err(error) = self.channels.eof(&eof) {
+                                error!(%error, "failed to handle channel eof");
+                                return;
+                            }
+                            None
+                        }
+                        IncomingChannelMessage::Close(close) => self.channels.close(&close),
+                    };
+
+                    if let Some(outgoing) = outgoing {
+                        debug!(outgoing = %Pretty(&outgoing), "sending channel message");
+                        if let Err(error) = self
+                            .write
+                            .write_packet(&mut self.stream, &outgoing, None)
+                            .await
+                        {
+                            error!(%error, "failed to send channel message");
+                            return;
+                        }
                     }
-                    None
                 }
-            };
-
-            let Some(outgoing) = outgoing else {
-                continue;
-            };
-
-            debug!(outgoing = %Pretty(&outgoing), "sending channel message");
-            if let Err(error) = self
-                .write
-                .write_packet(&mut self.stream, &outgoing, None)
-                .await
-            {
-                error!(%error, "failed to send channel message");
-                return;
+                result = self.channels.poll_terminals() => {
+                    match result {
+                        Ok(Some(outgoing)) => {
+                            debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
+                            if let Err(error) = self
+                                .write
+                                .write_packet(&mut self.stream, &outgoing, None)
+                                .await
+                            {
+                                error!(%error, "failed to send channel message");
+                                return;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            error!(%error, "failed to poll sessions");
+                            return;
+                        }
+                    }
+                }
             }
         }
     }
