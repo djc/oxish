@@ -18,7 +18,7 @@ use crate::{
         AesCtrReadKeys, Disconnect, DisconnectReason, Encode, HandshakeHash, ServiceAccept,
         ServiceName, ServiceRequest,
     },
-    user_auth::UserAuthRequest,
+    user_auth::{MethodName, UserAuthRequest},
 };
 
 /// A single SSH connection
@@ -200,7 +200,66 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        dbg!(user_auth_request);
+        if user_auth_request.service_name != ServiceName::Connection {
+            error!(
+                service_name = ?user_auth_request.service_name,
+                "unsupported service requested"
+            );
+
+            let disconnect = Disconnect {
+                reason_code: DisconnectReason::ServiceNotAvailable,
+                description: "only connection service is supported",
+            };
+            if let Err(error) = self
+                .write
+                .write_packet(&mut self.stream, &disconnect, None)
+                .await
+            {
+                error!(%error, "failed to send disconnect packet");
+            }
+            return;
+        }
+
+        if user_auth_request.method_name != MethodName::None {
+            error!(
+                method_name = ?user_auth_request.method_name,
+                "unsupported authentication method requested"
+            );
+
+            let disconnect = Disconnect {
+                reason_code: DisconnectReason::NoMoreAuthMethodsAvailable,
+                description: "only 'none' authentication method is supported",
+            };
+            if let Err(error) = self
+                .write
+                .write_packet(&mut self.stream, &disconnect, None)
+                .await
+            {
+                error!(%error, "failed to send disconnect packet");
+            }
+            return;
+        }
+
+        #[expect(unused_variables)]
+        let user = user_auth_request.user_name.to_owned();
+        if let Err(error) = self
+            .write
+            .write_packet(&mut self.stream, &MessageType::UserAuthSuccess, None)
+            .await
+        {
+            error!(%error, "failed to send user auth success packet");
+            return;
+        }
+
+        let packet = match self.read.packet(&mut self.stream).await {
+            Ok(packet) => packet,
+            Err(error) => {
+                error!(%error, "failed to read packet");
+                return;
+            }
+        };
+
+        dbg!(packet);
     }
 
     async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), Error> {
