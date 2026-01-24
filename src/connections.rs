@@ -57,17 +57,18 @@ impl Channels {
                 };
 
                 match request.r#type {
-                    ChannelRequestType::PtyReq(_) | ChannelRequestType::Env(_)
+                    ChannelRequestType::PtyReq(_)
+                    | ChannelRequestType::Env(_)
+                    | ChannelRequestType::Shell
                         if request.want_reply =>
                     {
                         Ok(Some(OutgoingChannelMessage::RequestSuccess(
                             channel.success(),
                         )))
                     }
-                    ChannelRequestType::PtyReq(_) | ChannelRequestType::Env(_) => Ok(None),
-                    ChannelRequestType::Unknown(_) => {
-                        Err(Error::InvalidPacket("channel request of unknown type"))
-                    }
+                    ChannelRequestType::PtyReq(_)
+                    | ChannelRequestType::Env(_)
+                    | ChannelRequestType::Shell => Ok(None),
                 }
             }
         }
@@ -283,6 +284,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     false => return Err(Error::InvalidPacket("extra data in env channel request")),
                 }
             }
+            b"shell" => match next.is_empty() {
+                true => ChannelRequestType::Shell,
+                false => return Err(Error::InvalidPacket("extra data in shell channel request")),
+            },
             _ => {
                 match str::from_utf8(r#type) {
                     Ok(r#type) => warn!(%r#type, "unknown channel request type"),
@@ -307,8 +312,7 @@ enum ChannelRequestType<'a> {
     PtyReq(PtyReq<'a>),
     #[expect(dead_code)]
     Env(Env<'a>),
-    #[expect(dead_code)]
-    Unknown(&'a str),
+    Shell,
 }
 
 #[derive(Debug)]
