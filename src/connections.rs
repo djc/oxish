@@ -1,6 +1,8 @@
 use core::str;
 use std::collections::{btree_map::Entry, BTreeMap};
 
+use tracing::warn;
+
 use crate::{
     proto::{Decode, Decoded, Encode, IncomingPacket, MessageType},
     Error,
@@ -220,7 +222,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
             MessageType::ChannelRequest => Ok(IncomingChannelMessage::Request(
                 ChannelRequest::try_from(packet)?,
             )),
-            _ => Err(Error::InvalidPacket("unexpected channel message type")),
+            _ => {
+                warn!(?packet.message_type, "unexpected channel message type");
+                Err(Error::InvalidPacket("unexpected channel message type"))
+            }
         }
     }
 }
@@ -267,7 +272,14 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     }
                 }
             }
-            _ => return Err(Error::InvalidPacket("unknown channel request type")),
+            _ => {
+                match str::from_utf8(r#type) {
+                    Ok(r#type) => warn!(%r#type, "unknown channel request type"),
+                    Err(_) => warn!(?r#type, "unknown channel request type"),
+                }
+
+                return Err(Error::InvalidPacket("unknown channel request type"));
+            }
         };
 
         Ok(ChannelRequest {
@@ -488,7 +500,10 @@ impl<'a> Decode<'a> for Option<Mode> {
             93 => Mode::ParOdd,
             128 => Mode::TtyOpISpeed,
             129 => Mode::TtyOpOSpeed,
-            _ => return Err(Error::InvalidPacket("unknown terminal mode code")),
+            val => {
+                warn!(%val, "unknown terminal mode code");
+                return Err(Error::InvalidPacket("unknown terminal mode code"));
+            }
         };
 
         Ok(Decoded {
