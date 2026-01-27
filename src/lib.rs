@@ -268,7 +268,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     };
 
                     if packet.message_type == MessageType::Disconnect {
-                        info!("received disconnect packet, closing connection");
+                        match Disconnect::try_from(packet) {
+                            Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
+                            Err(error) => warn!(%error, "failed to read disconnect packet"),
+                        }
                         return;
                     }
 
