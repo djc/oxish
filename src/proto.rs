@@ -672,6 +672,43 @@ pub(crate) struct Disconnect<'a> {
     pub(crate) description: &'a str,
 }
 
+impl<'a> TryFrom<IncomingPacket<'a>> for Disconnect<'a> {
+    type Error = Error;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::Disconnect {
+            return Err(Error::InvalidPacket("expected disconnect packet"));
+        }
+
+        let Decoded {
+            value: reason_code,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        let Decoded {
+            value: description,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        let description = str::from_utf8(description)
+            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in disconnect description"))?;
+
+        let Decoded {
+            value: _, // language tag
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        if !next.is_empty() {
+            return Err(Error::InvalidPacket("extra data in disconnect packet"));
+        }
+
+        Ok(Disconnect {
+            reason_code: DisconnectReason::try_from(reason_code)?,
+            description,
+        })
+    }
+}
+
 impl Encode for Disconnect<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
         MessageType::Disconnect.encode(buf);
@@ -700,6 +737,31 @@ pub(crate) enum DisconnectReason {
     AuthCancelledByUser = 13,
     NoMoreAuthMethodsAvailable = 14,
     IllegalUserName = 15,
+}
+
+impl TryFrom<u32> for DisconnectReason {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            1 => Self::HostNotAllowedToConnect,
+            2 => Self::ProtocolError,
+            3 => Self::KeyExchangeFailed,
+            4 => Self::Reserved,
+            5 => Self::MacError,
+            6 => Self::CompressionError,
+            7 => Self::ServiceNotAvailable,
+            8 => Self::ProtocolVersionNotSupported,
+            9 => Self::HostKeyNotVerifiable,
+            10 => Self::ConnectionLost,
+            11 => Self::ByApplication,
+            12 => Self::TooManyConnections,
+            13 => Self::AuthCancelledByUser,
+            14 => Self::NoMoreAuthMethodsAvailable,
+            15 => Self::IllegalUserName,
+            _ => return Err(Error::InvalidPacket("unknown disconnect reason code")),
+        })
+    }
 }
 
 #[derive(Debug)]
