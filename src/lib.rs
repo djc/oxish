@@ -1,4 +1,4 @@
-use core::{fmt, net::SocketAddr};
+use core::{fmt, future, net::SocketAddr};
 use std::{io, str, sync::Arc};
 
 use aws_lc_rs::signature::Ed25519KeyPair;
@@ -12,8 +12,8 @@ mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, KeyExchangeInit, RawKeySet};
 mod messages;
 use messages::{
-    Completion, Decoded, Disconnect, DisconnectReason, Identification, MessageType, MethodName,
-    NewKeys, ServiceAccept, ServiceName, ServiceRequest, UserAuthRequest, PROTOCOL,
+    Completion, Decoded, Disconnect, DisconnectReason, Encode, Identification, MessageType,
+    MethodName, NewKeys, ServiceAccept, ServiceName, ServiceRequest, UserAuthRequest, PROTOCOL,
 };
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
@@ -79,8 +79,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
 
         if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &key_exchange_init, Some(&mut exchange))
+            .write_packet(&key_exchange_init, Some(&mut exchange))
             .await
         {
             error!(%error, "failed to send key exchange init packet");
@@ -111,11 +110,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         };
 
-        if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &key_exchange_reply, None)
-            .await
-        {
+        if let Err(error) = self.write_packet(&key_exchange_reply, None).await {
             warn!(%error, "failed to send key exchange init packet");
             return;
         }
@@ -127,11 +122,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return;
         }
 
-        if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &MessageType::Ignore, None)
-            .await
-        {
+        if let Err(error) = self.write_packet(&MessageType::Ignore, None).await {
             error!(%error, "failed to send ignore packet");
             return;
         }
@@ -162,11 +153,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 reason_code: DisconnectReason::ServiceNotAvailable,
                 description: "only user authentication service is supported",
             };
-            if let Err(error) = self
-                .write
-                .write_packet(&mut self.stream, &disconnect, None)
-                .await
-            {
+            if let Err(error) = self.write_packet(&disconnect, None).await {
                 error!(%error, "failed to send disconnect packet");
             }
             return;
@@ -175,11 +162,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let service_accept = ServiceAccept {
             service_name: ServiceName::UserAuth,
         };
-        if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &service_accept, None)
-            .await
-        {
+        if let Err(error) = self.write_packet(&service_accept, None).await {
             error!(%error, "failed to send service accept packet");
             return;
         }
@@ -210,11 +193,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 reason_code: DisconnectReason::ServiceNotAvailable,
                 description: "only connection service is supported",
             };
-            if let Err(error) = self
-                .write
-                .write_packet(&mut self.stream, &disconnect, None)
-                .await
-            {
+            if let Err(error) = self.write_packet(&disconnect, None).await {
                 error!(%error, "failed to send disconnect packet");
             }
             return;
@@ -230,11 +209,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 reason_code: DisconnectReason::NoMoreAuthMethodsAvailable,
                 description: "only 'none' authentication method is supported",
             };
-            if let Err(error) = self
-                .write
-                .write_packet(&mut self.stream, &disconnect, None)
-                .await
-            {
+            if let Err(error) = self.write_packet(&disconnect, None).await {
                 error!(%error, "failed to send disconnect packet");
             }
             return;
@@ -242,11 +217,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         #[expect(unused_variables)]
         let user = user_auth_request.user_name.to_owned();
-        if let Err(error) = self
-            .write
-            .write_packet(&mut self.stream, &MessageType::UserAuthSuccess, None)
-            .await
-        {
+        if let Err(error) = self.write_packet(&MessageType::UserAuthSuccess, None).await {
             error!(%error, "failed to send user auth success packet");
             return;
         }
@@ -315,8 +286,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     if let Some(outgoing) = outgoing {
                         debug!(outgoing = %Pretty(&outgoing), "sending channel message");
                         if let Err(error) = self
-                            .write
-                            .write_packet(&mut self.stream, &outgoing, None)
+                            .write_packet(&outgoing, None)
                             .await
                         {
                             error!(%error, "failed to send channel message");
@@ -329,8 +299,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                         Ok(Some(outgoing)) => {
                             debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
                             if let Err(error) = self
-                                .write
-                                .write_packet(&mut self.stream, &outgoing, None)
+                                .write_packet(&outgoing, None)
                                 .await
                             {
                                 error!(%error, "failed to send channel message");
@@ -351,9 +320,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), Error> {
         let packet = self.read.packet(&mut self.stream).await?;
         NewKeys::try_from(packet)?;
-        self.write
-            .write_packet(&mut self.stream, &NewKeys, None)
-            .await?;
+        self.write_packet(&NewKeys, None).await?;
 
         let RawKeySet {
             client_to_server,
@@ -364,6 +331,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Currently this hard codes AES-128-CTR and HMAC-SHA256.
         self.read.decryption_key = Some(AesCtrReadKeys::new(client_to_server));
         self.write.keys = Some(AesCtrWriteKeys::new(server_to_client));
+        Ok(())
+    }
+
+    async fn write_packet(
+        &mut self,
+        payload: &impl Encode,
+        exchange_hash: Option<&mut HandshakeHash>,
+    ) -> Result<(), Error> {
+        self.write.handle_packet(payload, exchange_hash)?;
+
+        future::poll_fn(|cx| self.write.poll_write_to(cx, &mut self.stream)).await?;
+
         Ok(())
     }
 }

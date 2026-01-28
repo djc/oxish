@@ -1,5 +1,5 @@
 use core::{
-    future, iter,
+    iter,
     pin::Pin,
     task::{ready, Context, Poll},
 };
@@ -271,20 +271,7 @@ pub(crate) struct WriteState {
 }
 
 impl WriteState {
-    pub(crate) async fn write_packet(
-        &mut self,
-        stream: &mut (impl AsyncWrite + Unpin),
-        payload: &impl Encode,
-        exchange_hash: Option<&mut HandshakeHash>,
-    ) -> Result<(), Error> {
-        self.handle_packet(payload, exchange_hash)?;
-
-        future::poll_fn(|cx| self.poll_write_to(cx, stream)).await?;
-
-        Ok(())
-    }
-
-    fn handle_packet(
+    pub(crate) fn handle_packet(
         &mut self,
         payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,
