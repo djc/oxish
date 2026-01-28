@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
@@ -23,18 +23,18 @@ pub(crate) struct EcdhKeyExchange {
 }
 
 impl EcdhKeyExchange {
-    pub(crate) fn advance<'out>(
+    pub(crate) fn advance(
         self,
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
-        cx: &'out ConnectionContext,
-    ) -> Result<(EcdhKeyExchangeReply<'out>, RawKeySet), ()> {
+        cx: &ConnectionContext,
+    ) -> Result<(EcdhKeyExchangeReply, RawKeySet), ()> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
         TaggedPublicKey {
             algorithm: PublicKeyAlgorithm::Ed25519,
-            key: cx.host_key.public_key().as_ref(),
+            key: Cow::Owned(cx.host_key.public_key().as_ref().to_owned()),
         }
         .encode(&mut host_key_buf);
         exchange.update(&host_key_buf);
@@ -75,7 +75,7 @@ impl EcdhKeyExchange {
         let key_exchange_reply = EcdhKeyExchangeReply {
             server_public_host_key: TaggedPublicKey {
                 algorithm: PublicKeyAlgorithm::Ed25519,
-                key: cx.host_key.public_key().as_ref(),
+                key: Cow::Owned(cx.host_key.public_key().as_ref().to_owned()),
             },
             server_ephemeral_public_key: kx_public_key.as_ref().to_owned(),
             exchange_hash_signature: TaggedSignature {
@@ -131,13 +131,13 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
     }
 }
 
-pub(crate) struct EcdhKeyExchangeReply<'a> {
-    server_public_host_key: TaggedPublicKey<'a>,
+pub(crate) struct EcdhKeyExchangeReply {
+    server_public_host_key: TaggedPublicKey<'static>,
     server_ephemeral_public_key: Vec<u8>,
-    exchange_hash_signature: TaggedSignature<'a>,
+    exchange_hash_signature: TaggedSignature<'static>,
 }
 
-impl Encode for EcdhKeyExchangeReply<'_> {
+impl Encode for EcdhKeyExchangeReply {
     fn encode(&self, buf: &mut Vec<u8>) {
         MessageType::KeyExchangeEcdhReply.encode(buf);
         self.server_public_host_key.encode(buf);
@@ -149,7 +149,7 @@ impl Encode for EcdhKeyExchangeReply<'_> {
 #[derive(Debug)]
 struct TaggedPublicKey<'a> {
     algorithm: PublicKeyAlgorithm<'a>,
-    key: &'a [u8],
+    key: Cow<'a, [u8]>,
 }
 
 impl Encode for TaggedPublicKey<'_> {
