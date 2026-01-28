@@ -62,8 +62,7 @@ async fn main() -> anyhow::Result<()> {
                     warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
                 }
 
-                let conn = Connection::new(stream, addr, host_key.clone())?;
-                tokio::spawn(conn.run());
+                tokio::spawn(Connection::new(stream, addr, host_key.clone()).run());
             }
             Err(error) => {
                 warn!(%error, "failed to accept connection");
