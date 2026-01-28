@@ -325,7 +325,12 @@ impl VersionExchange {
             exchange.prefixed(v_c);
         }
 
-        let ident = Identification::outgoing();
+        let ident = Identification {
+            protocol: PROTOCOL,
+            software: SOFTWARE,
+            comments: "",
+        };
+
         let server_ident_bytes = conn.write.encoded(&ident);
         if let Err(error) = conn.stream.write_all(server_ident_bytes).await {
             warn!(addr = %conn.context.addr, %error, "failed to send version exchange");
@@ -384,3 +389,5 @@ impl<T: fmt::Debug> fmt::Display for Pretty<T> {
         write!(f, "{:#?}", &self.0)
     }
 }
+
+const SOFTWARE: &str = concat!("OxiSH/", env!("CARGO_PKG_VERSION"));
