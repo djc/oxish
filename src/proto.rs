@@ -14,7 +14,7 @@ use tracing::trace;
 
 use crate::{
     key_exchange::RawKeys,
-    messages::{Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength},
+    messages::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength},
     Error,
 };
 
@@ -251,11 +251,6 @@ impl AesCtrReadKeys {
             mac: hmac::Key::new(hmac::HMAC_SHA256, &keys.integrity_key.derive::<32>()),
         }
     }
-}
-
-pub(crate) enum Completion<T> {
-    Complete(T),
-    Incomplete(Option<usize>),
 }
 
 pub(crate) struct WriteState {
