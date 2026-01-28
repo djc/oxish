@@ -224,6 +224,7 @@ impl<'a> From<&'a str> for Language<'a> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct NewKeys;
 
 impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
@@ -344,6 +345,7 @@ impl PartialEq for MethodName<'_> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ServiceAccept<'a> {
     pub(crate) service_name: ServiceName<'a>,
 }
