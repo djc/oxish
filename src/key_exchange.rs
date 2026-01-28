@@ -4,15 +4,15 @@ use std::{borrow::Cow, sync::Arc};
 use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
     digest,
-    rand::{self, SystemRandom},
+    rand::SystemRandom,
     signature::{KeyPair, Signature},
 };
 use tracing::{debug, error, warn};
 
 use crate::{
     messages::{
-        CompressionAlgorithm, Decode, Decoded, Encode, EncryptionAlgorithm, IncomingPacket,
-        KeyExchangeAlgorithm, Language, MacAlgorithm, MessageType, PublicKeyAlgorithm,
+        Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit,
+        MessageType, PublicKeyAlgorithm,
     },
     proto::HandshakeHash,
     ConnectionContext, Error,
@@ -262,165 +262,6 @@ impl Algorithms {
         Ok(Self {
             key_exchange: *key_exchange,
         })
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct KeyExchangeInit<'a> {
-    cookie: [u8; 16],
-    key_exchange_algorithms: Vec<KeyExchangeAlgorithm<'a>>,
-    server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
-    encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
-    encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
-    mac_algorithms_client_to_server: Vec<MacAlgorithm<'a>>,
-    mac_algorithms_server_to_client: Vec<MacAlgorithm<'a>>,
-    compression_algorithms_client_to_server: Vec<CompressionAlgorithm<'a>>,
-    compression_algorithms_server_to_client: Vec<CompressionAlgorithm<'a>>,
-    languages_client_to_server: Vec<Language<'a>>,
-    languages_server_to_client: Vec<Language<'a>>,
-    first_kex_packet_follows: bool,
-    extended: u32,
-}
-
-impl KeyExchangeInit<'static> {
-    fn new() -> Result<Self, Error> {
-        let mut cookie = [0; 16];
-        if rand::fill(&mut cookie).is_err() {
-            return Err(Error::FailedRandomBytes);
-        };
-
-        Ok(Self {
-            cookie,
-            key_exchange_algorithms: vec![KeyExchangeAlgorithm::Curve25519Sha256],
-            server_host_key_algorithms: vec![PublicKeyAlgorithm::Ed25519],
-            encryption_algorithms_client_to_server: vec![EncryptionAlgorithm::Aes128Ctr],
-            encryption_algorithms_server_to_client: vec![EncryptionAlgorithm::Aes128Ctr],
-            mac_algorithms_client_to_server: vec![MacAlgorithm::HmacSha2256],
-            mac_algorithms_server_to_client: vec![MacAlgorithm::HmacSha2256],
-            compression_algorithms_client_to_server: vec![CompressionAlgorithm::None],
-            compression_algorithms_server_to_client: vec![CompressionAlgorithm::None],
-            languages_client_to_server: vec![],
-            languages_server_to_client: vec![],
-            first_kex_packet_follows: false,
-            extended: 0,
-        })
-    }
-}
-
-impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
-    type Error = Error;
-
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::KeyExchangeInit {
-            return Err(Error::InvalidPacket("unexpected message type"));
-        }
-
-        let Decoded {
-            value: cookie,
-            next,
-        } = <[u8; 16]>::decode(packet.payload)?;
-
-        let Decoded {
-            value: key_exchange_algorithms,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: server_host_key_algorithms,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: encryption_algorithms_client_to_server,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: encryption_algorithms_server_to_client,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: mac_algorithms_client_to_server,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: mac_algorithms_server_to_client,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: compression_algorithms_client_to_server,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: compression_algorithms_server_to_client,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: languages_client_to_server,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: languages_server_to_client,
-            next,
-        } = Vec::decode(next)?;
-
-        let Decoded {
-            value: first_kex_packet_follows,
-            next,
-        } = u8::decode(next)?;
-
-        let Decoded {
-            value: extended,
-            next,
-        } = u32::decode(next)?;
-
-        let value = Self {
-            cookie,
-            key_exchange_algorithms,
-            server_host_key_algorithms,
-            encryption_algorithms_client_to_server,
-            encryption_algorithms_server_to_client,
-            mac_algorithms_client_to_server,
-            mac_algorithms_server_to_client,
-            compression_algorithms_client_to_server,
-            compression_algorithms_server_to_client,
-            languages_client_to_server,
-            languages_server_to_client,
-            first_kex_packet_follows: first_kex_packet_follows != 0,
-            extended,
-        };
-
-        if !next.is_empty() {
-            debug!(bytes = ?next, "unexpected trailing bytes");
-            return Err(Error::InvalidPacket("unexpected trailing bytes"));
-        }
-
-        Ok(value)
-    }
-}
-
-impl Encode for KeyExchangeInit<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        MessageType::KeyExchangeInit.encode(buf);
-        buf.extend_from_slice(&self.cookie);
-        self.key_exchange_algorithms.encode(buf);
-        self.server_host_key_algorithms.encode(buf);
-        self.encryption_algorithms_client_to_server.encode(buf);
-        self.encryption_algorithms_server_to_client.encode(buf);
-        self.mac_algorithms_client_to_server.encode(buf);
-        self.mac_algorithms_server_to_client.encode(buf);
-        self.compression_algorithms_client_to_server.encode(buf);
-        self.compression_algorithms_server_to_client.encode(buf);
-        self.languages_client_to_server.encode(buf);
-        self.languages_server_to_client.encode(buf);
-        buf.push(if self.first_kex_packet_follows { 1 } else { 0 });
-        buf.extend_from_slice(&self.extended.to_be_bytes());
     }
 }
 
