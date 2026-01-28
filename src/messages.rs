@@ -1,7 +1,6 @@
 use core::{fmt, str};
 use std::{borrow::Cow, collections::BTreeMap};
 
-use aws_lc_rs::rand;
 use tracing::{debug, warn};
 
 use crate::{Error, IdentificationError};
@@ -86,12 +85,7 @@ pub(crate) struct KeyExchangeInit<'a> {
 }
 
 impl KeyExchangeInit<'static> {
-    pub(crate) fn new() -> Result<Self, Error> {
-        let mut cookie = [0; 16];
-        if rand::fill(&mut cookie).is_err() {
-            return Err(Error::FailedRandomBytes);
-        };
-
+    pub(crate) fn new(cookie: [u8; 16]) -> Result<Self, Error> {
         Ok(Self {
             cookie,
             key_exchange_algorithms: vec![KeyExchangeAlgorithm::Curve25519Sha256],

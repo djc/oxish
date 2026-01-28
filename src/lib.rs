@@ -350,8 +350,6 @@ impl VersionExchange {
 
 #[derive(Debug, Error)]
 enum Error {
-    #[error("failed to get random bytes")]
-    FailedRandomBytes,
     #[error("failed to parse identification: {0}")]
     Identification(#[from] IdentificationError),
     #[error("IO error: {0}")]

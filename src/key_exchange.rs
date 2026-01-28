@@ -4,7 +4,7 @@ use std::{borrow::Cow, sync::Arc};
 use aws_lc_rs::{
     agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
     digest,
-    rand::SystemRandom,
+    rand::{self, SystemRandom},
     signature::{KeyPair, Signature},
 };
 use tracing::{debug, error, warn};
@@ -205,7 +205,13 @@ impl KeyExchange {
         peer_key_exchange_init: KeyExchangeInit<'_>,
         cx: &ConnectionContext,
     ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ()> {
-        let key_exchange_init = match KeyExchangeInit::new() {
+        let mut cookie = [0; 16];
+        if rand::fill(&mut cookie).is_err() {
+            error!("failed to generate key exchange cookie");
+            return Err(());
+        };
+
+        let key_exchange_init = match KeyExchangeInit::new(cookie) {
             Ok(kex_init) => kex_init,
             Err(error) => {
                 error!(addr = %cx.addr, %error, "failed to create key exchange init");
