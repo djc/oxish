@@ -100,15 +100,15 @@ impl<'a> From<&'a str> for KeyExchangeAlgorithm<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PublicKeyAlgorithm<'a> {
     /// ssh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
     Ed25519,
-    Unknown(&'a str),
+    Unknown(Cow<'a, str>),
 }
 
 impl<'a> PublicKeyAlgorithm<'a> {
-    pub(crate) fn as_str(&self) -> &'a str {
+    pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::Ed25519 => "ssh-ed25519",
             Self::Unknown(name) => name,
@@ -126,7 +126,7 @@ impl<'a> From<&'a str> for PublicKeyAlgorithm<'a> {
     fn from(value: &'a str) -> Self {
         match value {
             "ssh-ed25519" => Self::Ed25519,
-            _ => Self::Unknown(value),
+            _ => Self::Unknown(Cow::Borrowed(value)),
         }
     }
 }
