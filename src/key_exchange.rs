@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{borrow::Cow, sync::Arc};
 
 use aws_lc_rs::{
@@ -131,6 +132,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct EcdhKeyExchangeReply {
     server_public_host_key: TaggedPublicKey<'static>,
     server_ephemeral_public_key: Vec<u8>,
@@ -180,6 +182,14 @@ impl Encode for TaggedSignature<'_> {
         if let Some(dst) = buf.get_mut(start..start + 4) {
             dst.copy_from_slice(&len.to_be_bytes());
         }
+    }
+}
+
+impl fmt::Debug for TaggedSignature<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaggedSignature")
+            .field("algorithm", &self.algorithm)
+            .finish_non_exhaustive()
     }
 }
 
