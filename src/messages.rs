@@ -52,14 +52,6 @@ impl<'a> Identification<'a> {
             next: next.as_bytes(),
         }))
     }
-
-    pub(crate) fn outgoing() -> Self {
-        Self {
-            protocol: PROTOCOL,
-            software: SOFTWARE,
-            comments: "",
-        }
-    }
 }
 
 impl Encode for Identification<'_> {
@@ -1600,4 +1592,3 @@ pub(crate) struct Decoded<'a, T> {
 }
 
 pub(crate) const PROTOCOL: &str = "2.0";
-pub(crate) const SOFTWARE: &str = concat!("OxiSH/", env!("CARGO_PKG_VERSION"));
