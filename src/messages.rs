@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use tracing::{debug, warn};
 
-use crate::{proto::Completion, Error, IdentificationError};
+use crate::{Error, IdentificationError};
 
 #[derive(Debug)]
 pub(crate) struct Identification<'a> {
@@ -1417,6 +1417,11 @@ impl<'a> Decode<'a> for u8 {
 
         Ok(Decoded { value: inner, next })
     }
+}
+
+pub(crate) enum Completion<T> {
+    Complete(T),
+    Incomplete(Option<usize>),
 }
 
 pub(crate) trait Encode {

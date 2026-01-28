@@ -12,11 +12,11 @@ mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, KeyExchangeInit, RawKeySet};
 mod messages;
 use messages::{
-    Decoded, Disconnect, DisconnectReason, Identification, MessageType, MethodName, NewKeys,
-    ServiceAccept, ServiceName, ServiceRequest, UserAuthRequest, PROTOCOL,
+    Completion, Decoded, Disconnect, DisconnectReason, Identification, MessageType, MethodName,
+    NewKeys, ServiceAccept, ServiceName, ServiceRequest, UserAuthRequest, PROTOCOL,
 };
 mod proto;
-use proto::{AesCtrReadKeys, AesCtrWriteKeys, Completion, HandshakeHash, ReadState, WriteState};
+use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
 mod terminal;
 
 /// A single SSH connection
