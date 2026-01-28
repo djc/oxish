@@ -1,7 +1,17 @@
+use core::ffi::CStr;
 use core::{fmt, future, net::SocketAddr};
-use std::{io, str, sync::Arc};
+use std::fs;
+use std::os::unix::ffi::OsStrExt;
+use std::{
+    ffi::{CString, OsStr},
+    io,
+    path::PathBuf,
+    str,
+    sync::Arc,
+};
 
-use aws_lc_rs::signature::Ed25519KeyPair;
+use aws_lc_rs::signature::{self, Ed25519KeyPair, UnparsedPublicKey};
+use libc::{c_char, getpwnam_r, sysconf, _SC_GETPW_R_SIZE_MAX};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
@@ -12,12 +22,14 @@ mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
 mod messages;
 use messages::{
-    Completion, Decoded, Disconnect, DisconnectReason, Encode, Identification, KeyExchangeInit,
-    MessageType, MethodName, NewKeys, ServiceAccept, ServiceName, ServiceRequest, UserAuthRequest,
+    Completion, Decode, Decoded, Disconnect, DisconnectReason, Encode, Identification,
+    KeyExchangeInit, MessageType, Method, MethodName, NewKeys, PublicKeyAlgorithm, ServiceAccept,
+    ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
     PROTOCOL,
 };
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
+
 mod terminal;
 
 /// A single SSH connection
@@ -96,6 +108,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Exchange new keys packets and install new keys
 
+        let session_id = keys.session_id.clone();
         self.update_keys(keys).await?;
         self.send(&MessageType::Ignore, None).await?;
 
@@ -130,46 +143,123 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
         self.send(&service_accept, None).await?;
 
-        let packet = self.read.packet(&mut self.stream).await?;
-        let user_auth_request = match UserAuthRequest::try_from(packet) {
-            Ok(req) => req,
-            Err(error) => {
-                error!(%error, "failed to read user auth request");
+        let user = loop {
+            let packet = self.read.packet(&mut self.stream).await?;
+            let auth = match UserAuthRequest::try_from(packet) {
+                Ok(req) => req,
+                Err(error) => {
+                    error!(%error, "failed to read user auth request");
+                    return Err(());
+                }
+            };
+
+            debug!(request = ?auth, "handling user auth request");
+            if auth.service_name != ServiceName::Connection {
+                error!(
+                    service_name = ?auth.service_name,
+                    "unsupported service requested"
+                );
+                let disconnect = Disconnect {
+                    reason_code: DisconnectReason::ServiceNotAvailable,
+                    description: "only connection service is supported",
+                };
+                self.send(&disconnect, None).await?;
                 return Err(());
             }
+
+            let user_name = auth.user_name.to_owned();
+            let Method::PublicKey(public_key) = auth.method else {
+                warn!(method = ?auth.method, "unsupported authentication method");
+                self.send(
+                    &UserAuthFailure {
+                        can_continue: &[MethodName::PublicKey],
+                        partial_success: false,
+                    },
+                    None,
+                )
+                .await?;
+                continue;
+            };
+
+            if public_key.algorithm != PublicKeyAlgorithm::EcdsaSha2Nistp256 {
+                warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
+                self.send(
+                    &UserAuthFailure {
+                        can_continue: &[MethodName::PublicKey],
+                        partial_success: false,
+                    },
+                    None,
+                )
+                .await?;
+                continue;
+            }
+
+            let user = User { name: user_name };
+            let authorized_keys = user.keys();
+
+            let matching_key = authorized_keys.iter().find(|k| match k {
+                AuthorizedKey::NistP256 { blob, .. } => blob.as_slice() == public_key.key_blob,
+            });
+
+            let Some(AuthorizedKey::NistP256 { key, .. }) = matching_key else {
+                self.send(
+                    &UserAuthFailure {
+                        can_continue: &[MethodName::PublicKey],
+                        partial_success: false,
+                    },
+                    None,
+                )
+                .await?;
+                continue;
+            };
+
+            let Some(sig) = public_key.signature else {
+                let pk_ok = UserAuthPkOk::from(public_key).to_owned();
+                debug!(ok = ?pk_ok, "sending pk-ok for user");
+                self.send(&pk_ok, None).await?;
+                continue;
+            };
+
+            let message = SignatureData {
+                session_id: (*session_id).as_ref(),
+                user_name: &user.name,
+                service_name: auth.service_name,
+                algorithm: public_key.algorithm,
+                public_key: public_key.key_blob,
+            }
+            .encode();
+
+            let sig = match sig.decoded::<64>() {
+                Ok(sig) => sig,
+                Err(error) => {
+                    warn!(%error, "failed to parse ECDSA signature");
+                    self.send(
+                        &UserAuthFailure {
+                            can_continue: &[MethodName::PublicKey],
+                            partial_success: false,
+                        },
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+
+            if key.verify(&message, &sig).is_ok() {
+                self.send(&MessageType::UserAuthSuccess, None).await?;
+                break user;
+            }
+
+            self.send(
+                &UserAuthFailure {
+                    can_continue: &[MethodName::PublicKey],
+                    partial_success: false,
+                },
+                None,
+            )
+            .await?;
         };
-
-        if user_auth_request.service_name != ServiceName::Connection {
-            error!(
-                service_name = ?user_auth_request.service_name,
-                "unsupported service requested"
-            );
-
-            let disconnect = Disconnect {
-                reason_code: DisconnectReason::ServiceNotAvailable,
-                description: "only connection service is supported",
-            };
-            self.send(&disconnect, None).await?;
-            return Err(());
-        }
-
-        if user_auth_request.method_name != MethodName::None {
-            error!(
-                method_name = ?user_auth_request.method_name,
-                "unsupported authentication method requested"
-            );
-
-            let disconnect = Disconnect {
-                reason_code: DisconnectReason::NoMoreAuthMethodsAvailable,
-                description: "only 'none' authentication method is supported",
-            };
-            self.send(&disconnect, None).await?;
-            return Err(());
-        }
-
-        #[expect(unused_variables)]
-        let user = user_auth_request.user_name.to_owned();
-        self.send(&MessageType::UserAuthSuccess, None).await?;
+        debug!(home_dir = ?user.home_dir(), "authenticated user");
 
         // Main loop for handling channel messages
 
@@ -260,6 +350,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let RawKeySet {
             client_to_server,
             server_to_client,
+            session_id: _,
         } = keys;
 
         // Cipher and MAC algorithms are negotiated during key exchange.
@@ -287,6 +378,105 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         Ok(())
     }
+}
+
+struct User {
+    name: String,
+}
+
+impl User {
+    fn keys(&self) -> Vec<AuthorizedKey> {
+        let home_dir = match self.home_dir() {
+            Ok(Some(dir)) => dir,
+            Ok(None) => return Vec::new(),
+            Err(_) => return Vec::new(),
+        };
+
+        let path = home_dir.join(".ssh").join("authorized_keys");
+        let Ok(contents) = fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+
+        let mut keys = Vec::new();
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let mut parts = line.split_whitespace();
+            let Some("ecdsa-sha2-nistp256") = parts.next() else {
+                continue;
+            };
+
+            let Some(key_data) = parts.next() else {
+                continue;
+            };
+
+            let Ok(decoded) = data_encoding::BASE64.decode(key_data.as_bytes()) else {
+                continue;
+            };
+
+            // Parse SSH wire format: string key_type, string curve_name, string Q
+            let Ok(Decoded { next, .. }) = <&[u8]>::decode(&decoded) else {
+                continue;
+            };
+            let Ok(Decoded { next, .. }) = <&[u8]>::decode(next) else {
+                continue;
+            };
+            let Ok(Decoded { value: q, .. }) = <&[u8]>::decode(next) else {
+                continue;
+            };
+
+            let key = UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, Box::from(q));
+            keys.push(AuthorizedKey::NistP256 { blob: decoded, key });
+        }
+
+        keys
+    }
+
+    fn home_dir(&self) -> Result<Option<PathBuf>, Error> {
+        let name = CString::new(self.name.as_str()).map_err(|_| Error::InvalidUsername)?;
+        let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
+            -1 => 1024,
+            n => Ord::min(n as usize, 1_048_576),
+        };
+
+        let mut buf = vec![0u8; buf_len];
+        let mut pwd = unsafe { core::mem::zeroed() };
+        let mut result = core::ptr::null_mut();
+
+        let ret = unsafe {
+            getpwnam_r(
+                name.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr().cast::<c_char>(),
+                buf_len,
+                &mut result,
+            )
+        };
+
+        if ret != 0 {
+            return Err(io::Error::from_raw_os_error(ret).into());
+        }
+
+        Ok(match result.is_null() {
+            // SAFETY: `result` is non-null, so `pwd.pw_dir` was populated by `getpwnam_r`.
+            // The `pwd` struct and `buf` are still alive, so the pointer is valid.
+            false => {
+                let home = unsafe { CStr::from_ptr(pwd.pw_dir) };
+                Some(PathBuf::from(OsStr::from_bytes(home.to_bytes())))
+            }
+            true => None,
+        })
+    }
+}
+
+enum AuthorizedKey {
+    NistP256 {
+        blob: Vec<u8>,
+        key: UnparsedPublicKey<Box<[u8]>>,
+    },
 }
 
 struct ConnectionContext {
@@ -358,6 +548,8 @@ enum Error {
     Incomplete(Option<usize>),
     #[error("invalid packet: {0}")]
     InvalidPacket(&'static str),
+    #[error("invalid user name")]
+    InvalidUsername,
     #[error("no common {0} algorithms")]
     NoCommonAlgorithm(&'static str),
     #[error("invalid mac for packet")]
