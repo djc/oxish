@@ -12,14 +12,12 @@ mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, KeyExchangeInit, NewKeys, RawKeySet};
 mod messages;
 use messages::{
-    Decoded, Disconnect, DisconnectReason, Identification, MessageType, ServiceAccept, ServiceName,
-    ServiceRequest, PROTOCOL,
+    Decoded, Disconnect, DisconnectReason, Identification, MessageType, MethodName, ServiceAccept,
+    ServiceName, ServiceRequest, UserAuthRequest, PROTOCOL,
 };
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, Completion, HandshakeHash, ReadState, WriteState};
 mod terminal;
-mod user_auth;
-use user_auth::{MethodName, UserAuthRequest};
 
 /// A single SSH connection
 pub struct Connection<T> {
