@@ -14,7 +14,7 @@ use std::{
 use tracing::{debug, warn};
 
 use crate::{
-    proto::{Decode, Decoded, Encode, IncomingPacket, MessageType},
+    messages::{Decode, Decoded, Encode, IncomingPacket, MessageType},
     terminal::Terminal,
     Error,
 };
