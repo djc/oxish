@@ -7,22 +7,19 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
 
 mod connections;
+use connections::{Channels, IncomingChannelMessage};
 mod key_exchange;
-use key_exchange::KeyExchange;
+use key_exchange::{EcdhKeyExchangeInit, KeyExchange, KeyExchangeInit, NewKeys, RawKeySet};
+mod messages;
+use messages::{
+    Decoded, Disconnect, DisconnectReason, Identification, MessageType, ServiceAccept, ServiceName,
+    ServiceRequest, PROTOCOL,
+};
 mod proto;
-use proto::{AesCtrWriteKeys, Completion, Decoded, MessageType, ReadState, WriteState};
+use proto::{AesCtrReadKeys, AesCtrWriteKeys, Completion, HandshakeHash, ReadState, WriteState};
 mod terminal;
 mod user_auth;
-
-use crate::{
-    connections::{Channels, IncomingChannelMessage},
-    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys, RawKeySet},
-    proto::{
-        AesCtrReadKeys, Disconnect, DisconnectReason, Encode, HandshakeHash, ServiceAccept,
-        ServiceName, ServiceRequest,
-    },
-    user_auth::{MethodName, UserAuthRequest},
-};
+use user_auth::{MethodName, UserAuthRequest};
 
 /// A single SSH connection
 pub struct Connection<T> {
@@ -427,78 +424,6 @@ impl VersionExchange {
     }
 }
 
-#[derive(Debug)]
-struct Identification<'a> {
-    protocol: &'a str,
-    software: &'a str,
-    comments: &'a str,
-}
-
-impl Identification<'_> {
-    fn outgoing() -> Self {
-        Self {
-            protocol: PROTOCOL,
-            software: SOFTWARE,
-            comments: "",
-        }
-    }
-}
-
-impl<'a> Identification<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Completion<Decoded<'a, Self>>, Error> {
-        let Ok(message) = str::from_utf8(bytes) else {
-            return Err(IdentificationError::InvalidUtf8.into());
-        };
-
-        let Some((message, next)) = message.split_once("\r\n") else {
-            // The maximum length is 255 bytes including CRLF. message excludes
-            // the CRLF, so subtract 2.
-            return match message.len() > 255 - 2 {
-                true => Err(IdentificationError::TooLong.into()),
-                false => Ok(Completion::Incomplete(None)),
-            };
-        };
-
-        let Some(rest) = message.strip_prefix("SSH-") else {
-            return Err(IdentificationError::NoSsh.into());
-        };
-
-        let Some((protocol, rest)) = rest.split_once('-') else {
-            return Err(IdentificationError::NoVersion.into());
-        };
-
-        let (software, comments) = match rest.split_once(' ') {
-            Some((software, comments)) => (software, comments),
-            None => (rest, ""),
-        };
-
-        let out = Self {
-            protocol,
-            software,
-            comments,
-        };
-
-        Ok(Completion::Complete(Decoded {
-            value: out,
-            next: next.as_bytes(),
-        }))
-    }
-}
-
-impl Encode for Identification<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        buf.extend_from_slice(b"SSH-");
-        buf.extend_from_slice(self.protocol.as_bytes());
-        buf.push(b'-');
-        buf.extend_from_slice(self.software.as_bytes());
-        if !self.comments.is_empty() {
-            buf.push(b' ');
-            buf.extend_from_slice(self.comments.as_bytes());
-        }
-        buf.extend_from_slice(b"\r\n");
-    }
-}
-
 #[derive(Debug, Error)]
 enum Error {
     #[error("failed to get random bytes")]
@@ -540,6 +465,3 @@ impl<T: fmt::Debug> fmt::Display for Pretty<T> {
         write!(f, "{:#?}", &self.0)
     }
 }
-
-const PROTOCOL: &str = "2.0";
-const SOFTWARE: &str = concat!("OxiSH/", env!("CARGO_PKG_VERSION"));

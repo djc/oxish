@@ -1,7 +1,7 @@
 use core::str;
 
 use crate::{
-    proto::{Decode, Decoded, Encode, IncomingPacket, MessageType, ServiceName},
+    messages::{Decode, Decoded, Encode, IncomingPacket, MessageType, ServiceName},
     Error,
 };
 

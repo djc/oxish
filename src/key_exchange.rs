@@ -9,9 +9,8 @@ use aws_lc_rs::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    proto::{
-        with_mpint_bytes, Decode, Decoded, Encode, HandshakeHash, IncomingPacket, MessageType,
-    },
+    messages::{Decode, Decoded, Encode, IncomingPacket, MessageType},
+    proto::{with_mpint_bytes, HandshakeHash},
     ConnectionContext, Error,
 };
 
