@@ -250,6 +250,8 @@ impl<'a> From<&'a str> for KeyExchangeAlgorithm<'a> {
 pub(crate) enum PublicKeyAlgorithm<'a> {
     /// ssh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
     Ed25519,
+    /// ecdsa-sha2-nistp256
+    NistP256,
     Unknown(Cow<'a, str>),
 }
 
@@ -257,6 +259,7 @@ impl<'a> PublicKeyAlgorithm<'a> {
     pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::Ed25519 => "ssh-ed25519",
+            Self::NistP256 => "ecdsa-sha2-nistp256",
             Self::Unknown(name) => name,
         }
     }
@@ -272,6 +275,7 @@ impl<'a> From<&'a str> for PublicKeyAlgorithm<'a> {
     fn from(value: &'a str) -> Self {
         match value {
             "ssh-ed25519" => Self::Ed25519,
+            "ecdsa-sha2-nistp256" => Self::NistP256,
             _ => Self::Unknown(Cow::Borrowed(value)),
         }
     }
@@ -400,7 +404,7 @@ impl Encode for NewKeys {
 pub(crate) struct UserAuthRequest<'a> {
     pub(crate) user_name: &'a str,
     pub(crate) service_name: ServiceName<'a>,
-    pub(crate) method_name: MethodName<'a>,
+    pub(crate) method: Method<'a>,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
@@ -428,16 +432,106 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
             next,
         } = MethodName::decode(next)?;
 
+        match method_name {
+            MethodName::PublicKey => {
+                let Decoded {
+                    value: public_key,
+                    next,
+                } = PublicKey::decode(next)?;
+
+                match next.is_empty() {
+                    true => {
+                        return Ok(UserAuthRequest {
+                            user_name,
+                            service_name,
+                            method: Method::PublicKey(public_key),
+                        })
+                    }
+                    false => {
+                        return Err(Error::InvalidPacket(
+                            "trailing bytes in publickey auth request",
+                        ))
+                    }
+                }
+            }
+            MethodName::None => {
+                return match next.is_empty() {
+                    true => Ok(UserAuthRequest {
+                        user_name,
+                        service_name,
+                        method: Method::None,
+                    }),
+                    false => Err(Error::InvalidPacket(
+                        "method-specific fields currently unsupported",
+                    )),
+                };
+            }
+            MethodName::Password | MethodName::HostBased => {
+                return Err(Error::InvalidPacket(
+                    "only none and publickey auth methods are supported",
+                ));
+            }
+            MethodName::Unknown(name) => {
+                warn!(%name, "unknown user auth method");
+                return Err(Error::InvalidPacket("unknown user auth method"));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Method<'a> {
+    PublicKey(PublicKey<'a>),
+    None,
+}
+
+#[derive(Debug)]
+pub(crate) struct PublicKey<'a> {
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    pub(crate) key_blob: &'a [u8],
+    pub(crate) signature: Option<&'a [u8]>,
+}
+
+impl<'a> Decode<'a> for PublicKey<'a> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded {
+            value: has_signature,
+            next,
+        } = bool::decode(bytes)?;
+
+        let Decoded {
+            value: algorithm,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        let Decoded {
+            value: key_blob,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        let (signature, next) = match has_signature {
+            true => {
+                let Decoded { value, next } = <&[u8]>::decode(next)?;
+                (Some(value), next)
+            }
+            false => (None, next),
+        };
+
         if !next.is_empty() {
-            return Err(Error::InvalidPacket(
-                "method-specific fields currently unsupported",
-            ));
+            return Err(Error::InvalidPacket("extra data in public key"));
         }
 
-        Ok(UserAuthRequest {
-            user_name,
-            service_name,
-            method_name,
+        Ok(Decoded {
+            value: PublicKey {
+                algorithm: PublicKeyAlgorithm::from(
+                    str::from_utf8(algorithm).map_err(|_| {
+                        Error::InvalidPacket("invalid UTF-8 in public key algorithm")
+                    })?,
+                ),
+                key_blob,
+                signature,
+            },
+            next,
         })
     }
 }
@@ -488,6 +582,31 @@ impl Encode for MethodName<'_> {
 impl PartialEq for MethodName<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.as_str() == other.as_str()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct UserAuthFailure;
+
+impl Encode for UserAuthFailure {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::UserAuthFailure.encode(buf);
+        b"publickey".as_slice().encode(buf);
+        false.encode(buf);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct UserAuthPkOk<'a> {
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    pub(crate) key_blob: &'a [u8],
+}
+
+impl Encode for UserAuthPkOk<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::UserAuthPkOk.encode(buf);
+        self.algorithm.encode(buf);
+        self.key_blob.encode(buf);
     }
 }
 
@@ -1308,6 +1427,7 @@ pub(crate) enum MessageType {
     UserAuthFailure,
     UserAuthSuccess,
     UserAuthBanner,
+    UserAuthPkOk,
     GlobalRequest,
     RequestSuccess,
     RequestFailure,
@@ -1358,6 +1478,7 @@ impl From<u8> for MessageType {
             51 => Self::UserAuthFailure,
             52 => Self::UserAuthSuccess,
             53 => Self::UserAuthBanner,
+            60 => Self::UserAuthPkOk,
             80 => Self::GlobalRequest,
             81 => Self::RequestSuccess,
             82 => Self::RequestFailure,
@@ -1394,6 +1515,7 @@ impl From<MessageType> for u8 {
             MessageType::UserAuthFailure => 51,
             MessageType::UserAuthSuccess => 52,
             MessageType::UserAuthBanner => 53,
+            MessageType::UserAuthPkOk => 60,
             MessageType::GlobalRequest => 80,
             MessageType::RequestSuccess => 81,
             MessageType::RequestFailure => 82,
