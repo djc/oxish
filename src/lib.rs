@@ -42,14 +42,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.context.addr))]
-    pub async fn run(mut self) {
+    pub async fn run(mut self) -> Result<(), ()> {
         let mut exchange = HandshakeHash::default();
         let state = VersionExchange::default();
         let state = match state.advance(&mut exchange, &mut self).await {
             Ok(state) => state,
             Err(error) => {
                 error!(%error, "failed to complete version exchange");
-                return;
+                return Err(());
             }
         };
 
@@ -59,7 +59,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             Ok(packet) => packet,
             Err(error) => {
                 error!(%error, "failed to read packet");
-                return;
+                return Err(());
             }
         };
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
@@ -69,13 +69,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
                 error!(%error, "failed to read key exchange init");
-                return;
+                return Err(());
             }
         };
 
         let Ok((key_exchange_init, state)) = state.advance(peer_key_exchange_init, &self.context)
         else {
-            return;
+            return Err(());
         };
 
         if let Err(error) = self
@@ -83,7 +83,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .await
         {
             error!(%error, "failed to send key exchange init packet");
-            return;
+            return Err(());
         }
 
         // Perform ECDH key exchange
@@ -92,7 +92,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             Ok(packet) => packet,
             Err(error) => {
                 error!(%error, "failed to read packet");
-                return;
+                return Err(());
             }
         };
 
@@ -100,38 +100,38 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
                 error!(%error, "failed to read ecdh key exchange init");
-                return;
+                return Err(());
             }
         };
 
         let Ok((key_exchange_reply, keys)) =
             state.advance(ecdh_key_exchange_init, exchange, &self.context)
         else {
-            return;
+            return Err(());
         };
 
         if let Err(error) = self.write_packet(&key_exchange_reply, None).await {
             warn!(%error, "failed to send key exchange init packet");
-            return;
+            return Err(());
         }
 
         // Exchange new keys packets and install new keys
 
         if let Err(error) = self.update_keys(keys).await {
             error!(%error, "failed to update keys");
-            return;
+            return Err(());
         }
 
         if let Err(error) = self.write_packet(&MessageType::Ignore, None).await {
             error!(%error, "failed to send ignore packet");
-            return;
+            return Err(());
         }
 
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
                 error!(%error, "failed to read packet");
-                return;
+                return Err(());
             }
         };
 
@@ -139,7 +139,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             Ok(req) => req,
             Err(error) => {
                 error!(%error, "failed to read service request");
-                return;
+                return Err(());
             }
         };
 
@@ -156,7 +156,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             if let Err(error) = self.write_packet(&disconnect, None).await {
                 error!(%error, "failed to send disconnect packet");
             }
-            return;
+            return Err(());
         }
 
         let service_accept = ServiceAccept {
@@ -164,14 +164,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
         if let Err(error) = self.write_packet(&service_accept, None).await {
             error!(%error, "failed to send service accept packet");
-            return;
+            return Err(());
         }
 
         let packet = match self.read.packet(&mut self.stream).await {
             Ok(packet) => packet,
             Err(error) => {
                 error!(%error, "failed to read packet");
-                return;
+                return Err(());
             }
         };
 
@@ -179,7 +179,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             Ok(req) => req,
             Err(error) => {
                 error!(%error, "failed to read user auth request");
-                return;
+                return Err(());
             }
         };
 
@@ -196,7 +196,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             if let Err(error) = self.write_packet(&disconnect, None).await {
                 error!(%error, "failed to send disconnect packet");
             }
-            return;
+            return Err(());
         }
 
         if user_auth_request.method_name != MethodName::None {
@@ -212,14 +212,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             if let Err(error) = self.write_packet(&disconnect, None).await {
                 error!(%error, "failed to send disconnect packet");
             }
-            return;
+            return Err(());
         }
 
         #[expect(unused_variables)]
         let user = user_auth_request.user_name.to_owned();
         if let Err(error) = self.write_packet(&MessageType::UserAuthSuccess, None).await {
             error!(%error, "failed to send user auth success packet");
-            return;
+            return Err(());
         }
 
         loop {
@@ -229,7 +229,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                         Ok(packet) => packet,
                         Err(error) => {
                             error!(%error, "failed to read packet");
-                            return;
+                            return Err(());
                         }
                     };
 
@@ -238,14 +238,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                             Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
                             Err(error) => warn!(%error, "failed to read disconnect packet"),
                         }
-                        return;
+                        return Err(());
                     }
 
                     let channel_message = match IncomingChannelMessage::try_from(packet) {
                         Ok(req) => req,
                         Err(error) => {
                             error!(%error, "failed to read channel message");
-                            return;
+                            return Err(());
                         }
                     };
 
@@ -256,27 +256,27 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                             Ok(outgoing) => outgoing,
                             Err(error) => {
                                 error!(%error, "failed to handle channel request");
-                                return;
+                                return Err(());
                             }
                         }
                         IncomingChannelMessage::Data(data) => match self.channels.data(&data) {
                             Ok(Some((session, data))) => {
                                 if let Err(error) = session.write(data).await {
                                     error!(%error, "failed to write data to session");
-                                    return;
+                                    return Err(());
                                 }
                                 None
                             }
                             Ok(None) => None,
                             Err(error) => {
                                 error!(%error, "failed to handle channel data");
-                                return;
+                                return Err(());
                             }
                         }
                         IncomingChannelMessage::Eof(eof) => {
                             if let Err(error) = self.channels.eof(&eof) {
                                 error!(%error, "failed to handle channel eof");
-                                return;
+                                return Err(());
                             }
                             None
                         }
@@ -290,7 +290,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                             .await
                         {
                             error!(%error, "failed to send channel message");
-                            return;
+                            return Err(());
                         }
                     }
                 }
@@ -303,13 +303,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                                 .await
                             {
                                 error!(%error, "failed to send channel message");
-                                return;
+                                return Err(());
                             }
                         }
                         Ok(None) => {}
                         Err(error) => {
                             error!(%error, "failed to poll sessions");
-                            return;
+                            return Err(());
                         }
                     }
                 }
