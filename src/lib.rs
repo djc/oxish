@@ -55,13 +55,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Receive and send key exchange init packets
 
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(%error, "failed to read packet");
-                return Err(());
-            }
-        };
+        let packet = self.read.packet(&mut self.stream).await?;
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
         exchange.update(&[u8::from(packet.message_type)]);
         exchange.update(packet.payload);
@@ -82,14 +76,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Perform ECDH key exchange
 
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(%error, "failed to read packet");
-                return Err(());
-            }
-        };
-
+        let packet = self.read.packet(&mut self.stream).await?;
         let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
@@ -110,14 +97,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         self.update_keys(keys).await?;
         self.send(&MessageType::Ignore, None).await?;
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(%error, "failed to read packet");
-                return Err(());
-            }
-        };
 
+        // Handle authentication
+
+        let packet = self.read.packet(&mut self.stream).await?;
         let service_request = match ServiceRequest::try_from(packet) {
             Ok(req) => req,
             Err(error) => {
@@ -146,14 +129,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
         self.send(&service_accept, None).await?;
 
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(%error, "failed to read packet");
-                return Err(());
-            }
-        };
-
+        let packet = self.read.packet(&mut self.stream).await?;
         let user_auth_request = match UserAuthRequest::try_from(packet) {
             Ok(req) => req,
             Err(error) => {
@@ -194,17 +170,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let user = user_auth_request.user_name.to_owned();
         self.send(&MessageType::UserAuthSuccess, None).await?;
 
+        // Main loop for handling channel messages
+
         loop {
             tokio::select! {
-                packet = self.read.packet(&mut self.stream) => {
-                    let packet = match packet {
-                        Ok(packet) => packet,
-                        Err(error) => {
-                            error!(%error, "failed to read packet");
-                            return Err(());
-                        }
-                    };
-
+                result = self.read.packet(&mut self.stream) => {
+                    let packet = result?;
                     if packet.message_type == MessageType::Disconnect {
                         match Disconnect::try_from(packet) {
                             Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
@@ -278,14 +249,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 
     async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), ()> {
-        let packet = match self.read.packet(&mut self.stream).await {
-            Ok(packet) => packet,
-            Err(error) => {
-                error!(%error, "failed to read packet");
-                return Err(());
-            }
-        };
-
+        let packet = self.read.packet(&mut self.stream).await?;
         if let Err(error) = NewKeys::try_from(packet) {
             error!(%error, "failed to read new keys packet");
             return Err(());

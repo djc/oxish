@@ -10,6 +10,7 @@ use aws_lc_rs::{
     constant_time, digest, hmac, rand,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tracing::error;
 use tracing::trace;
 
 use crate::{
@@ -43,15 +44,30 @@ impl ReadState {
     pub(crate) async fn packet<'a>(
         &'a mut self,
         stream: &mut (impl AsyncRead + Unpin),
-    ) -> Result<IncomingPacket<'a>, Error> {
+    ) -> Result<IncomingPacket<'a>, ()> {
         loop {
-            match self.poll_packet()? {
-                Completion::Complete((sequence_number, packet_length)) => {
-                    return self.decode_packet(sequence_number, packet_length)
+            let (sequence_number, packet_length) = match self.poll_packet() {
+                Ok(Completion::Complete((sequence_number, packet_length))) => {
+                    (sequence_number, packet_length)
                 }
-                Completion::Incomplete(_amount) => {
-                    let _ = self.buffer(stream).await?;
+                Ok(Completion::Incomplete(_amount)) => {
+                    if let Err(error) = self.buffer(stream).await {
+                        error!(%error, "failed to buffer from stream");
+                        return Err(());
+                    }
                     continue;
+                }
+                Err(error) => {
+                    error!(%error, "failed to decrypt packet");
+                    return Err(());
+                }
+            };
+
+            match self.decode_packet(sequence_number, packet_length) {
+                Ok(packet) => return Ok(packet),
+                Err(error) => {
+                    error!(%error, "failed to decode packet");
+                    return Err(());
                 }
             }
         }
