@@ -31,14 +31,14 @@ pub struct Connection<T> {
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Create a new [`Connection`]
-    pub fn new(stream: T, addr: SocketAddr, host_key: Arc<Ed25519KeyPair>) -> anyhow::Result<Self> {
-        Ok(Self {
+    pub fn new(stream: T, addr: SocketAddr, host_key: Arc<Ed25519KeyPair>) -> Self {
+        Self {
             stream,
             context: ConnectionContext { addr, host_key },
             read: ReadState::default(),
             write: WriteState::default(),
             channels: Channels::default(),
-        })
+        }
     }
 
     /// Drive the connection forward
