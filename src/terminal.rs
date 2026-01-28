@@ -34,7 +34,7 @@ use tokio::{
 };
 use tracing::debug;
 
-use crate::connections::{Mode, PtyReq};
+use crate::messages::{Mode, PtyReq};
 
 pub(crate) struct Terminal {
     pty: AsyncFd<OwnedFd>,
