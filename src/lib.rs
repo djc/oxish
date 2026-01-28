@@ -9,11 +9,12 @@ use tracing::{debug, error, info, instrument, warn};
 mod connections;
 use connections::{Channels, IncomingChannelMessage};
 mod key_exchange;
-use key_exchange::{EcdhKeyExchangeInit, KeyExchange, KeyExchangeInit, RawKeySet};
+use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
 mod messages;
 use messages::{
-    Completion, Decoded, Disconnect, DisconnectReason, Encode, Identification, MessageType,
-    MethodName, NewKeys, ServiceAccept, ServiceName, ServiceRequest, UserAuthRequest, PROTOCOL,
+    Completion, Decoded, Disconnect, DisconnectReason, Encode, Identification, KeyExchangeInit,
+    MessageType, MethodName, NewKeys, ServiceAccept, ServiceName, ServiceRequest, UserAuthRequest,
+    PROTOCOL,
 };
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
