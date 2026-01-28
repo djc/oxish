@@ -1,7 +1,7 @@
 use core::{fmt, str};
 use std::{borrow::Cow, collections::BTreeMap};
 
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{proto::Completion, Error, IdentificationError};
 
@@ -72,6 +72,180 @@ impl Encode for Identification<'_> {
             buf.extend_from_slice(self.comments.as_bytes());
         }
         buf.extend_from_slice(b"\r\n");
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeyExchangeAlgorithm<'a> {
+    /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
+    Curve25519Sha256,
+    Unknown(&'a str),
+}
+
+impl Encode for KeyExchangeAlgorithm<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::Curve25519Sha256 => buf.extend_from_slice(b"curve25519-sha256"),
+            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for KeyExchangeAlgorithm<'a> {
+    fn from(value: &'a str) -> Self {
+        match value {
+            "curve25519-sha256" => Self::Curve25519Sha256,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PublicKeyAlgorithm<'a> {
+    /// ssh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
+    Ed25519,
+    Unknown(&'a str),
+}
+
+impl<'a> PublicKeyAlgorithm<'a> {
+    pub(crate) fn as_str(&self) -> &'a str {
+        match self {
+            Self::Ed25519 => "ssh-ed25519",
+            Self::Unknown(name) => name,
+        }
+    }
+}
+
+impl Encode for PublicKeyAlgorithm<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(self.as_str().as_bytes());
+    }
+}
+
+impl<'a> From<&'a str> for PublicKeyAlgorithm<'a> {
+    fn from(value: &'a str) -> Self {
+        match value {
+            "ssh-ed25519" => Self::Ed25519,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EncryptionAlgorithm<'a> {
+    /// aes128-ctr (<https://www.rfc-editor.org/rfc/rfc4344#section-4>)
+    Aes128Ctr,
+    Unknown(&'a str),
+}
+
+impl Encode for EncryptionAlgorithm<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::Aes128Ctr => buf.extend_from_slice(b"aes128-ctr"),
+            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for EncryptionAlgorithm<'a> {
+    fn from(value: &'a str) -> Self {
+        match value {
+            "aes128-ctr" => Self::Aes128Ctr,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MacAlgorithm<'a> {
+    /// hmac-sha2-256 (<https://www.rfc-editor.org/rfc/rfc6668#section-2>)
+    HmacSha2256,
+    Unknown(&'a str),
+}
+
+impl Encode for MacAlgorithm<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::HmacSha2256 => buf.extend_from_slice(b"hmac-sha2-256"),
+            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for MacAlgorithm<'a> {
+    fn from(value: &'a str) -> Self {
+        match value {
+            "hmac-sha2-256" => Self::HmacSha2256,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompressionAlgorithm<'a> {
+    None,
+    Unknown(&'a str),
+}
+
+impl Encode for CompressionAlgorithm<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::None => buf.extend_from_slice(b"none"),
+            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for CompressionAlgorithm<'a> {
+    fn from(value: &'a str) -> Self {
+        match value {
+            "none" => Self::None,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Language<'a> {
+    Unknown(&'a str),
+}
+
+impl Encode for Language<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for Language<'a> {
+    fn from(value: &'a str) -> Self {
+        Self::Unknown(value)
+    }
+}
+
+pub(crate) struct NewKeys;
+
+impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
+    type Error = Error;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::NewKeys {
+            return Err(Error::InvalidPacket("unexpected message type"));
+        }
+
+        if !packet.payload.is_empty() {
+            debug!(bytes = ?packet.payload, "unexpected trailing bytes");
+            return Err(Error::InvalidPacket("unexpected trailing bytes"));
+        }
+
+        Ok(Self)
+    }
+}
+
+impl Encode for NewKeys {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::NewKeys.encode(buf);
     }
 }
 
@@ -1107,6 +1281,55 @@ impl Decode<'_> for PacketLength {
             value: Self { inner: value },
             next,
         })
+    }
+}
+
+impl<T: Encode> Encode for [T] {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let offset = buf.len();
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        let mut first = true;
+        for name in self {
+            match first {
+                true => first = false,
+                false => buf.push(b','),
+            }
+
+            name.encode(buf);
+        }
+
+        let len = (buf.len() - offset - 4) as u32;
+        if let Some(slice) = buf.get_mut(offset..offset + 4) {
+            slice.copy_from_slice(&len.to_be_bytes());
+        }
+    }
+}
+
+impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value: len, next } = u32::decode(bytes)?;
+
+        let Some(list) = next.get(..len as usize) else {
+            return Err(Error::Incomplete(Some(len as usize - next.len())));
+        };
+
+        let Some(next) = next.get(len as usize..) else {
+            return Err(Error::Unreachable("unable to extract rest after name list"));
+        };
+
+        let mut value = Self::new();
+        if list.is_empty() {
+            return Ok(Decoded { value, next });
+        }
+
+        for name in list.split(|&b| b == b',') {
+            match str::from_utf8(name) {
+                Ok(name) => value.push(T::from(name)),
+                Err(_) => return Err(Error::InvalidPacket("invalid name")),
+            }
+        }
+
+        Ok(Decoded { value, next })
     }
 }
 
