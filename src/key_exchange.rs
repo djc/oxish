@@ -158,7 +158,7 @@ impl Encode for TaggedPublicKey<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
         let start = buf.len();
         buf.extend([0; 4]);
-        self.algorithm.as_str().as_bytes().encode(buf);
+        self.algorithm.encode(buf);
         self.key.encode(buf);
         let len = (buf.len() - start - 4) as u32;
         if let Some(dst) = buf.get_mut(start..start + 4) {
@@ -176,7 +176,7 @@ impl Encode for TaggedSignature<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
         let start = buf.len();
         buf.extend([0; 4]);
-        self.algorithm.as_str().as_bytes().encode(buf);
+        self.algorithm.encode(buf);
         self.signature.as_ref().encode(buf);
         let len = (buf.len() - start - 4) as u32;
         if let Some(dst) = buf.get_mut(start..start + 4) {
