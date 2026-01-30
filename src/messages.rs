@@ -120,52 +120,52 @@ impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
         let Decoded {
             value: key_exchange_algorithms,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: server_host_key_algorithms,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: encryption_algorithms_client_to_server,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: encryption_algorithms_server_to_client,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: mac_algorithms_client_to_server,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: mac_algorithms_server_to_client,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: compression_algorithms_client_to_server,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: compression_algorithms_server_to_client,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: languages_client_to_server,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: languages_server_to_client,
             next,
-        } = Vec::decode(next)?;
+        } = IncomingNameList::decode(next)?;
 
         let Decoded {
             value: first_kex_packet_follows,
@@ -179,16 +179,16 @@ impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
 
         let value = Self {
             cookie,
-            key_exchange_algorithms,
-            server_host_key_algorithms,
-            encryption_algorithms_client_to_server,
-            encryption_algorithms_server_to_client,
-            mac_algorithms_client_to_server,
-            mac_algorithms_server_to_client,
-            compression_algorithms_client_to_server,
-            compression_algorithms_server_to_client,
-            languages_client_to_server,
-            languages_server_to_client,
+            key_exchange_algorithms: key_exchange_algorithms.0,
+            server_host_key_algorithms: server_host_key_algorithms.0,
+            encryption_algorithms_client_to_server: encryption_algorithms_client_to_server.0,
+            encryption_algorithms_server_to_client: encryption_algorithms_server_to_client.0,
+            mac_algorithms_client_to_server: mac_algorithms_client_to_server.0,
+            mac_algorithms_server_to_client: mac_algorithms_server_to_client.0,
+            compression_algorithms_client_to_server: compression_algorithms_client_to_server.0,
+            compression_algorithms_server_to_client: compression_algorithms_server_to_client.0,
+            languages_client_to_server: languages_client_to_server.0,
+            languages_server_to_client: languages_server_to_client.0,
             first_kex_packet_follows: first_kex_packet_follows != 0,
             extended,
         };
@@ -206,16 +206,16 @@ impl Encode for KeyExchangeInit<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
         MessageType::KeyExchangeInit.encode(buf);
         buf.extend_from_slice(&self.cookie);
-        self.key_exchange_algorithms.encode(buf);
-        self.server_host_key_algorithms.encode(buf);
-        self.encryption_algorithms_client_to_server.encode(buf);
-        self.encryption_algorithms_server_to_client.encode(buf);
-        self.mac_algorithms_client_to_server.encode(buf);
-        self.mac_algorithms_server_to_client.encode(buf);
-        self.compression_algorithms_client_to_server.encode(buf);
-        self.compression_algorithms_server_to_client.encode(buf);
-        self.languages_client_to_server.encode(buf);
-        self.languages_server_to_client.encode(buf);
+        OutgoingNameList(&self.key_exchange_algorithms).encode(buf);
+        OutgoingNameList(&self.server_host_key_algorithms).encode(buf);
+        OutgoingNameList(&self.encryption_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(&self.encryption_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(&self.mac_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(&self.mac_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(&self.compression_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(&self.compression_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(&self.languages_client_to_server).encode(buf);
+        OutgoingNameList(&self.languages_server_to_client).encode(buf);
         buf.push(if self.first_kex_packet_follows { 1 } else { 0 });
         buf.extend_from_slice(&self.extended.to_be_bytes());
     }
@@ -228,20 +228,18 @@ pub(crate) enum KeyExchangeAlgorithm<'a> {
     Unknown(&'a str),
 }
 
-impl Encode for KeyExchangeAlgorithm<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        match self {
-            Self::Curve25519Sha256 => buf.extend_from_slice(b"curve25519-sha256"),
-            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "curve25519-sha256" => Self::Curve25519Sha256,
+            _ => Self::Unknown(name),
         }
     }
-}
 
-impl<'a> From<&'a str> for KeyExchangeAlgorithm<'a> {
-    fn from(value: &'a str) -> Self {
-        match value {
-            "curve25519-sha256" => Self::Curve25519Sha256,
-            _ => Self::Unknown(value),
+    fn name(&self) -> &str {
+        match self {
+            Self::Curve25519Sha256 => "curve25519-sha256",
+            Self::Unknown(name) => name,
         }
     }
 }
@@ -253,26 +251,18 @@ pub(crate) enum PublicKeyAlgorithm<'a> {
     Unknown(Cow<'a, str>),
 }
 
-impl<'a> PublicKeyAlgorithm<'a> {
-    pub(crate) fn as_str(&self) -> &str {
+impl<'a> Named<'a> for PublicKeyAlgorithm<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "ssh-ed25519" => Self::Ed25519,
+            _ => Self::Unknown(Cow::Borrowed(name)),
+        }
+    }
+
+    fn name(&self) -> &str {
         match self {
             Self::Ed25519 => "ssh-ed25519",
             Self::Unknown(name) => name,
-        }
-    }
-}
-
-impl Encode for PublicKeyAlgorithm<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        buf.extend_from_slice(self.as_str().as_bytes());
-    }
-}
-
-impl<'a> From<&'a str> for PublicKeyAlgorithm<'a> {
-    fn from(value: &'a str) -> Self {
-        match value {
-            "ssh-ed25519" => Self::Ed25519,
-            _ => Self::Unknown(Cow::Borrowed(value)),
         }
     }
 }
@@ -284,20 +274,18 @@ pub(crate) enum EncryptionAlgorithm<'a> {
     Unknown(&'a str),
 }
 
-impl Encode for EncryptionAlgorithm<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        match self {
-            Self::Aes128Ctr => buf.extend_from_slice(b"aes128-ctr"),
-            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+impl<'a> Named<'a> for EncryptionAlgorithm<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "aes128-ctr" => Self::Aes128Ctr,
+            _ => Self::Unknown(name),
         }
     }
-}
 
-impl<'a> From<&'a str> for EncryptionAlgorithm<'a> {
-    fn from(value: &'a str) -> Self {
-        match value {
-            "aes128-ctr" => Self::Aes128Ctr,
-            _ => Self::Unknown(value),
+    fn name(&self) -> &str {
+        match self {
+            Self::Aes128Ctr => "aes128-ctr",
+            Self::Unknown(name) => name,
         }
     }
 }
@@ -309,20 +297,18 @@ pub(crate) enum MacAlgorithm<'a> {
     Unknown(&'a str),
 }
 
-impl Encode for MacAlgorithm<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        match self {
-            Self::HmacSha2256 => buf.extend_from_slice(b"hmac-sha2-256"),
-            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+impl<'a> Named<'a> for MacAlgorithm<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "hmac-sha2-256" => Self::HmacSha2256,
+            _ => Self::Unknown(name),
         }
     }
-}
 
-impl<'a> From<&'a str> for MacAlgorithm<'a> {
-    fn from(value: &'a str) -> Self {
-        match value {
-            "hmac-sha2-256" => Self::HmacSha2256,
-            _ => Self::Unknown(value),
+    fn name(&self) -> &str {
+        match self {
+            Self::HmacSha2256 => "hmac-sha2-256",
+            Self::Unknown(name) => name,
         }
     }
 }
@@ -333,20 +319,18 @@ pub(crate) enum CompressionAlgorithm<'a> {
     Unknown(&'a str),
 }
 
-impl Encode for CompressionAlgorithm<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        match self {
-            Self::None => buf.extend_from_slice(b"none"),
-            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
+impl<'a> Named<'a> for CompressionAlgorithm<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "none" => Self::None,
+            _ => Self::Unknown(name),
         }
     }
-}
 
-impl<'a> From<&'a str> for CompressionAlgorithm<'a> {
-    fn from(value: &'a str) -> Self {
-        match value {
-            "none" => Self::None,
-            _ => Self::Unknown(value),
+    fn name(&self) -> &str {
+        match self {
+            Self::None => "none",
+            Self::Unknown(name) => name,
         }
     }
 }
@@ -356,17 +340,15 @@ pub(crate) enum Language<'a> {
     Unknown(&'a str),
 }
 
-impl Encode for Language<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        match self {
-            Self::Unknown(name) => buf.extend_from_slice(name.as_bytes()),
-        }
+impl<'a> Named<'a> for Language<'a> {
+    fn typed(name: &'a str) -> Self {
+        Self::Unknown(name)
     }
-}
 
-impl<'a> From<&'a str> for Language<'a> {
-    fn from(value: &'a str) -> Self {
-        Self::Unknown(value)
+    fn name(&self) -> &str {
+        match self {
+            Self::Unknown(name) => name,
+        }
     }
 }
 
@@ -451,43 +433,31 @@ pub(crate) enum MethodName<'a> {
     Unknown(&'a str),
 }
 
-impl<'a> MethodName<'a> {
-    fn as_str(&self) -> &str {
-        match self {
-            MethodName::PublicKey => "publickey",
-            MethodName::Password => "password",
-            MethodName::HostBased => "hostbased",
-            MethodName::None => "none",
-            MethodName::Unknown(name) => name,
+impl<'a> Named<'a> for MethodName<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "publickey" => MethodName::PublicKey,
+            "password" => MethodName::Password,
+            "hostbased" => MethodName::HostBased,
+            "none" => MethodName::None,
+            _ => MethodName::Unknown(name),
         }
     }
-}
 
-impl<'a> Decode<'a> for MethodName<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
-        let Decoded { value, next } = <&[u8]>::decode(bytes)?;
-        let value = match str::from_utf8(value) {
-            Ok("publickey") => MethodName::PublicKey,
-            Ok("password") => MethodName::Password,
-            Ok("hostbased") => MethodName::HostBased,
-            Ok("none") => MethodName::None,
-            Ok(name) => MethodName::Unknown(name),
-            Err(_) => return Err(Error::InvalidPacket("invalid UTF-8 in method name")),
-        };
-
-        Ok(Decoded { value, next })
-    }
-}
-
-impl Encode for MethodName<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        self.as_str().as_bytes().encode(buf);
+    fn name(&self) -> &str {
+        match self {
+            Self::PublicKey => "publickey",
+            Self::Password => "password",
+            Self::HostBased => "hostbased",
+            Self::None => "none",
+            Self::Unknown(name) => name,
+        }
     }
 }
 
 impl PartialEq for MethodName<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
+        self.name() == other.name()
     }
 }
 
@@ -1432,28 +1402,9 @@ impl Decode<'_> for PacketLength {
     }
 }
 
-impl<T: Encode> Encode for [T] {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        let offset = buf.len();
-        buf.extend_from_slice(&[0, 0, 0, 0]);
-        let mut first = true;
-        for name in self {
-            match first {
-                true => first = false,
-                false => buf.push(b','),
-            }
+struct IncomingNameList<T>(Vec<T>);
 
-            name.encode(buf);
-        }
-
-        let len = (buf.len() - offset - 4) as u32;
-        if let Some(slice) = buf.get_mut(offset..offset + 4) {
-            slice.copy_from_slice(&len.to_be_bytes());
-        }
-    }
-}
-
-impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
+impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
         let Decoded { value: len, next } = u32::decode(bytes)?;
 
@@ -1465,20 +1416,73 @@ impl<'a, T: From<&'a str>> Decode<'a> for Vec<T> {
             return Err(Error::Unreachable("unable to extract rest after name list"));
         };
 
-        let mut value = Self::new();
+        let mut value = Vec::new();
         if list.is_empty() {
-            return Ok(Decoded { value, next });
+            return Ok(Decoded {
+                value: Self(value),
+                next,
+            });
         }
 
         for name in list.split(|&b| b == b',') {
             match str::from_utf8(name) {
-                Ok(name) => value.push(T::from(name)),
+                Ok(name) => value.push(T::typed(name)),
                 Err(_) => return Err(Error::InvalidPacket("invalid name")),
             }
         }
 
-        Ok(Decoded { value, next })
+        Ok(Decoded {
+            value: Self(value),
+            next,
+        })
     }
+}
+struct OutgoingNameList<'a, T>(&'a [T]);
+
+impl<'a, T: Named<'a>> Encode for OutgoingNameList<'_, T> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let offset = buf.len();
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        let mut first = true;
+        for name in self.0 {
+            match first {
+                true => first = false,
+                false => buf.push(b','),
+            }
+
+            buf.extend(name.name().as_bytes());
+        }
+
+        let len = (buf.len() - offset - 4) as u32;
+        if let Some(slice) = buf.get_mut(offset..offset + 4) {
+            slice.copy_from_slice(&len.to_be_bytes());
+        }
+    }
+}
+
+impl<'a, T: Named<'a>> Decode<'a> for T {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value, next } = <&[u8]>::decode(bytes)?;
+        let name = str::from_utf8(value)
+            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in named value"))?;
+
+        Ok(Decoded {
+            value: T::typed(name),
+            next,
+        })
+    }
+}
+
+impl<'a, T: Named<'a>> Encode for T {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.name().as_bytes().encode(buf);
+    }
+}
+
+trait Named<'a> {
+    fn typed(name: &'a str) -> Self;
+
+    fn name(&self) -> &str;
 }
 
 impl<'a> Decode<'a> for &'a [u8] {
