@@ -41,6 +41,37 @@ impl PartialEq for MethodName<'_> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum ServiceName<'a> {
+    UserAuth,
+    Connection,
+    Unknown(&'a str),
+}
+
+impl<'a> Named<'a> for ServiceName<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "ssh-userauth" => Self::UserAuth,
+            "ssh-connection" => Self::Connection,
+            name => Self::Unknown(name),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::UserAuth => "ssh-userauth",
+            Self::Connection => "ssh-connection",
+            Self::Unknown(name) => name,
+        }
+    }
+}
+
+impl PartialEq for ServiceName<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.name() == other.name()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KeyExchangeAlgorithm<'a> {
     /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
