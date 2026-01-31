@@ -1,6 +1,7 @@
 use core::str;
+use std::borrow::Cow;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{Error, IdentificationError};
 
@@ -264,7 +265,7 @@ impl Encode for NewKeys {
 pub(crate) struct UserAuthRequest<'a> {
     pub(crate) user_name: &'a str,
     pub(crate) service_name: ServiceName<'a>,
-    pub(crate) method_name: MethodName<'a>,
+    pub(crate) method: Method<'a>,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
@@ -292,17 +293,250 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
             next,
         } = MethodName::decode(next)?;
 
-        if !next.is_empty() {
-            return Err(Error::InvalidPacket(
-                "method-specific fields currently unsupported",
-            ));
-        }
+        let method = match method_name {
+            MethodName::PublicKey => {
+                let Decoded {
+                    value: public_key,
+                    next,
+                } = PublicKey::decode(next)?;
+
+                if !next.is_empty() {
+                    return Err(Error::InvalidPacket(
+                        "trailing bytes in public key auth request",
+                    ));
+                }
+
+                Method::PublicKey(public_key)
+            }
+            MethodName::None => {
+                if !next.is_empty() {
+                    return Err(Error::InvalidPacket(
+                        "method-specific fields currently unsupported",
+                    ));
+                }
+                Method::None
+            }
+            _ => {
+                warn!(method = ?method_name, "unsupported authentication method");
+                return Err(Error::InvalidPacket("unsupported authentication method"));
+            }
+        };
 
         Ok(UserAuthRequest {
             user_name,
             service_name,
-            method_name,
+            method,
         })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Method<'a> {
+    PublicKey(PublicKey<'a>),
+    None,
+}
+
+#[derive(Debug)]
+pub(crate) struct PublicKey<'a> {
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    pub(crate) key_blob: &'a [u8],
+    pub(crate) signature: Option<EcdsaSignature<'a>>,
+}
+
+impl<'a> Decode<'a> for PublicKey<'a> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded {
+            value: has_signature,
+            next,
+        } = bool::decode(input)?;
+
+        let Decoded {
+            value: algorithm,
+            next,
+        } = PublicKeyAlgorithm::decode(next)?;
+
+        let Decoded {
+            value: key_blob,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        let (signature, next) = match (has_signature, next.is_empty()) {
+            (false, true) => (None, next),
+            (false, false) => {
+                return Err(Error::InvalidPacket(
+                    "trailing bytes in public key auth without signature",
+                ))
+            }
+            (true, _) => {
+                let Decoded {
+                    value: signature,
+                    next,
+                } = EcdsaSignature::decode(next)?;
+                (Some(signature), next)
+            }
+        };
+
+        Ok(Decoded {
+            value: PublicKey {
+                algorithm,
+                key_blob,
+                signature,
+            },
+            next,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct EcdsaSignature<'a> {
+    #[expect(dead_code)]
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    pub(crate) signature_blob: &'a [u8],
+}
+
+impl EcdsaSignature<'_> {
+    pub(crate) fn decoded<const N: usize>(&self) -> Result<[u8; N], Error> {
+        let Decoded {
+            value: r,
+            next: rest,
+        } = <&[u8]>::decode(self.signature_blob)?;
+
+        let Decoded { value: s, next } = <&[u8]>::decode(rest)?;
+        if !next.is_empty() {
+            return Err(Error::InvalidPacket("extra data in ECDSA signature blob"));
+        }
+
+        let mut fixed = [0u8; N];
+        if mpint_to_fixed(r, &mut fixed[..N / 2]).is_none() {
+            return Err(Error::InvalidPacket(
+                "failure to decode r in ECDSA signature",
+            ));
+        }
+
+        if mpint_to_fixed(s, &mut fixed[N / 2..]).is_none() {
+            return Err(Error::InvalidPacket(
+                "failure to decode s in ECDSA signature",
+            ));
+        }
+
+        Ok(fixed)
+    }
+}
+
+impl<'a> Decode<'a> for EcdsaSignature<'a> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value: input, next } = <&[u8]>::decode(input)?;
+        if !next.is_empty() {
+            return Err(Error::InvalidPacket("extra data in ECDSA signature"));
+        }
+
+        let Decoded {
+            value: algorithm,
+            next,
+        } = PublicKeyAlgorithm::decode(input)?;
+
+        let Decoded {
+            value: signature_blob,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        if !next.is_empty() {
+            return Err(Error::InvalidPacket("extra data in ECDSA signature"));
+        }
+
+        Ok(Decoded {
+            value: EcdsaSignature {
+                algorithm,
+                signature_blob,
+            },
+            next,
+        })
+    }
+}
+
+/// Convert an SSH mpint to a fixed-width big-endian representation
+fn mpint_to_fixed(mpint: &[u8], out: &mut [u8]) -> Option<()> {
+    let data = match mpint.split_first() {
+        Some((&0, rest)) if !rest.is_empty() => rest,
+        _ => mpint,
+    };
+
+    if data.len() > out.len() {
+        return None;
+    }
+
+    let offset = out.len() - data.len();
+    out[offset..].copy_from_slice(data);
+    Some(())
+}
+
+#[derive(Debug)]
+pub(crate) struct UserAuthFailure<'a> {
+    pub(crate) can_continue: &'a [MethodName<'a>],
+    pub(crate) partial_success: bool,
+}
+
+impl Encode for UserAuthFailure<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::UserAuthFailure.encode(buf);
+        OutgoingNameList(self.can_continue).encode(buf);
+        self.partial_success.encode(buf);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct UserAuthPkOk<'a> {
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    pub(crate) key_blob: Cow<'a, [u8]>,
+}
+
+impl UserAuthPkOk<'_> {
+    pub(crate) fn to_owned(&self) -> UserAuthPkOk<'static> {
+        UserAuthPkOk {
+            algorithm: self.algorithm.to_owned(),
+            key_blob: Cow::Owned(self.key_blob.as_ref().to_owned()),
+        }
+    }
+}
+
+impl Encode for UserAuthPkOk<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::UserAuthPkOk.encode(buf);
+        self.algorithm.encode(buf);
+        self.key_blob.encode(buf);
+    }
+}
+
+impl<'a> From<PublicKey<'a>> for UserAuthPkOk<'a> {
+    fn from(public_key: PublicKey<'a>) -> Self {
+        UserAuthPkOk {
+            algorithm: public_key.algorithm,
+            key_blob: Cow::Borrowed(public_key.key_blob),
+        }
+    }
+}
+
+pub(crate) struct SignatureData<'a> {
+    pub(crate) session_id: &'a [u8],
+    pub(crate) user_name: &'a str,
+    pub(crate) service_name: ServiceName<'a>,
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    pub(crate) public_key: &'a [u8],
+}
+
+impl<'a> SignatureData<'a> {
+    /// Build the data that the client signs for public key authentication (RFC 4252 Section 7)
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.session_id.encode(&mut buf);
+        MessageType::UserAuthRequest.encode(&mut buf);
+        self.user_name.as_bytes().encode(&mut buf);
+        self.service_name.encode(&mut buf);
+        MethodName::PublicKey.encode(&mut buf);
+        true.encode(&mut buf);
+        self.algorithm.encode(&mut buf);
+        self.public_key.encode(&mut buf);
+        buf
     }
 }
 
@@ -442,3 +676,28 @@ impl TryFrom<u32> for DisconnectReason {
 }
 
 pub(crate) const PROTOCOL: &str = "2.0";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_auth_failure() {
+        let mut buf = Vec::new();
+        UserAuthFailure {
+            can_continue: &[MethodName::PublicKey],
+            partial_success: false,
+        }
+        .encode(&mut buf);
+
+        #[rustfmt::skip]
+        assert_eq!(
+            buf,
+            [
+                51, // Message type
+                0, 0, 0, 9, 112, 117, 98, 108, 105, 99, 107, 101, 121, // Methods that can continue
+                0, // Partial success
+            ]
+        );
+    }
+}

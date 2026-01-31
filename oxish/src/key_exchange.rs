@@ -86,10 +86,11 @@ impl EcdhKeyExchange {
         };
 
         // The first exchange hash is used as session id.
+        let session_id = Arc::new(self.session_id.unwrap_or(exchange_hash));
         let derivation = KeyDerivation {
             shared_secret,
             exchange_hash,
-            session_id: Arc::new(self.session_id.unwrap_or(exchange_hash)),
+            session_id: session_id.clone(),
         };
 
         Ok((
@@ -97,6 +98,7 @@ impl EcdhKeyExchange {
             RawKeySet {
                 client_to_server: RawKeys::client_to_server(&derivation),
                 server_to_client: RawKeys::server_to_client(&derivation),
+                session_id,
             },
         ))
     }
@@ -277,6 +279,7 @@ impl Algorithms {
 pub(crate) struct RawKeySet {
     pub(crate) client_to_server: RawKeys,
     pub(crate) server_to_client: RawKeys,
+    pub(crate) session_id: Arc<digest::Digest>,
 }
 
 pub(crate) struct RawKeys {
