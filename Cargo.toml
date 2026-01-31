@@ -1,26 +1,8 @@
-[package]
-name = "oxish"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.83"
-license = "Apache-2.0 OR MIT"
+[workspace]
+members = ["oxish"]
+resolver = "2"
 
-[dependencies]
-anyhow = "1.0.95"
-aws-lc-rs = { version = "1.12", features = ["prebuilt-nasm"] }
-bitflags = "2"
-clap = { version = "4.5.24", features = ["derive"] }
-listenfd = "1.0.2"
-thiserror = "2.0.9"
-tokio = { version = "1.42", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
-tokio-stream = "0.1.18"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-
-[target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["termios", "pty", "process", "fs", "stdio"] }
-
-[lints.rust]
+[workspace.lints.rust]
 elided_lifetimes_in_paths = "warn"
 trivial_numeric_casts = "warn"
 unnameable_types = "warn"
@@ -29,7 +11,7 @@ unused_extern_crates = "warn"
 unused_import_braces = "warn"
 unused_qualifications = "warn"
 
-[lints.clippy]
+[workspace.lints.clippy]
 alloc_instead_of_core = "warn"
 cloned_instead_of_copied = "warn"
 manual_let_else = "warn"
