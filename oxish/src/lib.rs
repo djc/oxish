@@ -13,8 +13,8 @@ use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
 mod messages;
 use messages::{
     Completion, Decoded, Disconnect, DisconnectReason, Encode, Identification, KeyExchangeInit,
-    MessageType, MethodName, NewKeys, ServiceAccept, ServiceName, ServiceRequest, UserAuthRequest,
-    PROTOCOL,
+    MessageType, Method, MethodName, NewKeys, ServiceAccept, ServiceName, ServiceRequest,
+    UserAuthFailure, UserAuthRequest, PROTOCOL,
 };
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
@@ -130,42 +130,48 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
         self.send(&service_accept, None).await?;
 
-        let packet = self.read.packet(&mut self.stream).await?;
-        let user_auth_request = match UserAuthRequest::try_from(packet) {
-            Ok(req) => req,
-            Err(error) => {
-                error!(%error, "failed to read user auth request");
+        let user_auth_request = loop {
+            let packet = self.read.packet(&mut self.stream).await?;
+            let user_auth_request = match UserAuthRequest::try_from(packet) {
+                Ok(req) => req,
+                Err(error) => {
+                    error!(%error, "failed to read user auth request");
+                    return Err(());
+                }
+            };
+
+            debug!(?user_auth_request, "received user auth request");
+            if user_auth_request.service_name != ServiceName::Connection {
+                error!(
+                    service_name = ?user_auth_request.service_name,
+                    "unsupported service requested"
+                );
+
+                let disconnect = Disconnect {
+                    reason_code: DisconnectReason::ServiceNotAvailable,
+                    description: "only connection service is supported",
+                };
+                self.send(&disconnect, None).await?;
                 return Err(());
             }
+
+            let Method::PublicKey(public_key) = &user_auth_request.method else {
+                warn!(
+                    method = ?user_auth_request.method,
+                    "unsupported authentication method requested"
+                );
+
+                let failure = UserAuthFailure {
+                    can_continue: &[MethodName::PublicKey],
+                    partial_success: false,
+                };
+                self.send(&failure, None).await?;
+                continue;
+            };
+
+            debug!(?public_key, "received public key authentication request");
+            break user_auth_request;
         };
-
-        if user_auth_request.service_name != ServiceName::Connection {
-            error!(
-                service_name = ?user_auth_request.service_name,
-                "unsupported service requested"
-            );
-
-            let disconnect = Disconnect {
-                reason_code: DisconnectReason::ServiceNotAvailable,
-                description: "only connection service is supported",
-            };
-            self.send(&disconnect, None).await?;
-            return Err(());
-        }
-
-        if user_auth_request.method_name != MethodName::None {
-            error!(
-                method_name = ?user_auth_request.method_name,
-                "unsupported authentication method requested"
-            );
-
-            let disconnect = Disconnect {
-                reason_code: DisconnectReason::NoMoreAuthMethodsAvailable,
-                description: "only 'none' authentication method is supported",
-            };
-            self.send(&disconnect, None).await?;
-            return Err(());
-        }
 
         #[expect(unused_variables)]
         let user = user_auth_request.user_name.to_owned();
