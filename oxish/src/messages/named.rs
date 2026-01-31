@@ -119,14 +119,28 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PublicKeyAlgorithm<'a> {
+    /// ecdsa-sha2-nistp256 (<https://www.rfc-editor.org/rfc/rfc5656>)
+    EcdsaSha2Nistp256,
     /// ssh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
     Ed25519,
     Unknown(Cow<'a, str>),
 }
 
+impl PublicKeyAlgorithm<'_> {
+    #[expect(dead_code)]
+    pub(crate) fn to_owned(&self) -> PublicKeyAlgorithm<'static> {
+        match self {
+            Self::EcdsaSha2Nistp256 => PublicKeyAlgorithm::EcdsaSha2Nistp256,
+            Self::Ed25519 => PublicKeyAlgorithm::Ed25519,
+            Self::Unknown(name) => PublicKeyAlgorithm::Unknown(Cow::Owned(name.to_string())),
+        }
+    }
+}
+
 impl<'a> Named<'a> for PublicKeyAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
+            "ecdsa-sha2-nistp256" => Self::EcdsaSha2Nistp256,
             "ssh-ed25519" => Self::Ed25519,
             _ => Self::Unknown(Cow::Borrowed(name)),
         }
@@ -134,6 +148,7 @@ impl<'a> Named<'a> for PublicKeyAlgorithm<'a> {
 
     fn name(&self) -> &str {
         match self {
+            Self::EcdsaSha2Nistp256 => "ecdsa-sha2-nistp256",
             Self::Ed25519 => "ssh-ed25519",
             Self::Unknown(name) => name,
         }
