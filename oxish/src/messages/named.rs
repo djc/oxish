@@ -1,7 +1,7 @@
 use core::str;
 use std::borrow::Cow;
 
-use super::{Decode, Decoded, Encode};
+use super::base::{Decode, Decoded, Encode};
 use crate::Error;
 
 #[derive(Debug)]
