@@ -31,6 +31,7 @@ pub(crate) enum MessageType {
     Debug,
     ServiceRequest,
     ServiceAccept,
+    ExtInfo,
     KeyExchangeInit,
     NewKeys,
     KeyExchangeEcdhInit,
@@ -82,6 +83,7 @@ impl From<u8> for MessageType {
             4 => Self::Debug,
             5 => Self::ServiceRequest,
             6 => Self::ServiceAccept,
+            7 => Self::ExtInfo,
             20 => Self::KeyExchangeInit,
             21 => Self::NewKeys,
             30 => Self::KeyExchangeEcdhInit,
@@ -119,6 +121,7 @@ impl From<MessageType> for u8 {
             MessageType::Debug => 4,
             MessageType::ServiceRequest => 5,
             MessageType::ServiceAccept => 6,
+            MessageType::ExtInfo => 7,
             MessageType::KeyExchangeInit => 20,
             MessageType::NewKeys => 21,
             MessageType::KeyExchangeEcdhInit => 30,
@@ -238,7 +241,7 @@ pub(crate) enum Completion<T> {
     Incomplete(Option<usize>),
 }
 
-pub(crate) trait Encode: fmt::Debug {
+pub(crate) trait Encode: fmt::Debug + Send + Sync {
     fn encode(&self, buf: &mut Vec<u8>);
 }
 
