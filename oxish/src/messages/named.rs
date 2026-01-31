@@ -1,4 +1,4 @@
-use core::str;
+use core::{fmt, str};
 use std::borrow::Cow;
 
 use super::base::{Decode, Decoded, Encode};
@@ -275,6 +275,8 @@ impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
         })
     }
 }
+
+#[derive(Debug)]
 pub(super) struct OutgoingNameList<'a, T>(pub(super) &'a [T]);
 
 impl<'a, T: Named<'a>> Encode for OutgoingNameList<'_, T> {
@@ -317,7 +319,7 @@ impl<'a, T: Named<'a>> Encode for T {
     }
 }
 
-trait Named<'a> {
+trait Named<'a>: fmt::Debug {
     fn typed(name: &'a str) -> Self;
 
     fn name(&self) -> &str;
