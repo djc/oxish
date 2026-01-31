@@ -238,7 +238,7 @@ pub(crate) enum Completion<T> {
     Incomplete(Option<usize>),
 }
 
-pub(crate) trait Encode {
+pub(crate) trait Encode: fmt::Debug {
     fn encode(&self, buf: &mut Vec<u8>);
 }
 
