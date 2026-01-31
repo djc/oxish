@@ -10,7 +10,7 @@ pub(crate) use base::{Completion, Decode, Decoded, Encode, IncomingPacket, Messa
 mod named;
 pub(crate) use named::{
     CompressionAlgorithm, EncryptionAlgorithm, KeyExchangeAlgorithm, Language, MacAlgorithm,
-    MethodName, PublicKeyAlgorithm, ServiceName,
+    MethodName, PublicKeyAlgorithm, ServiceName, ChannelType,
 };
 use named::{IncomingNameList, OutgoingNameList};
 
@@ -389,27 +389,6 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
             initial_window_size,
             maximum_packet_size,
         })
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) enum ChannelType<'a> {
-    Session,
-    Unknown(&'a str),
-}
-
-impl<'a> Decode<'a> for ChannelType<'a> {
-    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
-        let Decoded { value, next } = <&[u8]>::decode(input)?;
-        let type_str = str::from_utf8(value)
-            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in channel type"))?;
-
-        let value = match type_str {
-            "session" => ChannelType::Session,
-            name => ChannelType::Unknown(name),
-        };
-
-        Ok(Decoded { value, next })
     }
 }
 

@@ -72,6 +72,28 @@ impl PartialEq for ServiceName<'_> {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) enum ChannelType<'a> {
+    Session,
+    Unknown(&'a str),
+}
+
+impl<'a> Named<'a> for ChannelType<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "session" => Self::Session,
+            _ => Self::Unknown(name),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Session => "session",
+            Self::Unknown(name) => name,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KeyExchangeAlgorithm<'a> {
     /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
