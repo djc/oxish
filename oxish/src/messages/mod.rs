@@ -10,7 +10,7 @@ pub(crate) use base::{Completion, Decode, Decoded, Encode, IncomingPacket, Messa
 mod named;
 pub(crate) use named::{
     CompressionAlgorithm, EncryptionAlgorithm, KeyExchangeAlgorithm, Language, MacAlgorithm,
-    MethodName, PublicKeyAlgorithm,
+    MethodName, PublicKeyAlgorithm, ServiceName,
 };
 use named::{IncomingNameList, OutgoingNameList};
 
@@ -336,49 +336,6 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
         }
 
         Ok(ServiceRequest { service_name })
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum ServiceName<'a> {
-    UserAuth,
-    Connection,
-    Unknown(&'a str),
-}
-
-impl<'a> ServiceName<'a> {
-    pub(crate) fn as_str(&self) -> &'a str {
-        match self {
-            ServiceName::UserAuth => "ssh-userauth",
-            ServiceName::Connection => "ssh-connection",
-            ServiceName::Unknown(name) => name,
-        }
-    }
-}
-
-impl<'a> Decode<'a> for ServiceName<'a> {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
-        let Decoded { value, next } = <&[u8]>::decode(bytes)?;
-        let value = match str::from_utf8(value) {
-            Ok("ssh-userauth") => ServiceName::UserAuth,
-            Ok("ssh-connection") => ServiceName::Connection,
-            Ok(name) => ServiceName::Unknown(name),
-            Err(_) => return Err(Error::InvalidPacket("invalid UTF-8 in service name")),
-        };
-
-        Ok(Decoded { value, next })
-    }
-}
-
-impl Encode for ServiceName<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        self.as_str().as_bytes().encode(buf);
-    }
-}
-
-impl PartialEq for ServiceName<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
     }
 }
 
