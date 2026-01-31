@@ -1383,25 +1383,6 @@ impl From<MessageType> for u8 {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct PacketLength {
-    pub(crate) inner: u32,
-}
-
-impl Decode<'_> for PacketLength {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
-        let Decoded { value, next } = u32::decode(bytes)?;
-        if value > 256 * 1024 {
-            return Err(Error::InvalidPacket("packet too large"));
-        }
-
-        Ok(Decoded {
-            value: Self { inner: value },
-            next,
-        })
-    }
-}
-
 struct IncomingNameList<T>(Vec<T>);
 
 impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
