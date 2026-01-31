@@ -15,7 +15,7 @@ use tracing::trace;
 
 use crate::{
     key_exchange::RawKeys,
-    messages::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength},
+    messages::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType},
     Error,
 };
 
@@ -74,7 +74,7 @@ impl ReadState {
     }
 
     // This and decode_packet are split because of a borrowck limitation
-    pub(crate) fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, Error> {
+    fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, Error> {
         // Compact the internal buffer
         if self.last_length > 0 {
             self.buf.copy_within(self.last_length.., 0);
@@ -174,7 +174,7 @@ impl ReadState {
         Ok(Completion::Complete((sequence_number, packet_length)))
     }
 
-    pub(crate) fn decode_packet<'a>(
+    fn decode_packet<'a>(
         &'a self,
         sequence_number: u32,
         packet_length: PacketLength,
@@ -486,6 +486,25 @@ impl<'a> EncodedPacket<'a> {
 
     fn without_mac(&self) -> &[u8] {
         self.packet
+    }
+}
+
+#[derive(Debug)]
+struct PacketLength {
+    inner: u32,
+}
+
+impl Decode<'_> for PacketLength {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
+        let Decoded { value, next } = u32::decode(bytes)?;
+        if value > 256 * 1024 {
+            return Err(Error::InvalidPacket("packet too large"));
+        }
+
+        Ok(Decoded {
+            value: Self { inner: value },
+            next,
+        })
     }
 }
 
