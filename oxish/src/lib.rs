@@ -18,6 +18,8 @@ use messages::{
 };
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
+
+use crate::messages::{ExtensionName, KeyExchangeAlgorithm, OutgoingNameList, PublicKeyAlgorithm};
 mod terminal;
 
 /// A single SSH connection
@@ -68,6 +70,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
+        debug!(key_exchange_init = %Pretty(&peer_key_exchange_init), "received key exchange init");
+        let want_extension_info = peer_key_exchange_init
+            .key_exchange_algorithms
+            .contains(&KeyExchangeAlgorithm::ExtInfoC);
         let Ok((key_exchange_init, state)) = state.advance(peer_key_exchange_init, &self.context)
         else {
             return Err(());
@@ -97,6 +103,17 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Exchange new keys packets and install new keys
 
         self.update_keys(keys).await?;
+
+        if want_extension_info {
+            let ext_info = messages::ExtInfo {
+                extensions: vec![(
+                    ExtensionName::ServerSigAlgs,
+                    &OutgoingNameList(&[PublicKeyAlgorithm::EcdsaSha2Nistp256]),
+                )],
+            };
+            self.send(&ext_info, None).await?;
+        }
+
         self.send(&MessageType::Ignore, None).await?;
 
         // Handle authentication
@@ -277,7 +294,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
     async fn send(
         &mut self,
-        payload: &(impl Encode + fmt::Debug),
+        payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,
     ) -> Result<(), ()> {
         if let Err(error) = self.write.handle_packet(payload, exchange_hash) {

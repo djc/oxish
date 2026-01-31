@@ -12,11 +12,11 @@ pub(crate) use channels::{
     ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, Mode, PtyReq,
 };
 mod named;
+use named::IncomingNameList;
 pub(crate) use named::{
-    ChannelType, CompressionAlgorithm, EncryptionAlgorithm, KeyExchangeAlgorithm, Language,
-    MacAlgorithm, MethodName, PublicKeyAlgorithm, ServiceName,
+    ChannelType, CompressionAlgorithm, EncryptionAlgorithm, ExtensionName, KeyExchangeAlgorithm,
+    Language, MacAlgorithm, MethodName, OutgoingNameList, PublicKeyAlgorithm, ServiceName,
 };
-use named::{IncomingNameList, OutgoingNameList};
 
 #[derive(Debug)]
 pub(crate) struct Identification<'a> {
@@ -257,6 +257,22 @@ impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
 impl Encode for NewKeys {
     fn encode(&self, buf: &mut Vec<u8>) {
         MessageType::NewKeys.encode(buf);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ExtInfo<'a> {
+    pub(crate) extensions: Vec<(ExtensionName<'a>, &'a dyn Encode)>,
+}
+
+impl Encode for ExtInfo<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::ExtInfo.encode(buf);
+        (self.extensions.len() as u32).encode(buf);
+        for (name, value) in &self.extensions {
+            name.encode(buf);
+            value.encode(buf);
+        }
     }
 }
 

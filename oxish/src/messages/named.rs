@@ -72,6 +72,28 @@ impl PartialEq for ServiceName<'_> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum ExtensionName<'a> {
+    ServerSigAlgs,
+    Unknown(&'a str),
+}
+
+impl<'a> Named<'a> for ExtensionName<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "server-sig-algs" => Self::ServerSigAlgs,
+            _ => Self::Unknown(name),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::ServerSigAlgs => "server-sig-algs",
+            Self::Unknown(name) => name,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum ChannelType<'a> {
     Session,
@@ -98,6 +120,8 @@ impl<'a> Named<'a> for ChannelType<'a> {
 pub(crate) enum KeyExchangeAlgorithm<'a> {
     /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
     Curve25519Sha256,
+    /// ext-info-c (<https://www.rfc-editor.org/rfc/rfc8308>)
+    ExtInfoC,
     Unknown(&'a str),
 }
 
@@ -105,6 +129,7 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
             "curve25519-sha256" => Self::Curve25519Sha256,
+            "ext-info-c" => Self::ExtInfoC,
             _ => Self::Unknown(name),
         }
     }
@@ -112,6 +137,7 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
     fn name(&self) -> &str {
         match self {
             Self::Curve25519Sha256 => "curve25519-sha256",
+            Self::ExtInfoC => "ext-info-c",
             Self::Unknown(name) => name,
         }
     }
@@ -277,7 +303,7 @@ impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
 }
 
 #[derive(Debug)]
-pub(super) struct OutgoingNameList<'a, T>(pub(super) &'a [T]);
+pub(crate) struct OutgoingNameList<'a, T>(pub(crate) &'a [T]);
 
 impl<'a, T: Named<'a>> Encode for OutgoingNameList<'_, T> {
     fn encode(&self, buf: &mut Vec<u8>) {
@@ -319,7 +345,7 @@ impl<'a, T: Named<'a>> Encode for T {
     }
 }
 
-trait Named<'a>: fmt::Debug {
+trait Named<'a>: fmt::Debug + Send + Sync {
     fn typed(name: &'a str) -> Self;
 
     fn name(&self) -> &str;
