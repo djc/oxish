@@ -25,11 +25,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - run: cargo check --all-features --all-targets
-        env:
-          CARGO_INCREMENTAL: 0 # https://github.com/rust-lang/rust/issues/101518
       - run: cargo test --all-features
-        env:
-          CARGO_INCREMENTAL: 0 # https://github.com/rust-lang/rust/issues/101518
 
   msrv:
     runs-on: ubuntu-latest
@@ -50,8 +46,6 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
-        env:
-          CARGO_INCREMENTAL: 0 # https://github.com/rust-lang/rust/issues/101518
 
   audit:
     runs-on: ubuntu-latest
