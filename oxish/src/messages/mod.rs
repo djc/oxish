@@ -1,6 +1,6 @@
 use core::str;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{Error, IdentificationError};
 
@@ -264,7 +264,7 @@ impl Encode for NewKeys {
 pub(crate) struct UserAuthRequest<'a> {
     pub(crate) user_name: &'a str,
     pub(crate) service_name: ServiceName<'a>,
-    pub(crate) method_name: MethodName<'a>,
+    pub(crate) method: Method<'a>,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
@@ -292,17 +292,160 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
             next,
         } = MethodName::decode(next)?;
 
-        if !next.is_empty() {
-            return Err(Error::InvalidPacket(
-                "method-specific fields currently unsupported",
-            ));
-        }
+        let method = match method_name {
+            MethodName::PublicKey => {
+                let Decoded {
+                    value: public_key,
+                    next,
+                } = PublicKey::decode(next)?;
+
+                if !next.is_empty() {
+                    return Err(Error::InvalidPacket(
+                        "trailing bytes in public key auth request",
+                    ));
+                }
+
+                Method::PublicKey(public_key)
+            }
+            MethodName::None => {
+                if !next.is_empty() {
+                    return Err(Error::InvalidPacket(
+                        "unexpected data after none auth method",
+                    ));
+                }
+                Method::None
+            }
+            _ => {
+                warn!(method = ?method_name, "unsupported authentication method");
+                return Err(Error::InvalidPacket("unsupported authentication method"));
+            }
+        };
 
         Ok(UserAuthRequest {
             user_name,
             service_name,
-            method_name,
+            method,
         })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Method<'a> {
+    PublicKey(PublicKey<'a>),
+    None,
+}
+
+#[derive(Debug)]
+pub(crate) struct PublicKey<'a> {
+    #[expect(dead_code)]
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    #[expect(dead_code)]
+    pub(crate) key_blob: &'a [u8],
+    #[expect(dead_code)]
+    pub(crate) signature: Option<Signature<'a>>,
+}
+
+impl<'a> Decode<'a> for PublicKey<'a> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded {
+            value: has_signature,
+            next,
+        } = bool::decode(input)?;
+
+        let Decoded {
+            value: algorithm,
+            next,
+        } = PublicKeyAlgorithm::decode(next)?;
+
+        let Decoded {
+            value: key_blob,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        let (signature, next) = match (has_signature, next.is_empty()) {
+            (false, true) => (None, next),
+            (false, false) => {
+                return Err(Error::InvalidPacket(
+                    "trailing bytes in public key auth without signature",
+                ))
+            }
+            (true, _) => {
+                let Decoded {
+                    value: signature,
+                    next,
+                } = Signature::decode(next)?;
+
+                if !next.is_empty() {
+                    return Err(Error::InvalidPacket(
+                        "trailing bytes in public key auth with signature",
+                    ));
+                }
+
+                (Some(signature), next)
+            }
+        };
+
+        Ok(Decoded {
+            value: PublicKey {
+                algorithm,
+                key_blob,
+                signature,
+            },
+            next,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Signature<'a> {
+    #[expect(dead_code)]
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    #[expect(dead_code)]
+    pub(crate) signature_blob: &'a [u8],
+}
+
+impl<'a> Decode<'a> for Signature<'a> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+        let Decoded { value: input, next } = <&[u8]>::decode(input)?;
+        if !next.is_empty() {
+            return Err(Error::InvalidPacket("extra data in ECDSA signature data"));
+        }
+
+        let Decoded {
+            value: algorithm,
+            next,
+        } = PublicKeyAlgorithm::decode(input)?;
+
+        let Decoded {
+            value: signature_blob,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        if !next.is_empty() {
+            return Err(Error::InvalidPacket("extra data in ECDSA signature blob"));
+        }
+
+        Ok(Decoded {
+            value: Signature {
+                algorithm,
+                signature_blob,
+            },
+            next,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct UserAuthFailure<'a> {
+    pub(crate) can_continue: &'a [MethodName<'a>],
+    pub(crate) partial_success: bool,
+}
+
+impl Encode for UserAuthFailure<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::UserAuthFailure.encode(buf);
+        OutgoingNameList(self.can_continue).encode(buf);
+        self.partial_success.encode(buf);
     }
 }
 
