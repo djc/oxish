@@ -32,7 +32,7 @@ use tokio::{
     io::unix::AsyncFd,
     process::{Child, Command},
 };
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::messages::{Mode, PtyReq};
 
@@ -161,7 +161,7 @@ fn apply_terminal_modes_inner<F: AsFd>(fd: F, modes: &BTreeMap<Mode, u32>) -> io
     debug!("getting current terminal attributes");
     let mut tio = termios::tcgetattr(&fd)?;
     for (&mode, &value) in modes {
-        debug!(?mode, value, "applying terminal mode");
+        trace!(?mode, value, "applying terminal mode");
         match mode {
             // Special characters (control characters)
             Mode::VIntr => tio.special_codes[SpecialCodeIndex::VINTR] = value as u8,
