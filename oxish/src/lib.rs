@@ -1,7 +1,15 @@
-use core::{fmt, future, net::SocketAddr};
-use std::{io, str, sync::Arc};
+use core::{ffi::c_char, fmt, future, net::SocketAddr};
+use std::{
+    ffi::{c_char, CStr, CString, OsStr},
+    io,
+    os::unix::ffi::OsStrExt,
+    path::PathBuf,
+    str,
+    sync::Arc,
+};
 
 use aws_lc_rs::signature::Ed25519KeyPair;
+use libc::{getpwnam_r, sysconf, _SC_GETPW_R_SIZE_MAX};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
@@ -199,6 +207,22 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 continue;
             }
 
+            let _user = match User::new(user_auth_request.user_name) {
+                Ok(user) => dbg!(user),
+                Err(error) => {
+                    error!(%error, "failed to get user information");
+                    self.send(
+                        &UserAuthFailure {
+                            can_continue: &[MethodName::PublicKey],
+                            partial_success: false,
+                        },
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+
             debug!(?public_key, "received public key authentication request");
             break user_auth_request;
         };
@@ -330,6 +354,60 @@ struct ConnectionContext {
     host_key: Arc<Ed25519KeyPair>,
 }
 
+#[derive(Debug)]
+struct User<'a> {
+    #[expect(dead_code)]
+    name: &'a str,
+    #[expect(dead_code)]
+    home_dir: PathBuf,
+}
+
+impl<'a> User<'a> {
+    fn new(name: &'a str) -> Result<Self, Error> {
+        let c_name = CString::new(name).map_err(|_| Error::InvalidUsername)?;
+        let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
+            -1 => 1024,
+            n => Ord::min(n as usize, 1_048_576),
+        };
+
+        let mut buf = vec![0u8; buf_len];
+        let mut pwd = unsafe { core::mem::zeroed() };
+        let mut result = core::ptr::null_mut();
+
+        let ret = unsafe {
+            getpwnam_r(
+                c_name.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr().cast::<c_char>(),
+                buf_len,
+                &mut result,
+            )
+        };
+
+        let home_dir = if ret != 0 {
+            let error = io::Error::from_raw_os_error(ret);
+            debug!(%error, %name, "failed to get user information");
+            Self::FAKE_HOME
+        } else if result.is_null() {
+            debug!(%name, "user not found");
+            Self::FAKE_HOME
+        } else {
+            debug!(user = %name, "found home dir");
+            pwd.pw_dir
+        };
+
+        // SAFETY: `result` is non-null, so `pwd.pw_dir` was populated by `getpwnam_r`.
+        // The `pwd` struct and `buf` are still alive, so the pointer is valid.
+        let home = unsafe { CStr::from_ptr(home_dir) };
+        Ok(Self {
+            name,
+            home_dir: PathBuf::from(OsStr::from_bytes(home.to_bytes())),
+        })
+    }
+
+    const FAKE_HOME: *const i8 = b"/var/empty\0".as_ptr().cast::<i8>();
+}
+
 #[derive(Default)]
 struct VersionExchange(());
 
@@ -388,6 +466,8 @@ impl VersionExchange {
 enum Error {
     #[error("failed to parse identification: {0}")]
     Identification(#[from] IdentificationError),
+    #[error("invalid user name")]
+    InvalidUsername,
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
     #[error("incomplete message: {0:?}")]
