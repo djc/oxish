@@ -15,7 +15,7 @@ mod named;
 use named::IncomingNameList;
 pub(crate) use named::{
     ChannelType, CompressionAlgorithm, EncryptionAlgorithm, ExtensionName, KeyExchangeAlgorithm,
-    Language, MacAlgorithm, MethodName, OutgoingNameList, PublicKeyAlgorithm, ServiceName,
+    Language, MacAlgorithm, MethodName, Named, OutgoingNameList, PublicKeyAlgorithm, ServiceName,
 };
 
 #[derive(Debug)]

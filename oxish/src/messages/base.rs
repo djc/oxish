@@ -249,6 +249,7 @@ pub(crate) trait Decode<'a>: Sized {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error>;
 }
 
+#[derive(Debug)]
 pub(crate) struct Decoded<'a, T> {
     pub(crate) value: T,
     pub(crate) next: &'a [u8],
