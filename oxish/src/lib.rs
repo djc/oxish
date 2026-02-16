@@ -186,6 +186,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 continue;
             };
 
+            if public_key.algorithm != PublicKeyAlgorithm::EcdsaSha2Nistp256 {
+                warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
+                self.send(
+                    &UserAuthFailure {
+                        can_continue: &[MethodName::PublicKey],
+                        partial_success: false,
+                    },
+                    None,
+                )
+                .await?;
+                continue;
+            }
+
             debug!(?public_key, "received public key authentication request");
             break user_auth_request;
         };

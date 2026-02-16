@@ -353,7 +353,6 @@ pub(crate) enum Method<'a> {
 
 #[derive(Debug)]
 pub(crate) struct PublicKey<'a> {
-    #[expect(dead_code)]
     pub(crate) algorithm: PublicKeyAlgorithm<'a>,
     #[expect(dead_code)]
     pub(crate) key_blob: &'a [u8],
