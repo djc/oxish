@@ -354,7 +354,6 @@ pub(crate) enum Method<'a> {
 #[derive(Debug)]
 pub(crate) struct PublicKey<'a> {
     pub(crate) algorithm: PublicKeyAlgorithm<'a>,
-    #[expect(dead_code)]
     pub(crate) key_blob: &'a [u8],
     #[expect(dead_code)]
     pub(crate) signature: Option<Signature<'a>>,

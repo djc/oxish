@@ -237,7 +237,27 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 },
             };
 
-            let _authorized_keys = dbg!(&*user.authorized_keys);
+            let matching_key = user
+                .authorized_keys
+                .iter()
+                .find(|key| key.blob.as_slice() == public_key.key_blob);
+            let Some(AuthorizedKey {
+                key: authorized_key,
+                ..
+            }) = matching_key
+            else {
+                self.send(
+                    &UserAuthFailure {
+                        can_continue: &[MethodName::PublicKey],
+                        partial_success: false,
+                    },
+                    None,
+                )
+                .await?;
+                continue;
+            };
+
+            dbg!(&authorized_key);
             debug!(?public_key, "received public key authentication request");
             break user_auth_request;
         };
@@ -596,7 +616,6 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
 }
 
 struct AuthorizedKey {
-    #[expect(dead_code)]
     blob: Vec<u8>,
     key: UnparsedPublicKey<Box<[u8]>>,
 }
