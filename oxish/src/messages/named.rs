@@ -345,7 +345,7 @@ impl<'a, T: Named<'a>> Encode for T {
     }
 }
 
-trait Named<'a>: fmt::Debug + Send + Sync {
+pub(crate) trait Named<'a>: fmt::Debug + Send + Sync {
     fn typed(name: &'a str) -> Self;
 
     fn name(&self) -> &str;

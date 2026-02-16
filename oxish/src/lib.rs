@@ -1,15 +1,25 @@
-use core::{ffi::c_char, fmt, future, net::SocketAddr};
+use core::{ffi::c_char, fmt, future, net::SocketAddr, ops::ControlFlow};
+#[cfg(target_vendor = "apple")]
+use std::os::darwin::fs::MetadataExt;
+#[cfg(target_os = "linux")]
+use std::os::linux::fs::MetadataExt;
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "linux")))]
+use std::os::unix::fs::MetadataExt;
 use std::{
-    ffi::{c_char, CStr, CString, OsStr},
-    io,
-    os::unix::ffi::OsStrExt,
-    path::PathBuf,
+    ffi::{CStr, CString, OsStr},
+    fs::File,
+    io::{self, Read},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStrExt,
+    },
+    path::{Path, PathBuf},
     str,
     sync::Arc,
 };
 
-use aws_lc_rs::signature::Ed25519KeyPair;
-use libc::{getpwnam_r, sysconf, _SC_GETPW_R_SIZE_MAX};
+use aws_lc_rs::signature::{self, Ed25519KeyPair, UnparsedPublicKey};
+use libc::{getpwnam_r, sysconf, O_DIRECTORY, O_RDONLY, _SC_GETPW_R_SIZE_MAX};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
@@ -20,9 +30,9 @@ mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
 mod messages;
 use messages::{
-    Completion, Decoded, Disconnect, DisconnectReason, Encode, Identification, KeyExchangeInit,
-    MessageType, Method, MethodName, NewKeys, ServiceAccept, ServiceName, ServiceRequest,
-    UserAuthFailure, UserAuthRequest, PROTOCOL,
+    Completion, Decode, Decoded, Disconnect, DisconnectReason, Encode, Identification,
+    KeyExchangeInit, MessageType, Method, MethodName, Named, NewKeys, ServiceAccept, ServiceName,
+    ServiceRequest, UserAuthFailure, UserAuthRequest, PROTOCOL,
 };
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
@@ -155,6 +165,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
         self.send(&service_accept, None).await?;
 
+        let mut cached_user = None::<User>;
         let user_auth_request = loop {
             let packet = self.read.packet(&mut self.stream).await?;
             let user_auth_request = match UserAuthRequest::try_from(packet) {
@@ -207,22 +218,26 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 continue;
             }
 
-            let _user = match User::new(user_auth_request.user_name) {
-                Ok(user) => dbg!(user),
-                Err(error) => {
-                    error!(%error, "failed to get user information");
-                    self.send(
-                        &UserAuthFailure {
-                            can_continue: &[MethodName::PublicKey],
-                            partial_success: false,
-                        },
-                        None,
-                    )
-                    .await?;
-                    continue;
-                }
+            let user = match &mut cached_user {
+                Some(user) if user.name == user_auth_request.user_name => user,
+                _ => match User::new(user_auth_request.user_name) {
+                    Ok(new) => cached_user.insert(new),
+                    Err(error) => {
+                        error!(%error, "failed to get user information");
+                        self.send(
+                            &UserAuthFailure {
+                                can_continue: &[MethodName::PublicKey],
+                                partial_success: false,
+                            },
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
+                },
             };
 
+            let _authorized_keys = dbg!(&*user.authorized_keys);
             debug!(?public_key, "received public key authentication request");
             break user_auth_request;
         };
@@ -355,15 +370,17 @@ struct ConnectionContext {
 }
 
 #[derive(Debug)]
-struct User<'a> {
+struct User {
+    name: String,
     #[expect(dead_code)]
-    name: &'a str,
+    id: u32,
     #[expect(dead_code)]
     home_dir: PathBuf,
+    authorized_keys: Vec<AuthorizedKey>,
 }
 
-impl<'a> User<'a> {
-    fn new(name: &'a str) -> Result<Self, Error> {
+impl User {
+    fn new(name: &str) -> Result<Self, Error> {
         let c_name = CString::new(name).map_err(|_| Error::InvalidUsername)?;
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
@@ -396,16 +413,200 @@ impl<'a> User<'a> {
             pwd.pw_dir
         };
 
-        // SAFETY: `result` is non-null, so `pwd.pw_dir` was populated by `getpwnam_r`.
-        // The `pwd` struct and `buf` are still alive, so the pointer is valid.
-        let home = unsafe { CStr::from_ptr(home_dir) };
+        // SAFETY: if `ret` is 0 (signifying success) and `result` is non-null, `pwd.pw_dir`
+        // was populated by `getpwnam_r`, the `pwd` struct and `buf` are still alive, so the
+        // pointer is valid; otherwise, `home_dir` is set to a static string. In either case,
+        // `home_dir` is a valid pointer to a null-terminated C string.
+        let home_dir = PathBuf::from(OsStr::from_bytes(
+            unsafe { CStr::from_ptr(home_dir) }.to_bytes(),
+        ));
+
+        let id = match (ret, result.is_null()) {
+            (0, false) => pwd.pw_uid,
+            _ => u32::MAX,
+        };
+
         Ok(Self {
-            name,
-            home_dir: PathBuf::from(OsStr::from_bytes(home.to_bytes())),
+            name: name.to_owned(),
+            id,
+            authorized_keys: authorized_keys(&home_dir, id),
+            home_dir,
         })
     }
 
-    const FAKE_HOME: *const i8 = b"/var/empty\0".as_ptr().cast::<i8>();
+    const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
+}
+
+/// Read and parse the `authorized_keys` file for a user
+///
+/// This is pretty finicky because we need to check that
+///
+/// - None of the path components have group or other write permissions
+/// - Each of the path components are owned by root or the target user
+/// - Avoid TOCTOU issues when opening each path component
+fn authorized_keys(home_dir: &Path, uid: u32) -> Vec<AuthorizedKey> {
+    let home = match File::open(home_dir) {
+        Ok(file) => file,
+        Err(error) => {
+            warn!(%error, ?home_dir, "failed to open home directory");
+            return Vec::new();
+        }
+    };
+
+    match check_permissions(&home, uid, "home directory") {
+        ControlFlow::Continue(()) => {}
+        ControlFlow::Break(()) => {
+            warn!(?home_dir, "bad permissions on home directory");
+            return Vec::new();
+        }
+    };
+
+    let ssh_dir = match open_in_dir(&home, ".ssh", O_DIRECTORY) {
+        Ok(file) => file,
+        Err(error) => {
+            warn!(%error, ?home_dir, "failed to open .ssh directory");
+            return Vec::new();
+        }
+    };
+
+    match check_permissions(&ssh_dir, uid, ".ssh directory") {
+        ControlFlow::Continue(()) => {}
+        ControlFlow::Break(()) => {
+            warn!(?home_dir, "bad permissions on .ssh directory");
+            return Vec::new();
+        }
+    };
+
+    let mut key_file = match open_in_dir(&ssh_dir, "authorized_keys", O_RDONLY) {
+        Ok(file) => file,
+        Err(error) => {
+            warn!(%error, ?home_dir, "failed to open authorized keys file");
+            return Vec::new();
+        }
+    };
+
+    match check_permissions(&key_file, uid, "authorized keys file") {
+        ControlFlow::Continue(()) => {}
+        ControlFlow::Break(()) => {
+            warn!(?home_dir, "bad permissions on authorized keys file");
+            return Vec::new();
+        }
+    };
+
+    let mut contents = String::new();
+    if let Err(error) = key_file.read_to_string(&mut contents) {
+        warn!(%error, ?home_dir, "failed to read authorized keys file");
+        return Vec::new();
+    };
+
+    let mut keys = Vec::new();
+    for (line, key) in contents.lines().enumerate() {
+        let line = line + 1;
+        let key = match key.split_once('#') {
+            Some((contents, _)) => contents,
+            None => key,
+        }
+        .trim();
+
+        let mut parts = key.split_whitespace();
+        let Some(alg) = parts.next() else {
+            debug!(line, "missing algorithm");
+            continue;
+        };
+
+        // TODO: support options before key type
+        let alg = match PublicKeyAlgorithm::typed(alg) {
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => &signature::ECDSA_P256_SHA256_FIXED,
+            algorithm => {
+                warn!(
+                    ?algorithm,
+                    line, "unsupported public key algorithm in authorized keys file"
+                );
+                continue;
+            }
+        };
+
+        let Some(key_data) = parts.next() else {
+            debug!(line, "missing key data");
+            continue;
+        };
+
+        let Ok(blob) = data_encoding::BASE64.decode(key_data.as_bytes()) else {
+            debug!(line, "invalid base64 key data");
+            continue;
+        };
+
+        let next = match <&[u8]>::decode(&blob) {
+            // Unused `key_type` field, should match `alg`
+            Ok(Decoded { next, .. }) => next,
+            Err(error) => {
+                debug!(%error, line, "invalid key type");
+                continue;
+            }
+        };
+
+        let next = match <&[u8]>::decode(next) {
+            // Unused `curve_name` field
+            Ok(Decoded { next, .. }) => next,
+            Err(error) => {
+                debug!(%error, line, "invalid curve name");
+                continue;
+            }
+        };
+
+        let q = match <&[u8]>::decode(next) {
+            // TODO: what does the trailing data mean?
+            Ok(Decoded { value: q, .. }) => q,
+            Err(error) => {
+                debug!(%error, line, "invalid public key data");
+                continue;
+            }
+        };
+
+        keys.push(AuthorizedKey {
+            key: UnparsedPublicKey::new(alg, Box::from(q)),
+            blob,
+        });
+    }
+
+    keys
+}
+
+fn open_in_dir(dir: &File, name: &str, flags: libc::c_int) -> Result<File, io::Error> {
+    let c_name = CString::new(name)?;
+    match unsafe { libc::openat(dir.as_raw_fd(), c_name.as_ptr(), flags) } {
+        -1 => Err(io::Error::last_os_error()),
+        fd => Ok(unsafe { File::from_raw_fd(fd) }),
+    }
+}
+
+fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
+    let meta = match file.metadata() {
+        Ok(meta) => meta,
+        Err(error) => {
+            warn!(%error, level, "failed to get metadata");
+            return ControlFlow::Break(());
+        }
+    };
+
+    match meta.st_mode() & 0o022 == 0 && (meta.st_uid() == 0 || meta.st_uid() == uid) {
+        true => ControlFlow::Continue(()),
+        false => ControlFlow::Break(()),
+    }
+}
+
+struct AuthorizedKey {
+    #[expect(dead_code)]
+    blob: Vec<u8>,
+    key: UnparsedPublicKey<Box<[u8]>>,
+}
+
+impl fmt::Debug for AuthorizedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizedKey")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Default)]
