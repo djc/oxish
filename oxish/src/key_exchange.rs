@@ -29,7 +29,7 @@ impl EcdhKeyExchange {
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
         cx: &ConnectionContext,
-    ) -> Result<(EcdhKeyExchangeReply, RawKeySet), ()> {
+    ) -> Result<(EcdhKeyExchangeReply, digest::Digest, RawKeySet), ()> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
@@ -86,14 +86,16 @@ impl EcdhKeyExchange {
         };
 
         // The first exchange hash is used as session id.
+        let session_id = self.session_id.unwrap_or(exchange_hash);
         let derivation = KeyDerivation {
             shared_secret,
             exchange_hash,
-            session_id: Arc::new(self.session_id.unwrap_or(exchange_hash)),
+            session_id: Arc::new(session_id),
         };
 
         Ok((
             key_exchange_reply,
+            session_id,
             RawKeySet {
                 client_to_server: RawKeys::client_to_server(&derivation),
                 server_to_client: RawKeys::server_to_client(&derivation),
