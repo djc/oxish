@@ -153,7 +153,6 @@ pub(crate) enum PublicKeyAlgorithm<'a> {
 }
 
 impl PublicKeyAlgorithm<'_> {
-    #[expect(dead_code)]
     pub(crate) fn to_owned(&self) -> PublicKeyAlgorithm<'static> {
         match self {
             Self::EcdsaSha2Nistp256 => PublicKeyAlgorithm::EcdsaSha2Nistp256,

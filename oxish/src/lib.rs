@@ -6,6 +6,7 @@ use std::os::linux::fs::MetadataExt;
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "linux")))]
 use std::os::unix::fs::MetadataExt;
 use std::{
+    borrow::Cow,
     ffi::{CStr, CString, OsStr},
     fs::File,
     io::{self, Read},
@@ -21,7 +22,10 @@ use std::{
 use aws_lc_rs::signature::{self, Ed25519KeyPair, UnparsedPublicKey};
 use libc::{getpwnam_r, sysconf, O_DIRECTORY, O_RDONLY, _SC_GETPW_R_SIZE_MAX};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    task::spawn_blocking,
+};
 use tracing::{debug, error, info, instrument, warn};
 
 mod connections;
@@ -37,7 +41,10 @@ use messages::{
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
 
-use crate::messages::{ExtensionName, KeyExchangeAlgorithm, OutgoingNameList, PublicKeyAlgorithm};
+use crate::messages::{
+    ExtensionName, KeyExchangeAlgorithm, OutgoingNameList, PublicKeyAlgorithm, Signature,
+    SignatureData, UserAuthPkOk,
+};
 mod terminal;
 
 /// A single SSH connection
@@ -110,7 +117,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        let Ok((key_exchange_reply, _session_id, keys)) =
+        let Ok((key_exchange_reply, session_id, keys)) =
             state.advance(ecdh_key_exchange_init, exchange, &self.context)
         else {
             return Err(());
@@ -166,7 +173,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         self.send(&service_accept, None).await?;
 
         let mut cached_user = None::<User>;
-        let user_auth_request = loop {
+        let _user = loop {
             let packet = self.read.packet(&mut self.stream).await?;
             let user_auth_request = match UserAuthRequest::try_from(packet) {
                 Ok(req) => req,
@@ -191,7 +198,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 return Err(());
             }
 
-            let Method::PublicKey(public_key) = &user_auth_request.method else {
+            let Method::PublicKey(public_key) = user_auth_request.method else {
                 warn!(
                     method = ?user_auth_request.method,
                     "unsupported authentication method requested"
@@ -237,35 +244,82 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 },
             };
 
-            let matching_key = user
-                .authorized_keys
-                .iter()
-                .find(|key| key.blob.as_slice() == public_key.key_blob);
-            let Some(AuthorizedKey {
-                key: authorized_key,
-                ..
-            }) = matching_key
-            else {
-                self.send(
-                    &UserAuthFailure {
-                        can_continue: &[MethodName::PublicKey],
-                        partial_success: false,
-                    },
-                    None,
-                )
-                .await?;
-                continue;
+            let authorized_key = user.authorized_keys.iter().find(|key| {
+                key.algorithm == public_key.algorithm && key.blob.as_slice() == public_key.key_blob
+            });
+
+            let (sig, authorized_key) = match (public_key.signature, authorized_key) {
+                // Signature, authorized key => verify signature
+                (Some(sig), Some(key)) if sig.algorithm == key.algorithm => (sig, key.clone()),
+                // Signature, no authorized key => verify signature against fake key
+                (Some(sig), None) => (sig, AuthorizedKey::fake()),
+                // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
+                (Some(_), Some(_)) => {
+                    warn!(
+                        algorithm = ?public_key.algorithm,
+                        "mismatched signature algorithm in authentication request"
+                    );
+                    self.send(
+                        &UserAuthFailure {
+                            can_continue: &[MethodName::PublicKey],
+                            partial_success: false,
+                        },
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+                // No signature, authorized key => send pk-ok and wait for signature
+                (None, Some(_)) => {
+                    let pk_ok = UserAuthPkOk {
+                        algorithm: public_key.algorithm.to_owned(),
+                        key_blob: Cow::Owned(public_key.key_blob.to_vec()),
+                    };
+                    debug!(ok = ?pk_ok, "sending pk-ok for user");
+                    self.send(&pk_ok, None).await?;
+                    continue;
+                }
+                // No signature, no authorized key => fail authentication
+                (None, None) => {
+                    self.send(
+                        &UserAuthFailure {
+                            can_continue: &[MethodName::PublicKey],
+                            partial_success: false,
+                        },
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
             };
 
-            dbg!(&authorized_key);
-            debug!(?public_key, "received public key authentication request");
-            break user_auth_request;
+            let message = SignatureData {
+                session_id: session_id.as_ref(),
+                user_name: &user.name,
+                service_name: user_auth_request.service_name,
+                algorithm: public_key.algorithm,
+                public_key: public_key.key_blob,
+            };
+
+            match authorized_key.verify(message, sig).await {
+                Ok(()) => {
+                    info!(user = %user.name, "authentication successful");
+                    self.send(&MessageType::UserAuthSuccess, None).await?;
+                    break user;
+                }
+                _ => {
+                    self.send(
+                        &UserAuthFailure {
+                            can_continue: &[MethodName::PublicKey],
+                            partial_success: false,
+                        },
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+            }
         };
-
-        #[expect(unused_variables)]
-        let user = user_auth_request.user_name.to_owned();
-        self.send(&MessageType::UserAuthSuccess, None).await?;
-
         // Main loop for handling channel messages
 
         loop {
@@ -396,6 +450,10 @@ struct User {
     id: u32,
     #[expect(dead_code)]
     home_dir: PathBuf,
+    /// Cached authorized keys for the user
+    ///
+    /// Since finding the authorized keys can be somewhat expensive, prefer to cache them
+    /// here so we can reuse them across attempts for the same user.
     authorized_keys: Vec<AuthorizedKey>,
 }
 
@@ -535,7 +593,8 @@ fn authorized_keys(home_dir: &Path, uid: u32) -> Vec<AuthorizedKey> {
         };
 
         // TODO: support options before key type
-        let alg = match PublicKeyAlgorithm::typed(alg) {
+        let algorithm = PublicKeyAlgorithm::typed(alg);
+        let alg = match algorithm {
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => &signature::ECDSA_P256_SHA256_FIXED,
             algorithm => {
                 warn!(
@@ -584,7 +643,8 @@ fn authorized_keys(home_dir: &Path, uid: u32) -> Vec<AuthorizedKey> {
         };
 
         keys.push(AuthorizedKey {
-            key: UnparsedPublicKey::new(alg, Box::from(q)),
+            algorithm: algorithm.to_owned(),
+            key: UnparsedPublicKey::new(alg, Cow::Owned(q.to_vec())),
             blob,
         });
     }
@@ -615,9 +675,88 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
     }
 }
 
+#[derive(Clone)]
 struct AuthorizedKey {
+    algorithm: PublicKeyAlgorithm<'static>,
     blob: Vec<u8>,
-    key: UnparsedPublicKey<Box<[u8]>>,
+    key: UnparsedPublicKey<Cow<'static, [u8]>>,
+}
+
+impl AuthorizedKey {
+    fn fake() -> Self {
+        Self {
+            algorithm: PublicKeyAlgorithm::EcdsaSha2Nistp256,
+            blob: Vec::new(),
+            key: UnparsedPublicKey::new(
+                &signature::ECDSA_P256_SHA256_FIXED,
+                Cow::Borrowed(&Self::FAKE_KEY[..]),
+            ),
+        }
+    }
+
+    async fn verify(
+        &self,
+        message: SignatureData<'_>,
+        signature: Signature<'_>,
+    ) -> Result<(), Error> {
+        match &self.algorithm {
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
+                let Decoded {
+                    value: r,
+                    next: rest,
+                } = <&[u8]>::decode(signature.signature_blob)?;
+
+                let Decoded { value: s, next } = <&[u8]>::decode(rest)?;
+                if !next.is_empty() {
+                    return Err(Error::InvalidPacket(
+                        "extra data after ECDSA signature components",
+                    ));
+                }
+
+                let mut fixed = [0u8; 64];
+                if mpint_to_fixed(r, &mut fixed[..64 / 2]).is_none() {
+                    return Err(Error::InvalidPacket(
+                        "failure to decode r in ECDSA signature",
+                    ));
+                }
+
+                if mpint_to_fixed(s, &mut fixed[64 / 2..]).is_none() {
+                    return Err(Error::InvalidPacket(
+                        "failure to decode s in ECDSA signature",
+                    ));
+                }
+
+                let encoded = message.encode();
+                let key = self.key.clone();
+                spawn_blocking(move || {
+                    key.verify(&encoded, &fixed)
+                        .map_err(|_| Error::InvalidPacket("invalid signature"))
+                })
+                .await
+                .map_err(|_| Error::InvalidPacket("signature verification task failed"))?
+            }
+            algorithm => {
+                warn!(
+                    ?algorithm,
+                    "unsupported public key algorithm for verification"
+                );
+                Err(Error::InvalidPacket(
+                    "unsupported public key algorithm for verification",
+                ))
+            }
+        }
+    }
+
+    /// A random key used to mitigate timing attacks during authentication.
+    ///
+    /// When no matching authorized key is found, we still perform signature
+    /// verification against this key so the response time is consistent.
+    const FAKE_KEY: [u8; 65] = [
+        4, 78, 12, 149, 151, 123, 231, 212, 239, 236, 97, 37, 76, 163, 223, 212, 61, 5, 10, 96,
+        214, 7, 210, 196, 146, 69, 178, 104, 253, 196, 241, 61, 7, 253, 242, 178, 22, 112, 52, 123,
+        76, 129, 155, 245, 233, 144, 111, 94, 173, 252, 107, 114, 3, 36, 2, 237, 66, 51, 119, 181,
+        246, 15, 91, 101, 104,
+    ];
 }
 
 impl fmt::Debug for AuthorizedKey {
@@ -626,6 +765,22 @@ impl fmt::Debug for AuthorizedKey {
             .field("key", &self.key)
             .finish_non_exhaustive()
     }
+}
+
+/// Convert an SSH mpint to a fixed-width big-endian representation
+fn mpint_to_fixed(mpint: &[u8], out: &mut [u8]) -> Option<()> {
+    let data = match mpint.split_first() {
+        Some((&0, rest)) if !rest.is_empty() => rest,
+        _ => mpint,
+    };
+
+    if data.len() > out.len() {
+        return None;
+    }
+
+    let offset = out.len() - data.len();
+    out[offset..].copy_from_slice(data);
+    Some(())
 }
 
 #[derive(Default)]
