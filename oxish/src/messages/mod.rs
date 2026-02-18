@@ -1,4 +1,5 @@
 use core::str;
+use std::borrow::Cow;
 
 use tracing::{debug, warn};
 
@@ -355,7 +356,6 @@ pub(crate) enum Method<'a> {
 pub(crate) struct PublicKey<'a> {
     pub(crate) algorithm: PublicKeyAlgorithm<'a>,
     pub(crate) key_blob: &'a [u8],
-    #[expect(dead_code)]
     pub(crate) signature: Option<Signature<'a>>,
 }
 
@@ -412,9 +412,7 @@ impl<'a> Decode<'a> for PublicKey<'a> {
 
 #[derive(Debug)]
 pub(crate) struct Signature<'a> {
-    #[expect(dead_code)]
     pub(crate) algorithm: PublicKeyAlgorithm<'a>,
-    #[expect(dead_code)]
     pub(crate) signature_blob: &'a [u8],
 }
 
@@ -460,6 +458,44 @@ impl Encode for UserAuthFailure<'_> {
         MessageType::UserAuthFailure.encode(buf);
         OutgoingNameList(self.can_continue).encode(buf);
         self.partial_success.encode(buf);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct UserAuthPkOk<'a> {
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    pub(crate) key_blob: Cow<'a, [u8]>,
+}
+
+impl Encode for UserAuthPkOk<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::UserAuthPkOk.encode(buf);
+        self.algorithm.encode(buf);
+        self.key_blob.encode(buf);
+    }
+}
+
+pub(crate) struct SignatureData<'a> {
+    pub(crate) session_id: &'a [u8],
+    pub(crate) user_name: &'a str,
+    pub(crate) service_name: ServiceName<'a>,
+    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
+    pub(crate) public_key: &'a [u8],
+}
+
+impl<'a> SignatureData<'a> {
+    /// Build the data that the client signs for public key authentication (RFC 4252 Section 7)
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.session_id.encode(&mut buf);
+        MessageType::UserAuthRequest.encode(&mut buf);
+        self.user_name.as_bytes().encode(&mut buf);
+        self.service_name.encode(&mut buf);
+        MethodName::PublicKey.encode(&mut buf);
+        true.encode(&mut buf);
+        self.algorithm.encode(&mut buf);
+        self.public_key.encode(&mut buf);
+        buf
     }
 }
 
