@@ -110,7 +110,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        let Ok((key_exchange_reply, keys)) =
+        let Ok((key_exchange_reply, _session_id, keys)) =
             state.advance(ecdh_key_exchange_init, exchange, &self.context)
         else {
             return Err(());
