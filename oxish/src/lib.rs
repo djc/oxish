@@ -180,22 +180,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     method = ?user_auth_request.method,
                     "unsupported authentication method requested"
                 );
-
-                let failure = UserAuthFailure {
-                    can_continue: &[MethodName::PublicKey],
-                    partial_success: false,
-                };
-                self.send(&failure).await?;
+                self.send_auth_failed().await?;
                 continue;
             };
 
             if public_key.algorithm != PublicKeyAlgorithm::EcdsaSha2Nistp256 {
                 warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
-                self.send(&UserAuthFailure {
-                    can_continue: &[MethodName::PublicKey],
-                    partial_success: false,
-                })
-                .await?;
+                self.send_auth_failed().await?;
                 continue;
             }
 
@@ -205,11 +196,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     Ok(new) => cached_user.insert(new),
                     Err(error) => {
                         error!(%error, "failed to get user information");
-                        self.send(&UserAuthFailure {
-                            can_continue: &[MethodName::PublicKey],
-                            partial_success: false,
-                        })
-                        .await?;
+                        self.send_auth_failed().await?;
                         continue;
                     }
                 },
@@ -230,11 +217,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                         algorithm = ?public_key.algorithm,
                         "mismatched signature algorithm in authentication request"
                     );
-                    self.send(&UserAuthFailure {
-                        can_continue: &[MethodName::PublicKey],
-                        partial_success: false,
-                    })
-                    .await?;
+                    self.send_auth_failed().await?;
                     continue;
                 }
                 // No signature, authorized key => send pk-ok and wait for signature
@@ -249,11 +232,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 }
                 // No signature, no authorized key => fail authentication
                 (None, None) => {
-                    self.send(&UserAuthFailure {
-                        can_continue: &[MethodName::PublicKey],
-                        partial_success: false,
-                    })
-                    .await?;
+                    self.send_auth_failed().await?;
                     continue;
                 }
             };
@@ -273,11 +252,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     break user;
                 }
                 _ => {
-                    self.send(&UserAuthFailure {
-                        can_continue: &[MethodName::PublicKey],
-                        partial_success: false,
-                    })
-                    .await?;
+                    self.send_auth_failed().await?;
                     continue;
                 }
             }
@@ -378,6 +353,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         self.read.decryption_key = Some(AesCtrReadKeys::new(client_to_server));
         self.write.keys = Some(AesCtrWriteKeys::new(server_to_client));
         Ok(())
+    }
+
+    async fn send_auth_failed(&mut self) -> Result<(), ()> {
+        self.send(&UserAuthFailure {
+            can_continue: &[MethodName::PublicKey],
+            partial_success: false,
+        })
+        .await
     }
 
     async fn send(&mut self, payload: &impl Encode) -> Result<(), ()> {
