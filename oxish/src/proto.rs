@@ -9,15 +9,12 @@ use aws_lc_rs::{
     cipher::{self, StreamingDecryptingKey, StreamingEncryptingKey, UnboundCipherKey},
     constant_time, digest, hmac, rand,
 };
+use proto::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::error;
 use tracing::trace;
 
-use crate::{
-    key_exchange::RawKeys,
-    messages::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError},
-    Error,
-};
+use crate::{key_exchange::RawKeys, Error};
 
 /// The reader and decryption state for an SSH connection
 pub(crate) struct ReadState {

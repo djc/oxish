@@ -10,17 +10,14 @@ use std::{
     collections::{btree_map::Entry, BTreeMap},
 };
 
+use proto::{
+    ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
+    ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, ChannelType,
+    Encode, IncomingPacket, MessageType, ProtoError, PtyReq,
+};
 use tracing::{debug, warn};
 
-use crate::{
-    messages::{
-        ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
-        ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, ChannelType,
-        Encode, IncomingPacket, MessageType, ProtoError, PtyReq,
-    },
-    terminal::Terminal,
-    Error,
-};
+use crate::{terminal::Terminal, Error};
 
 #[derive(Default)]
 pub(crate) struct Channels {

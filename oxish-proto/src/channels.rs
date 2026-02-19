@@ -8,11 +8,11 @@ use super::named::ChannelType;
 use super::ProtoError;
 
 #[derive(Debug)]
-pub(crate) struct ChannelOpen<'a> {
-    pub(crate) r#type: ChannelType<'a>,
-    pub(crate) sender_channel: u32,
-    pub(crate) initial_window_size: u32,
-    pub(crate) maximum_packet_size: u32,
+pub struct ChannelOpen<'a> {
+    pub r#type: ChannelType<'a>,
+    pub sender_channel: u32,
+    pub initial_window_size: u32,
+    pub maximum_packet_size: u32,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
@@ -65,11 +65,11 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ChannelOpenConfirmation {
-    pub(crate) recipient_channel: u32,
-    pub(crate) sender_channel: u32,
-    pub(crate) initial_window_size: u32,
-    pub(crate) maximum_packet_size: u32,
+pub struct ChannelOpenConfirmation {
+    pub recipient_channel: u32,
+    pub sender_channel: u32,
+    pub initial_window_size: u32,
+    pub maximum_packet_size: u32,
 }
 
 impl Encode for ChannelOpenConfirmation {
@@ -83,14 +83,14 @@ impl Encode for ChannelOpenConfirmation {
 }
 
 #[derive(Debug)]
-pub(crate) struct ChannelOpenFailure<'a> {
+pub struct ChannelOpenFailure<'a> {
     recipient_channel: u32,
     reason_code: ChannelOpenFailureReason,
     description: &'a str,
 }
 
 impl ChannelOpenFailure<'static> {
-    pub(crate) fn duplicate_id(recipient_channel: u32) -> Self {
+    pub fn duplicate_id(recipient_channel: u32) -> Self {
         Self {
             recipient_channel,
             reason_code: ChannelOpenFailureReason::AdministrativelyProhibited,
@@ -98,7 +98,7 @@ impl ChannelOpenFailure<'static> {
         }
     }
 
-    pub(crate) fn unknown_type(recipient_channel: u32) -> Self {
+    pub fn unknown_type(recipient_channel: u32) -> Self {
         Self {
             recipient_channel,
             reason_code: ChannelOpenFailureReason::UnknownChannelType,
@@ -134,10 +134,10 @@ impl Encode for ChannelOpenFailureReason {
 }
 
 #[derive(Debug)]
-pub(crate) struct ChannelRequest<'a> {
-    pub(crate) recipient_channel: u32,
-    pub(crate) r#type: ChannelRequestType<'a>,
-    pub(crate) want_reply: bool,
+pub struct ChannelRequest<'a> {
+    pub recipient_channel: u32,
+    pub r#type: ChannelRequestType<'a>,
+    pub want_reply: bool,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
@@ -213,16 +213,16 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) enum ChannelRequestType<'a> {
+pub enum ChannelRequestType<'a> {
     PtyReq(PtyReq<'a>),
     Env(Env<'a>),
     Shell,
 }
 
 #[derive(Debug)]
-pub(crate) struct Env<'a> {
-    pub(crate) name: &'a str,
-    pub(crate) value: &'a str,
+pub struct Env<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
 }
 
 impl<'a> Decode<'a> for Env<'a> {
@@ -243,17 +243,17 @@ impl<'a> Decode<'a> for Env<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct PtyReq<'a> {
-    pub(crate) term: Cow<'a, str>,
-    pub(crate) cols: u32,
-    pub(crate) rows: u32,
-    pub(crate) width_px: u32,
-    pub(crate) height_px: u32,
-    pub(crate) terminal_modes: BTreeMap<Mode, u32>,
+pub struct PtyReq<'a> {
+    pub term: Cow<'a, str>,
+    pub cols: u32,
+    pub rows: u32,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub terminal_modes: BTreeMap<Mode, u32>,
 }
 
 impl<'a> PtyReq<'a> {
-    pub(crate) fn into_owned(self) -> PtyReq<'static> {
+    pub fn into_owned(self) -> PtyReq<'static> {
         PtyReq {
             term: Cow::Owned(self.term.into_owned()),
             cols: self.cols,
@@ -331,7 +331,7 @@ impl<'a> Decode<'a> for BTreeMap<Mode, u32> {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Mode {
+pub enum Mode {
     VIntr = 1,
     VQuit = 2,
     VErase = 3,
@@ -465,8 +465,8 @@ impl<'a> Decode<'a> for Option<Mode> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ChannelRequestSuccess {
-    pub(crate) recipient_channel: u32,
+pub struct ChannelRequestSuccess {
+    pub recipient_channel: u32,
 }
 
 impl Encode for ChannelRequestSuccess {
@@ -489,9 +489,9 @@ impl Encode for ChannelRequestFailure {
     }
 }
 
-pub(crate) struct ChannelData<'a> {
-    pub(crate) recipient_channel: u32,
-    pub(crate) data: Cow<'a, [u8]>,
+pub struct ChannelData<'a> {
+    pub recipient_channel: u32,
+    pub data: Cow<'a, [u8]>,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
@@ -539,8 +539,8 @@ impl fmt::Debug for ChannelData<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ChannelEof {
-    pub(crate) recipient_channel: u32,
+pub struct ChannelEof {
+    pub recipient_channel: u32,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelEof {
@@ -573,8 +573,8 @@ impl Encode for ChannelEof {
 }
 
 #[derive(Debug)]
-pub(crate) struct ChannelClose {
-    pub(crate) recipient_channel: u32,
+pub struct ChannelClose {
+    pub recipient_channel: u32,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelClose {

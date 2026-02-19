@@ -1,0 +1,13 @@
+[package]
+name = "oxish-proto"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+thiserror = "2.0.9"
+tracing = "0.1.41"
+
+[lints]
+workspace = true

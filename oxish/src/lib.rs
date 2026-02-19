@@ -19,6 +19,13 @@ use std::{
     sync::Arc,
 };
 
+use ::proto::{
+    Completion, Decode, Decoded, Disconnect, DisconnectReason, Encode, ExtInfo, ExtensionName,
+    Identification, IdentificationError, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
+    Method, MethodName, Named, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
+    ServiceAccept, ServiceName, ServiceRequest, Signature, SignatureData, UserAuthFailure,
+    UserAuthPkOk, UserAuthRequest, PROTOCOL,
+};
 use aws_lc_rs::signature::{self, Ed25519KeyPair, UnparsedPublicKey};
 use libc::{getpwnam_r, sysconf, O_DIRECTORY, O_RDONLY, _SC_GETPW_R_SIZE_MAX};
 use thiserror::Error;
@@ -32,14 +39,6 @@ mod connections;
 use connections::{Channels, IncomingChannelMessage};
 mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
-mod messages;
-use messages::{
-    Completion, Decode, Decoded, Disconnect, DisconnectReason, Encode, ExtensionName,
-    Identification, IdentificationError, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
-    Method, MethodName, Named, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
-    ServiceAccept, ServiceName, ServiceRequest, Signature, SignatureData, UserAuthFailure,
-    UserAuthPkOk, UserAuthRequest, PROTOCOL,
-};
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
 
@@ -128,7 +127,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         self.update_keys(keys).await?;
 
         if want_extension_info {
-            let ext_info = messages::ExtInfo {
+            let ext_info = ExtInfo {
                 extensions: vec![(
                     ExtensionName::ServerSigAlgs,
                     &OutgoingNameList(&[PublicKeyAlgorithm::EcdsaSha2Nistp256]),
