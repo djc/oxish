@@ -2,7 +2,7 @@ use core::{fmt, str};
 use std::borrow::Cow;
 
 use super::base::{Decode, Decoded, Encode};
-use crate::Error;
+use super::ProtoError;
 
 #[derive(Debug)]
 pub(crate) enum MethodName<'a> {
@@ -268,15 +268,17 @@ impl<'a> Named<'a> for Language<'a> {
 pub(super) struct IncomingNameList<T>(pub(super) Vec<T>);
 
 impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: len, next } = u32::decode(bytes)?;
 
         let Some(list) = next.get(..len as usize) else {
-            return Err(Error::Incomplete(Some(len as usize - next.len())));
+            return Err(ProtoError::Incomplete(Some(len as usize - next.len())));
         };
 
         let Some(next) = next.get(len as usize..) else {
-            return Err(Error::Unreachable("unable to extract rest after name list"));
+            return Err(ProtoError::Unreachable(
+                "unable to extract rest after name list",
+            ));
         };
 
         let mut value = Vec::new();
@@ -290,7 +292,7 @@ impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
         for name in list.split(|&b| b == b',') {
             match str::from_utf8(name) {
                 Ok(name) => value.push(T::typed(name)),
-                Err(_) => return Err(Error::InvalidPacket("invalid name")),
+                Err(_) => return Err(ProtoError::InvalidPacket("invalid name")),
             }
         }
 
@@ -326,10 +328,10 @@ impl<'a, T: Named<'a>> Encode for OutgoingNameList<'_, T> {
 }
 
 impl<'a, T: Named<'a>> Decode<'a> for T {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value, next } = <&[u8]>::decode(bytes)?;
         let name = str::from_utf8(value)
-            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in named value"))?;
+            .map_err(|_| ProtoError::InvalidPacket("invalid UTF-8 in named value"))?;
 
         Ok(Decoded {
             value: T::typed(name),

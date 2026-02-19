@@ -16,7 +16,7 @@ use crate::{
     messages::{
         ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
         ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, ChannelType,
-        Encode, IncomingPacket, MessageType, PtyReq,
+        Encode, IncomingPacket, MessageType, ProtoError, PtyReq,
     },
     terminal::Terminal,
     Error,
@@ -64,9 +64,7 @@ impl Channels {
         request: ChannelRequest<'_>,
     ) -> Result<Option<OutgoingChannelMessage<'static>>, Error> {
         let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
-            return Err(Error::InvalidPacket(
-                "channel request for unknown channel ID",
-            ));
+            return Err(ProtoError::InvalidPacket("channel request for unknown channel ID").into());
         };
 
         match request.r#type {
@@ -80,7 +78,9 @@ impl Channels {
             }
             ChannelRequestType::Shell => {
                 let Some(TerminalState::Requested(pty_req)) = channel.terminal.take() else {
-                    return Err(Error::InvalidPacket("shell request without prior pty-req"));
+                    return Err(
+                        ProtoError::InvalidPacket("shell request without prior pty-req").into(),
+                    );
                 };
 
                 channel.terminal = Some(TerminalState::Running(Terminal::spawn(
@@ -98,9 +98,11 @@ impl Channels {
     pub(crate) fn data<'m, 's>(
         &'s mut self,
         data: &'m ChannelData<'m>,
-    ) -> Result<Option<(&'s mut Terminal, &'m [u8])>, Error> {
+    ) -> Result<Option<(&'s mut Terminal, &'m [u8])>, ProtoError> {
         let Some(channel) = self.channels.get_mut(&data.recipient_channel) else {
-            return Err(Error::InvalidPacket("channel data for unknown channel ID"));
+            return Err(ProtoError::InvalidPacket(
+                "channel data for unknown channel ID",
+            ));
         };
 
         debug!(len = %data.data.len(), "received channel data");
@@ -110,9 +112,11 @@ impl Channels {
         })
     }
 
-    pub(crate) fn eof(&mut self, eof: &ChannelEof) -> Result<(), Error> {
+    pub(crate) fn eof(&mut self, eof: &ChannelEof) -> Result<(), ProtoError> {
         let Some(_) = self.channels.get_mut(&eof.recipient_channel) else {
-            return Err(Error::InvalidPacket("channel eof for unknown channel ID"));
+            return Err(ProtoError::InvalidPacket(
+                "channel eof for unknown channel ID",
+            ));
         };
 
         debug!(channel_id = %eof.recipient_channel, "received channel eof from client");
@@ -306,7 +310,7 @@ pub(crate) enum IncomingChannelMessage<'a> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         match packet.message_type {
@@ -327,7 +331,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
             )?)),
             _ => {
                 warn!(?packet.message_type, "unexpected channel message type");
-                Err(Error::InvalidPacket("unexpected channel message type"))
+                Err(ProtoError::InvalidPacket("unexpected channel message type"))
             }
         }
     }

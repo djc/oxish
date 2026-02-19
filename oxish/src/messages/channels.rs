@@ -5,7 +5,7 @@ use tracing::warn;
 
 use super::base::{Decode, Decoded, Encode, IncomingPacket, MessageType};
 use super::named::ChannelType;
-use crate::Error;
+use super::ProtoError;
 
 #[derive(Debug)]
 pub(crate) struct ChannelOpen<'a> {
@@ -16,11 +16,11 @@ pub(crate) struct ChannelOpen<'a> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::ChannelOpen {
-            return Err(Error::InvalidPacket("expected channel open packet"));
+            return Err(ProtoError::InvalidPacket("expected channel open packet"));
         }
 
         let Decoded {
@@ -46,7 +46,11 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
         match r#type {
             ChannelType::Session => match next.is_empty() {
                 true => {}
-                false => return Err(Error::InvalidPacket("extra data in channel open packet")),
+                false => {
+                    return Err(ProtoError::InvalidPacket(
+                        "extra data in channel open packet",
+                    ))
+                }
             },
             ChannelType::Unknown(_) => {}
         }
@@ -137,11 +141,11 @@ pub(crate) struct ChannelRequest<'a> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::ChannelRequest {
-            return Err(Error::InvalidPacket("expected channel request packet"));
+            return Err(ProtoError::InvalidPacket("expected channel request packet"));
         }
 
         let Decoded {
@@ -165,7 +169,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                 match next.is_empty() {
                     true => ChannelRequestType::PtyReq(value),
                     false => {
-                        return Err(Error::InvalidPacket(
+                        return Err(ProtoError::InvalidPacket(
                             "extra data in pty-req channel request",
                         ))
                     }
@@ -175,12 +179,20 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                 let Decoded { value, next } = Env::decode(next)?;
                 match next.is_empty() {
                     true => ChannelRequestType::Env(value),
-                    false => return Err(Error::InvalidPacket("extra data in env channel request")),
+                    false => {
+                        return Err(ProtoError::InvalidPacket(
+                            "extra data in env channel request",
+                        ))
+                    }
                 }
             }
             b"shell" => match next.is_empty() {
                 true => ChannelRequestType::Shell,
-                false => return Err(Error::InvalidPacket("extra data in shell channel request")),
+                false => {
+                    return Err(ProtoError::InvalidPacket(
+                        "extra data in shell channel request",
+                    ))
+                }
             },
             _ => {
                 match str::from_utf8(r#type) {
@@ -188,7 +200,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     Err(_) => warn!(?r#type, "unknown channel request type"),
                 }
 
-                return Err(Error::InvalidPacket("unknown channel request type"));
+                return Err(ProtoError::InvalidPacket("unknown channel request type"));
             }
         };
 
@@ -214,14 +226,14 @@ pub(crate) struct Env<'a> {
 }
 
 impl<'a> Decode<'a> for Env<'a> {
-    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: name, next } = <&[u8]>::decode(input)?;
-        let name =
-            str::from_utf8(name).map_err(|_| Error::InvalidPacket("invalid UTF-8 in env name"))?;
+        let name = str::from_utf8(name)
+            .map_err(|_| ProtoError::InvalidPacket("invalid UTF-8 in env name"))?;
 
         let Decoded { value, next } = <&[u8]>::decode(next)?;
         let value = str::from_utf8(value)
-            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in env value"))?;
+            .map_err(|_| ProtoError::InvalidPacket("invalid UTF-8 in env value"))?;
 
         Ok(Decoded {
             value: Env { name, value },
@@ -254,10 +266,10 @@ impl<'a> PtyReq<'a> {
 }
 
 impl<'a> Decode<'a> for PtyReq<'a> {
-    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: term, next } = <&[u8]>::decode(input)?;
         let term = str::from_utf8(term)
-            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in pty-req data"))?;
+            .map_err(|_| ProtoError::InvalidPacket("invalid UTF-8 in pty-req data"))?;
 
         let Decoded { value: cols, next } = u32::decode(next)?;
         let Decoded { value: rows, next } = u32::decode(next)?;
@@ -291,7 +303,7 @@ impl<'a> Decode<'a> for PtyReq<'a> {
 }
 
 impl<'a> Decode<'a> for BTreeMap<Mode, u32> {
-    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value, next: rest } = <&[u8]>::decode(input)?;
         let mut input = value;
         let mut modes = Self::new();
@@ -379,7 +391,7 @@ pub(crate) enum Mode {
 }
 
 impl<'a> Decode<'a> for Option<Mode> {
-    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value, next } = u8::decode(input)?;
         let mode = match value {
             0 => return Ok(Decoded { value: None, next }),
@@ -441,7 +453,7 @@ impl<'a> Decode<'a> for Option<Mode> {
             129 => Mode::TtyOpOSpeed,
             val => {
                 warn!(%val, "unknown terminal mode code");
-                return Err(Error::InvalidPacket("unknown terminal mode code"));
+                return Err(ProtoError::InvalidPacket("unknown terminal mode code"));
             }
         };
 
@@ -483,11 +495,11 @@ pub(crate) struct ChannelData<'a> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::ChannelData {
-            return Err(Error::InvalidPacket("expected channel data packet"));
+            return Err(ProtoError::InvalidPacket("expected channel data packet"));
         }
 
         let Decoded {
@@ -502,7 +514,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
                 recipient_channel,
                 data: Cow::Borrowed(data),
             }),
-            false => Err(Error::InvalidPacket("extra data in channel data packet")),
+            false => Err(ProtoError::InvalidPacket(
+                "extra data in channel data packet",
+            )),
         }
     }
 }
@@ -530,11 +544,11 @@ pub(crate) struct ChannelEof {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelEof {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::ChannelEof {
-            return Err(Error::InvalidPacket("expected channel eof packet"));
+            return Err(ProtoError::InvalidPacket("expected channel eof packet"));
         }
 
         let Decoded {
@@ -544,7 +558,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelEof {
 
         match next.is_empty() {
             true => Ok(Self { recipient_channel }),
-            false => Err(Error::InvalidPacket("extra data in channel eof packet")),
+            false => Err(ProtoError::InvalidPacket(
+                "extra data in channel eof packet",
+            )),
         }
     }
 }
@@ -562,11 +578,11 @@ pub(crate) struct ChannelClose {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelClose {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::ChannelClose {
-            return Err(Error::InvalidPacket("expected channel close packet"));
+            return Err(ProtoError::InvalidPacket("expected channel close packet"));
         }
 
         let Decoded {
@@ -576,7 +592,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelClose {
 
         match next.is_empty() {
             true => Ok(Self { recipient_channel }),
-            false => Err(Error::InvalidPacket("extra data in channel close packet")),
+            false => Err(ProtoError::InvalidPacket(
+                "extra data in channel close packet",
+            )),
         }
     }
 }

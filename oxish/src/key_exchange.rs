@@ -12,10 +12,10 @@ use tracing::{debug, error, warn};
 use crate::{
     messages::{
         Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit,
-        MessageType, PublicKeyAlgorithm,
+        MessageType, ProtoError, PublicKeyAlgorithm,
     },
     proto::HandshakeHash,
-    ConnectionContext, Error,
+    ConnectionContext,
 };
 
 pub(crate) struct EcdhKeyExchange {
@@ -111,11 +111,11 @@ pub(crate) struct EcdhKeyExchangeInit<'a> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Error> {
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::KeyExchangeEcdhInit {
-            return Err(Error::InvalidPacket("unexpected message type"));
+            return Err(ProtoError::InvalidPacket("unexpected message type"));
         }
 
         let Decoded {
@@ -125,7 +125,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
 
         if !next.is_empty() {
             debug!(bytes = ?next, "unexpected trailing bytes");
-            return Err(Error::InvalidPacket("unexpected trailing bytes"));
+            return Err(ProtoError::InvalidPacket("unexpected trailing bytes"));
         }
 
         Ok(Self {
@@ -255,7 +255,7 @@ impl Algorithms {
     fn choose(
         client: KeyExchangeInit<'_>,
         server: &KeyExchangeInit<'static>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ProtoError> {
         let key_exchange = client
             .key_exchange_algorithms
             .iter()
@@ -265,7 +265,7 @@ impl Algorithms {
                     .iter()
                     .find(|&&server_alg| server_alg == client)
             })
-            .ok_or(Error::NoCommonAlgorithm("key exchange"))?;
+            .ok_or(ProtoError::NoCommonAlgorithm("key exchange"))?;
 
         Ok(Self {
             key_exchange: *key_exchange,
