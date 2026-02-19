@@ -38,7 +38,7 @@ use tracing::{debug, error, info, instrument, warn};
 mod buffers;
 use buffers::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
 mod connections;
-use connections::{Channels, IncomingChannelMessage};
+use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
 mod terminal;
@@ -377,7 +377,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                         self.send(&outgoing, None).await?;
                     }
                 }
-                result = self.channels.poll_terminals() => {
+                result = TerminalsFuture::new(self.channels.channels_mut()) => {
                     match result {
                         Ok(Some(outgoing)) => {
                             debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
