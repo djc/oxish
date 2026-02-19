@@ -143,20 +143,26 @@ impl Channels {
         }))
     }
 
-    pub(crate) fn poll_terminals<'a>(&'a mut self) -> TerminalsFuture<'a> {
-        TerminalsFuture { channels: self }
+    pub(crate) fn channels_mut(&mut self) -> &mut BTreeMap<u32, Channel> {
+        &mut self.channels
     }
 }
 
 pub(crate) struct TerminalsFuture<'a> {
-    channels: &'a mut Channels,
+    channels: &'a mut BTreeMap<u32, Channel>,
+}
+
+impl<'a> TerminalsFuture<'a> {
+    pub(crate) fn new(channels: &'a mut BTreeMap<u32, Channel>) -> Self {
+        Self { channels }
+    }
 }
 
 impl<'a> Future for TerminalsFuture<'a> {
     type Output = Result<Option<OutgoingChannelMessage<'static>>, Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        for (&local_id, channel) in self.channels.channels.iter_mut() {
+        for (&local_id, channel) in self.channels.iter_mut() {
             let Some(state) = &mut channel.terminal else {
                 continue;
             };
@@ -173,7 +179,7 @@ impl<'a> Future for TerminalsFuture<'a> {
                     let recipient_channel = channel.remote_id;
                     if channel.closed.received {
                         debug!(channel = local_id, "both sides closed channel; removing");
-                        self.channels.channels.remove(&local_id);
+                        self.channels.remove(&local_id);
                     }
 
                     return Poll::Ready(Ok(Some(OutgoingChannelMessage::Close(ChannelClose {
