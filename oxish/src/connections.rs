@@ -190,38 +190,31 @@ impl<'a> Future for TerminalsFuture<'a> {
 
             let mut buf = [0u8; 4096];
             match terminal.poll_read(&mut buf, cx) {
-                Poll::Ready(Ok(0)) => {
+                Poll::Ready(result @ Ok(0)) | Poll::Ready(result @ Err(_)) => {
                     if let TerminalState::Running(terminal) =
                         mem::replace(state, TerminalState::Closing)
                     {
-                        if let Poll::Ready(Err(err)) = terminal.poll_kill(cx) {
-                            warn!(%err, "error killing terminal after EOF");
-                            return Poll::Ready(Err(err.into()));
+                        if let Poll::Ready(Err(error)) = terminal.poll_kill(cx) {
+                            warn!(%error, "error killing terminal");
+                            return Poll::Ready(Err(error.into()));
                         }
                     }
 
-                    return Poll::Ready(Ok(Some(OutgoingChannelMessage::Eof(ChannelEof {
-                        recipient_channel: channel.remote_id,
-                    }))));
+                    return Poll::Ready(match result {
+                        Ok(_) => Ok(Some(OutgoingChannelMessage::Eof(ChannelEof {
+                            recipient_channel: channel.remote_id,
+                        }))),
+                        Err(error) => {
+                            warn!(%error, "error reading from terminal");
+                            Err(error.into())
+                        }
+                    });
                 }
                 Poll::Ready(Ok(n)) => {
                     return Poll::Ready(Ok(Some(OutgoingChannelMessage::Data(ChannelData {
                         recipient_channel: channel.remote_id,
                         data: Cow::Owned(buf[..n].to_vec()),
                     }))));
-                }
-                Poll::Ready(Err(err)) => {
-                    warn!(%err, "error reading from terminal");
-                    if let TerminalState::Running(terminal) =
-                        mem::replace(state, TerminalState::Closing)
-                    {
-                        if let Poll::Ready(Err(err)) = terminal.poll_kill(cx) {
-                            warn!(%err, "error killing terminal after EOF");
-                            return Poll::Ready(Err(err.into()));
-                        }
-                    }
-
-                    return Poll::Ready(Err(err.into()));
                 }
                 Poll::Pending => continue,
             }
