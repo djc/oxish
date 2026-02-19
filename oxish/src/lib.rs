@@ -42,8 +42,8 @@ mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
 
 use crate::messages::{
-    ExtensionName, KeyExchangeAlgorithm, OutgoingNameList, PublicKeyAlgorithm, Signature,
-    SignatureData, UserAuthPkOk,
+    ExtensionName, IdentificationError, KeyExchangeAlgorithm, OutgoingNameList, PublicKeyAlgorithm,
+    Signature, SignatureData, UserAuthPkOk,
 };
 mod terminal;
 
@@ -855,20 +855,6 @@ enum Error {
     InvalidMac,
     #[error("unreachable code: {0}")]
     Unreachable(&'static str),
-}
-
-#[derive(Debug, Error)]
-enum IdentificationError {
-    #[error("Invalid UTF-8")]
-    InvalidUtf8,
-    #[error("No SSH prefix")]
-    NoSsh,
-    #[error("No version found")]
-    NoVersion,
-    #[error("Identification too long")]
-    TooLong,
-    #[error("Unsupported protocol version")]
-    UnsupportedVersion(String),
 }
 
 struct Pretty<T>(T);

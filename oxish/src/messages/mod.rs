@@ -3,7 +3,7 @@ use std::borrow::Cow;
 
 use tracing::{debug, warn};
 
-use crate::{Error, IdentificationError};
+use crate::Error;
 
 mod base;
 pub(crate) use base::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType};
@@ -632,6 +632,20 @@ impl TryFrom<u32> for DisconnectReason {
             _ => return Err(Error::InvalidPacket("unknown disconnect reason code")),
         })
     }
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum IdentificationError {
+    #[error("Invalid UTF-8")]
+    InvalidUtf8,
+    #[error("No SSH prefix")]
+    NoSsh,
+    #[error("No version found")]
+    NoVersion,
+    #[error("Identification too long")]
+    TooLong,
+    #[error("Unsupported protocol version")]
+    UnsupportedVersion(String),
 }
 
 pub(crate) const PROTOCOL: &str = "2.0";
