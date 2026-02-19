@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::Error;
+use super::ProtoError;
 
 pub(crate) struct IncomingPacket<'a> {
     pub(crate) sequence_number: u32,
@@ -65,7 +65,7 @@ impl Encode for MessageType {
 }
 
 impl<'a> Decode<'a> for MessageType {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value, next } = u8::decode(bytes)?;
         Ok(Decoded {
             value: Self::from(value),
@@ -151,14 +151,18 @@ impl From<MessageType> for u8 {
 }
 
 impl<'a> Decode<'a> for &'a [u8] {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let len = u32::decode(bytes)?;
         let Some(value) = len.next.get(..len.value as usize) else {
-            return Err(Error::Incomplete(Some(len.value as usize - len.next.len())));
+            return Err(ProtoError::Incomplete(Some(
+                len.value as usize - len.next.len(),
+            )));
         };
 
         let Some(next) = len.next.get(len.value as usize..) else {
-            return Err(Error::Unreachable("unable to extract rest after slice"));
+            return Err(ProtoError::Unreachable(
+                "unable to extract rest after slice",
+            ));
         };
 
         Ok(Decoded { value, next })
@@ -173,7 +177,7 @@ impl Encode for [u8] {
 }
 
 impl Decode<'_> for bool {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
         <[u8; 1]>::decode(bytes).map(|decoded| Decoded {
             value: decoded.value[0] != 0,
             next: decoded.next,
@@ -188,7 +192,7 @@ impl Encode for bool {
 }
 
 impl Decode<'_> for u32 {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
         <[u8; 4]>::decode(bytes).map(|decoded| Decoded {
             value: Self::from_be_bytes(decoded.value),
             next: decoded.next,
@@ -203,19 +207,21 @@ impl Encode for u32 {
 }
 
 impl<'a, const N: usize> Decode<'a> for [u8; N] {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Some(inner) = bytes.get(..N) else {
-            return Err(Error::Incomplete(Some(N - bytes.len())));
+            return Err(ProtoError::Incomplete(Some(N - bytes.len())));
         };
 
         let Some(next) = bytes.get(N..) else {
-            return Err(Error::Unreachable(
+            return Err(ProtoError::Unreachable(
                 "unable to extract rest after fixed-length slice",
             ));
         };
 
         let Ok(value) = <[u8; N]>::try_from(inner) else {
-            return Err(Error::Unreachable("fixed-length slice converts to array"));
+            return Err(ProtoError::Unreachable(
+                "fixed-length slice converts to array",
+            ));
         };
 
         Ok(Decoded { value, next })
@@ -223,13 +229,13 @@ impl<'a, const N: usize> Decode<'a> for [u8; N] {
 }
 
 impl<'a> Decode<'a> for u8 {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Some(&inner) = bytes.first() else {
-            return Err(Error::Incomplete(Some(1)));
+            return Err(ProtoError::Incomplete(Some(1)));
         };
 
         let Some(next) = bytes.get(1..) else {
-            return Err(Error::Unreachable("unable to extract rest after u8"));
+            return Err(ProtoError::Unreachable("unable to extract rest after u8"));
         };
 
         Ok(Decoded { value: inner, next })
@@ -246,7 +252,7 @@ pub(crate) trait Encode: fmt::Debug + Send + Sync {
 }
 
 pub(crate) trait Decode<'a>: Sized {
-    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, Error>;
+    fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError>;
 }
 
 #[derive(Debug)]

@@ -1,9 +1,8 @@
 use core::str;
 use std::borrow::Cow;
 
+use thiserror::Error;
 use tracing::{debug, warn};
-
-use crate::Error;
 
 mod base;
 pub(crate) use base::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType};
@@ -27,7 +26,7 @@ pub(crate) struct Identification<'a> {
 }
 
 impl<'a> Identification<'a> {
-    pub(crate) fn decode(bytes: &'a [u8]) -> Result<Completion<Decoded<'a, Self>>, Error> {
+    pub(crate) fn decode(bytes: &'a [u8]) -> Result<Completion<Decoded<'a, Self>>, ProtoError> {
         let Ok(message) = str::from_utf8(bytes) else {
             return Err(IdentificationError::InvalidUtf8.into());
         };
@@ -99,7 +98,7 @@ pub(crate) struct KeyExchangeInit<'a> {
 }
 
 impl KeyExchangeInit<'static> {
-    pub(crate) fn new(cookie: [u8; 16]) -> Result<Self, Error> {
+    pub(crate) fn new(cookie: [u8; 16]) -> Result<Self, ProtoError> {
         Ok(Self {
             cookie,
             key_exchange_algorithms: vec![KeyExchangeAlgorithm::Curve25519Sha256],
@@ -119,11 +118,11 @@ impl KeyExchangeInit<'static> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::KeyExchangeInit {
-            return Err(Error::InvalidPacket("unexpected message type"));
+            return Err(ProtoError::InvalidPacket("unexpected message type"));
         }
 
         let Decoded {
@@ -209,7 +208,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
 
         if !next.is_empty() {
             debug!(bytes = ?next, "unexpected trailing bytes");
-            return Err(Error::InvalidPacket("unexpected trailing bytes"));
+            return Err(ProtoError::InvalidPacket("unexpected trailing bytes"));
         }
 
         Ok(value)
@@ -239,16 +238,16 @@ impl Encode for KeyExchangeInit<'_> {
 pub(crate) struct NewKeys;
 
 impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::NewKeys {
-            return Err(Error::InvalidPacket("unexpected message type"));
+            return Err(ProtoError::InvalidPacket("unexpected message type"));
         }
 
         if !packet.payload.is_empty() {
             debug!(bytes = ?packet.payload, "unexpected trailing bytes");
-            return Err(Error::InvalidPacket("unexpected trailing bytes"));
+            return Err(ProtoError::InvalidPacket("unexpected trailing bytes"));
         }
 
         Ok(Self)
@@ -285,11 +284,13 @@ pub(crate) struct UserAuthRequest<'a> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::UserAuthRequest {
-            return Err(Error::InvalidPacket("expected user auth request packet"));
+            return Err(ProtoError::InvalidPacket(
+                "expected user auth request packet",
+            ));
         }
 
         let Decoded {
@@ -297,7 +298,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
             next,
         } = <&[u8]>::decode(packet.payload)?;
         let user_name = str::from_utf8(user_name)
-            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in user name"))?;
+            .map_err(|_| ProtoError::InvalidPacket("invalid UTF-8 in user name"))?;
 
         let Decoded {
             value: service_name,
@@ -317,7 +318,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
                 } = PublicKey::decode(next)?;
 
                 if !next.is_empty() {
-                    return Err(Error::InvalidPacket(
+                    return Err(ProtoError::InvalidPacket(
                         "trailing bytes in public key auth request",
                     ));
                 }
@@ -326,7 +327,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
             }
             MethodName::None => {
                 if !next.is_empty() {
-                    return Err(Error::InvalidPacket(
+                    return Err(ProtoError::InvalidPacket(
                         "unexpected data after none auth method",
                     ));
                 }
@@ -334,7 +335,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
             }
             _ => {
                 warn!(method = ?method_name, "unsupported authentication method");
-                return Err(Error::InvalidPacket("unsupported authentication method"));
+                return Err(ProtoError::InvalidPacket(
+                    "unsupported authentication method",
+                ));
             }
         };
 
@@ -360,7 +363,7 @@ pub(crate) struct PublicKey<'a> {
 }
 
 impl<'a> Decode<'a> for PublicKey<'a> {
-    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded {
             value: has_signature,
             next,
@@ -379,7 +382,7 @@ impl<'a> Decode<'a> for PublicKey<'a> {
         let (signature, next) = match (has_signature, next.is_empty()) {
             (false, true) => (None, next),
             (false, false) => {
-                return Err(Error::InvalidPacket(
+                return Err(ProtoError::InvalidPacket(
                     "trailing bytes in public key auth without signature",
                 ))
             }
@@ -390,7 +393,7 @@ impl<'a> Decode<'a> for PublicKey<'a> {
                 } = Signature::decode(next)?;
 
                 if !next.is_empty() {
-                    return Err(Error::InvalidPacket(
+                    return Err(ProtoError::InvalidPacket(
                         "trailing bytes in public key auth with signature",
                     ));
                 }
@@ -417,10 +420,12 @@ pub(crate) struct Signature<'a> {
 }
 
 impl<'a> Decode<'a> for Signature<'a> {
-    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, Error> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: input, next } = <&[u8]>::decode(input)?;
         if !next.is_empty() {
-            return Err(Error::InvalidPacket("extra data in ECDSA signature data"));
+            return Err(ProtoError::InvalidPacket(
+                "extra data in ECDSA signature data",
+            ));
         }
 
         let Decoded {
@@ -434,7 +439,9 @@ impl<'a> Decode<'a> for Signature<'a> {
         } = <&[u8]>::decode(next)?;
 
         if !next.is_empty() {
-            return Err(Error::InvalidPacket("extra data in ECDSA signature blob"));
+            return Err(ProtoError::InvalidPacket(
+                "extra data in ECDSA signature blob",
+            ));
         }
 
         Ok(Decoded {
@@ -517,11 +524,11 @@ pub(crate) struct ServiceRequest<'a> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::ServiceRequest {
-            return Err(Error::InvalidPacket("unexpected message type"));
+            return Err(ProtoError::InvalidPacket("unexpected message type"));
         }
 
         let Decoded {
@@ -529,7 +536,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
             next,
         } = ServiceName::decode(packet.payload)?;
         if !next.is_empty() {
-            return Err(Error::InvalidPacket("extra data in service request"));
+            return Err(ProtoError::InvalidPacket("extra data in service request"));
         }
 
         Ok(ServiceRequest { service_name })
@@ -543,11 +550,11 @@ pub(crate) struct Disconnect<'a> {
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for Disconnect<'a> {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::Disconnect {
-            return Err(Error::InvalidPacket("expected disconnect packet"));
+            return Err(ProtoError::InvalidPacket("expected disconnect packet"));
         }
 
         let Decoded {
@@ -561,7 +568,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for Disconnect<'a> {
         } = <&[u8]>::decode(next)?;
 
         let description = str::from_utf8(description)
-            .map_err(|_| Error::InvalidPacket("invalid UTF-8 in disconnect description"))?;
+            .map_err(|_| ProtoError::InvalidPacket("invalid UTF-8 in disconnect description"))?;
 
         let Decoded {
             value: _, // language tag
@@ -569,7 +576,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for Disconnect<'a> {
         } = <&[u8]>::decode(next)?;
 
         if !next.is_empty() {
-            return Err(Error::InvalidPacket("extra data in disconnect packet"));
+            return Err(ProtoError::InvalidPacket("extra data in disconnect packet"));
         }
 
         Ok(Disconnect {
@@ -610,7 +617,7 @@ pub(crate) enum DisconnectReason {
 }
 
 impl TryFrom<u32> for DisconnectReason {
-    type Error = Error;
+    type Error = ProtoError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -629,9 +636,23 @@ impl TryFrom<u32> for DisconnectReason {
             13 => Self::AuthCancelledByUser,
             14 => Self::NoMoreAuthMethodsAvailable,
             15 => Self::IllegalUserName,
-            _ => return Err(Error::InvalidPacket("unknown disconnect reason code")),
+            _ => return Err(ProtoError::InvalidPacket("unknown disconnect reason code")),
         })
     }
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum ProtoError {
+    #[error("failed to parse identification: {0}")]
+    Identification(#[from] IdentificationError),
+    #[error("incomplete message: {0:?}")]
+    Incomplete(Option<usize>),
+    #[error("invalid packet: {0}")]
+    InvalidPacket(&'static str),
+    #[error("no common {0} algorithms")]
+    NoCommonAlgorithm(&'static str),
+    #[error("unreachable code: {0}")]
+    Unreachable(&'static str),
 }
 
 #[derive(Debug, Error)]

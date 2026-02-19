@@ -34,17 +34,15 @@ mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
 mod messages;
 use messages::{
-    Completion, Decode, Decoded, Disconnect, DisconnectReason, Encode, Identification,
-    KeyExchangeInit, MessageType, Method, MethodName, Named, NewKeys, ServiceAccept, ServiceName,
-    ServiceRequest, UserAuthFailure, UserAuthRequest, PROTOCOL,
+    Completion, Decode, Decoded, Disconnect, DisconnectReason, Encode, ExtensionName,
+    Identification, IdentificationError, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
+    Method, MethodName, Named, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
+    ServiceAccept, ServiceName, ServiceRequest, Signature, SignatureData, UserAuthFailure,
+    UserAuthPkOk, UserAuthRequest, PROTOCOL,
 };
 mod proto;
 use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
 
-use crate::messages::{
-    ExtensionName, IdentificationError, KeyExchangeAlgorithm, OutgoingNameList, PublicKeyAlgorithm,
-    Signature, SignatureData, UserAuthPkOk,
-};
 mod terminal;
 
 /// A single SSH connection
@@ -698,7 +696,7 @@ impl AuthorizedKey {
         &self,
         message: SignatureData<'_>,
         signature: Signature<'_>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ProtoError> {
         match &self.algorithm {
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
                 let Decoded {
@@ -708,20 +706,20 @@ impl AuthorizedKey {
 
                 let Decoded { value: s, next } = <&[u8]>::decode(rest)?;
                 if !next.is_empty() {
-                    return Err(Error::InvalidPacket(
+                    return Err(ProtoError::InvalidPacket(
                         "extra data after ECDSA signature components",
                     ));
                 }
 
                 let mut fixed = [0u8; 64];
                 if mpint_to_fixed(r, &mut fixed[..64 / 2]).is_none() {
-                    return Err(Error::InvalidPacket(
+                    return Err(ProtoError::InvalidPacket(
                         "failure to decode r in ECDSA signature",
                     ));
                 }
 
                 if mpint_to_fixed(s, &mut fixed[64 / 2..]).is_none() {
-                    return Err(Error::InvalidPacket(
+                    return Err(ProtoError::InvalidPacket(
                         "failure to decode s in ECDSA signature",
                     ));
                 }
@@ -730,17 +728,17 @@ impl AuthorizedKey {
                 let key = self.key.clone();
                 spawn_blocking(move || {
                     key.verify(&encoded, &fixed)
-                        .map_err(|_| Error::InvalidPacket("invalid signature"))
+                        .map_err(|_| ProtoError::InvalidPacket("invalid signature"))
                 })
                 .await
-                .map_err(|_| Error::InvalidPacket("signature verification task failed"))?
+                .map_err(|_| ProtoError::InvalidPacket("signature verification task failed"))?
             }
             algorithm => {
                 warn!(
                     ?algorithm,
                     "unsupported public key algorithm for verification"
                 );
-                Err(Error::InvalidPacket(
+                Err(ProtoError::InvalidPacket(
                     "unsupported public key algorithm for verification",
                 ))
             }
@@ -798,14 +796,17 @@ impl VersionExchange {
             match Identification::decode(bytes) {
                 Ok(Completion::Complete(decoded)) => break (bytes, decoded),
                 Ok(Completion::Incomplete(_length)) => continue,
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.into()),
             }
         };
 
         debug!(addr = %conn.context.addr, ?ident, "received identification");
         if ident.protocol != PROTOCOL {
             warn!(addr = %conn.context.addr, ?ident, "unsupported protocol version");
-            return Err(IdentificationError::UnsupportedVersion(ident.protocol.to_owned()).into());
+            return Err(ProtoError::from(IdentificationError::UnsupportedVersion(
+                ident.protocol.to_owned(),
+            ))
+            .into());
         }
 
         let rest = next.len();
@@ -839,22 +840,14 @@ impl VersionExchange {
 
 #[derive(Debug, Error)]
 enum Error {
-    #[error("failed to parse identification: {0}")]
-    Identification(#[from] IdentificationError),
     #[error("invalid user name")]
     InvalidUsername,
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    #[error("incomplete message: {0:?}")]
-    Incomplete(Option<usize>),
-    #[error("invalid packet: {0}")]
-    InvalidPacket(&'static str),
-    #[error("no common {0} algorithms")]
-    NoCommonAlgorithm(&'static str),
     #[error("invalid mac for packet")]
     InvalidMac,
-    #[error("unreachable code: {0}")]
-    Unreachable(&'static str),
+    #[error("proto: {0}")]
+    Proto(#[from] ProtoError),
 }
 
 struct Pretty<T>(T);

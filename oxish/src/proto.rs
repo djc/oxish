@@ -15,7 +15,7 @@ use tracing::trace;
 
 use crate::{
     key_exchange::RawKeys,
-    messages::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType},
+    messages::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError},
     Error,
 };
 
@@ -186,27 +186,27 @@ impl ReadState {
 
         let payload_len = (packet_length.inner - 1 - padding_length.inner as u32) as usize;
         let Some(payload) = next.get(..payload_len) else {
-            return Err(Error::Incomplete(Some(payload_len - next.len())));
+            return Err(ProtoError::Incomplete(Some(payload_len - next.len())).into());
         };
 
         let Decoded {
             value: message_type,
             next: payload,
         } = MessageType::decode(payload).map_err(|e| match e {
-            Error::Incomplete(_) => Error::InvalidPacket("packet without message type"),
+            ProtoError::Incomplete(_) => ProtoError::InvalidPacket("packet without message type"),
             _ => e,
         })?;
 
         let Some(next) = next.get(payload_len..) else {
-            return Err(Error::Unreachable(
-                "unable to extract rest after fixed-length slice",
-            ));
+            return Err(
+                ProtoError::Unreachable("unable to extract rest after fixed-length slice").into(),
+            );
         };
 
         let Some(_) = next.get(..padding_length.inner as usize) else {
-            return Err(Error::Incomplete(Some(
-                padding_length.inner as usize - next.len(),
-            )));
+            return Err(
+                ProtoError::Incomplete(Some(padding_length.inner as usize - next.len())).into(),
+            );
         };
 
         Ok(IncomingPacket {
@@ -465,7 +465,7 @@ impl<'a> EncodedPacket<'a> {
         buf.extend(iter::repeat_n(0, padding_len)); // padding
         if let Some(padding) = buf.get_mut(padding_start..) {
             if rand::fill(padding).is_err() {
-                return Err(Error::Unreachable("failed to get random padding"));
+                return Err(ProtoError::Unreachable("failed to get random padding").into());
             }
         }
 
@@ -495,10 +495,10 @@ struct PacketLength {
 }
 
 impl Decode<'_> for PacketLength {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
         let Decoded { value, next } = u32::decode(bytes)?;
         if value > 256 * 1024 {
-            return Err(Error::InvalidPacket("packet too large"));
+            return Err(ProtoError::InvalidPacket("packet too large"));
         }
 
         Ok(Decoded {
@@ -514,10 +514,10 @@ struct PaddingLength {
 }
 
 impl Decode<'_> for PaddingLength {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, Error> {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
         let Decoded { value, next } = u8::decode(bytes)?;
         if value < 4 {
-            return Err(Error::InvalidPacket("padding too short"));
+            return Err(ProtoError::InvalidPacket("padding too short"));
         }
 
         Ok(Decoded {
