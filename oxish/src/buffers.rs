@@ -1,5 +1,5 @@
 use core::{
-    iter,
+    future, iter,
     pin::Pin,
     task::{ready, Context, Poll},
 };
@@ -346,6 +346,13 @@ impl WriteState {
         Poll::Ready(Ok(()))
     }
 
+    pub(crate) fn encoder(&mut self) -> Encoder<'_> {
+        Encoder {
+            write: self,
+            buffered: false,
+        }
+    }
+
     pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
         payload.encode(&mut self.buf);
         &self.buf
@@ -361,6 +368,34 @@ impl Default for WriteState {
             sequence_number: 0,
             keys: None,
         }
+    }
+}
+
+pub(crate) struct Encoder<'a> {
+    write: &'a mut WriteState,
+    pub(crate) buffered: bool,
+}
+
+impl Encoder<'_> {
+    pub(crate) fn enqueue(&mut self, payload: &impl Encode) -> Result<(), Error> {
+        self.buffered = true;
+        self.write
+            .handle_packet(payload, None)
+            .inspect_err(|error| {
+                error!(%error, ?payload, "failed to encode packet");
+            })
+    }
+
+    pub(crate) async fn flush(self, stream: &mut (impl AsyncWrite + Unpin)) -> Result<(), ()> {
+        if !self.buffered {
+            return Ok(());
+        }
+
+        future::poll_fn(|cx| self.write.poll_write_to(cx, stream))
+            .await
+            .map_err(|error| {
+                error!(%error, "failed to write queued packets to stream");
+            })
     }
 }
 

@@ -17,6 +17,7 @@ use proto::{
 };
 use tracing::{debug, warn};
 
+use crate::buffers::Encoder;
 use crate::{terminal::Terminal, Error};
 
 #[derive(Default)]
@@ -26,11 +27,14 @@ pub(crate) struct Channels {
 }
 
 impl Channels {
-    pub(crate) fn open(&mut self, open: ChannelOpen<'_>) -> OutgoingChannelMessage<'static> {
+    pub(crate) fn open(
+        &mut self,
+        open: ChannelOpen<'_>,
+        encoder: &mut Encoder<'_>,
+    ) -> Result<(), Error> {
         if open.r#type != ChannelType::Session {
-            return OutgoingChannelMessage::OpenFailure(ChannelOpenFailure::unknown_type(
-                open.sender_channel,
-            ));
+            encoder.enqueue(&ChannelOpenFailure::unknown_type(open.sender_channel))?;
+            return Ok(());
         }
 
         let local_id = self.next_id;
@@ -38,9 +42,8 @@ impl Channels {
         let entry = match self.channels.entry(local_id) {
             Entry::Vacant(entry) => entry,
             Entry::Occupied(_) => {
-                return OutgoingChannelMessage::OpenFailure(ChannelOpenFailure::duplicate_id(
-                    open.sender_channel,
-                ));
+                encoder.enqueue(&ChannelOpenFailure::duplicate_id(open.sender_channel))?;
+                return Ok(());
             }
         };
 
@@ -53,13 +56,15 @@ impl Channels {
             closed: ClosedState::default(),
         });
 
-        OutgoingChannelMessage::OpenConfirmation(channel.confirmation(local_id))
+        encoder.enqueue(&channel.confirmation(local_id))?;
+        Ok(())
     }
 
     pub(crate) fn request(
         &mut self,
         request: ChannelRequest<'_>,
-    ) -> Result<Option<OutgoingChannelMessage<'static>>, Error> {
+        encoder: &mut Encoder<'_>,
+    ) -> Result<(), Error> {
         let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
             return Err(ProtoError::InvalidPacket("channel request for unknown channel ID").into());
         };
@@ -87,9 +92,11 @@ impl Channels {
             }
         }
 
-        Ok(request
-            .want_reply
-            .then(|| OutgoingChannelMessage::RequestSuccess(channel.success())))
+        if request.want_reply {
+            encoder.enqueue(&channel.success())?;
+        }
+
+        Ok(())
     }
 
     pub(crate) fn data<'m, 's>(
@@ -123,10 +130,11 @@ impl Channels {
     pub(crate) fn close(
         &mut self,
         close: &ChannelClose,
-    ) -> Option<OutgoingChannelMessage<'static>> {
+        encoder: &mut Encoder<'_>,
+    ) -> Result<(), Error> {
         let Some(channel) = self.channels.get_mut(&close.recipient_channel) else {
             warn!(channel_id = %close.recipient_channel, "channel close for unknown channel ID");
-            return None;
+            return Ok(());
         };
 
         debug!(channel_id = %close.recipient_channel, "received channel close from client");
@@ -138,9 +146,11 @@ impl Channels {
             self.channels.remove(&close.recipient_channel);
         }
 
-        (!sent).then_some(OutgoingChannelMessage::Close(ChannelClose {
-            recipient_channel,
-        }))
+        if !sent {
+            encoder.enqueue(&ChannelClose { recipient_channel })?;
+        }
+
+        Ok(())
     }
 
     pub(crate) fn channels_mut(&mut self) -> &mut BTreeMap<u32, Channel> {
@@ -275,9 +285,6 @@ struct ClosedState {
 
 #[derive(Debug)]
 pub(crate) enum OutgoingChannelMessage<'a> {
-    OpenConfirmation(ChannelOpenConfirmation),
-    OpenFailure(ChannelOpenFailure<'a>),
-    RequestSuccess(ChannelRequestSuccess),
     Data(ChannelData<'a>),
     Eof(ChannelEof),
     Close(ChannelClose),
@@ -286,9 +293,6 @@ pub(crate) enum OutgoingChannelMessage<'a> {
 impl Encode for OutgoingChannelMessage<'_> {
     fn encode(&self, buffer: &mut Vec<u8>) {
         match self {
-            Self::OpenConfirmation(msg) => msg.encode(buffer),
-            Self::OpenFailure(msg) => msg.encode(buffer),
-            Self::RequestSuccess(msg) => msg.encode(buffer),
             Self::Data(msg) => msg.encode(buffer),
             Self::Eof(msg) => msg.encode(buffer),
             Self::Close(msg) => msg.encode(buffer),
