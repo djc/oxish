@@ -6,22 +6,22 @@ rust-version = "1.83"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
-anyhow = "1.0.95"
-aws-lc-rs = { version = "1.12", features = ["prebuilt-nasm"] }
-bitflags = "2"
-clap = { version = "4.5.24", features = ["derive"] }
-data-encoding = "2.10"
-libc = "0.2"
-listenfd = "1.0.2"
+anyhow = { workspace = true }
+aws-lc-rs = { workspace = true }
+bitflags = { workspace = true }
+clap = { workspace = true }
+data-encoding = { workspace = true }
+libc = { workspace = true }
+listenfd = { workspace = true }
 proto = { package = "oxish-proto", version = "0.1", path = "../oxish-proto" }
-thiserror = "2.0.9"
-tokio = { version = "1.42", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
-tokio-stream = "0.1.18"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["termios", "pty", "process", "fs", "stdio"] }
+rustix = { workspace = true }
 
 [lints]
 workspace = true
