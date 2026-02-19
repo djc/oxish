@@ -6,8 +6,8 @@ rust-version = "1.83"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
-thiserror = "2.0.9"
-tracing = "0.1.41"
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true
