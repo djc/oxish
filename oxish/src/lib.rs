@@ -35,13 +35,12 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, warn};
 
+mod buffers;
+use buffers::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage};
 mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
-mod proto;
-use proto::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
-
 mod terminal;
 
 /// A single SSH connection

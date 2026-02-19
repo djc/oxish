@@ -13,7 +13,7 @@ use proto::{
 };
 use tracing::{debug, error, warn};
 
-use crate::{proto::HandshakeHash, ConnectionContext};
+use crate::{buffers::HandshakeHash, ConnectionContext};
 
 pub(crate) struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
