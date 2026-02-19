@@ -2,10 +2,10 @@ use core::fmt;
 
 use super::ProtoError;
 
-pub(crate) struct IncomingPacket<'a> {
-    pub(crate) sequence_number: u32,
-    pub(crate) message_type: MessageType,
-    pub(crate) payload: &'a [u8],
+pub struct IncomingPacket<'a> {
+    pub sequence_number: u32,
+    pub message_type: MessageType,
+    pub payload: &'a [u8],
 }
 
 impl fmt::Debug for IncomingPacket<'_> {
@@ -24,7 +24,7 @@ impl fmt::Debug for IncomingPacket<'_> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MessageType {
+pub enum MessageType {
     Disconnect,
     Ignore,
     Unimplemented,
@@ -242,21 +242,21 @@ impl<'a> Decode<'a> for u8 {
     }
 }
 
-pub(crate) enum Completion<T> {
+pub enum Completion<T> {
     Complete(T),
     Incomplete(Option<usize>),
 }
 
-pub(crate) trait Encode: fmt::Debug + Send + Sync {
+pub trait Encode: fmt::Debug + Send + Sync {
     fn encode(&self, buf: &mut Vec<u8>);
 }
 
-pub(crate) trait Decode<'a>: Sized {
+pub trait Decode<'a>: Sized {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError>;
 }
 
 #[derive(Debug)]
-pub(crate) struct Decoded<'a, T> {
-    pub(crate) value: T,
-    pub(crate) next: &'a [u8],
+pub struct Decoded<'a, T> {
+    pub value: T,
+    pub next: &'a [u8],
 }

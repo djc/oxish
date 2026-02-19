@@ -358,12 +358,21 @@ dependencies = [
  "data-encoding",
  "libc",
  "listenfd",
+ "oxish-proto",
  "rustix",
  "thiserror",
  "tokio",
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "oxish-proto"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

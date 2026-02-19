@@ -1,5 +1,5 @@
 [workspace]
-members = ["oxish"]
+members = ["oxish", "oxish-proto"]
 resolver = "2"
 
 [workspace.lints.rust]

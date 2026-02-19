@@ -5,7 +5,7 @@ use super::base::{Decode, Decoded, Encode};
 use super::ProtoError;
 
 #[derive(Debug)]
-pub(crate) enum MethodName<'a> {
+pub enum MethodName<'a> {
     PublicKey,
     Password,
     HostBased,
@@ -42,7 +42,7 @@ impl PartialEq for MethodName<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) enum ServiceName<'a> {
+pub enum ServiceName<'a> {
     UserAuth,
     Connection,
     Unknown(&'a str),
@@ -73,7 +73,7 @@ impl PartialEq for ServiceName<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) enum ExtensionName<'a> {
+pub enum ExtensionName<'a> {
     ServerSigAlgs,
     Unknown(&'a str),
 }
@@ -95,7 +95,7 @@ impl<'a> Named<'a> for ExtensionName<'a> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum ChannelType<'a> {
+pub enum ChannelType<'a> {
     Session,
     Unknown(&'a str),
 }
@@ -117,7 +117,7 @@ impl<'a> Named<'a> for ChannelType<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum KeyExchangeAlgorithm<'a> {
+pub enum KeyExchangeAlgorithm<'a> {
     /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
     Curve25519Sha256,
     /// ext-info-c (<https://www.rfc-editor.org/rfc/rfc8308>)
@@ -144,7 +144,7 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum PublicKeyAlgorithm<'a> {
+pub enum PublicKeyAlgorithm<'a> {
     /// ecdsa-sha2-nistp256 (<https://www.rfc-editor.org/rfc/rfc5656>)
     EcdsaSha2Nistp256,
     /// ssh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
@@ -153,7 +153,7 @@ pub(crate) enum PublicKeyAlgorithm<'a> {
 }
 
 impl PublicKeyAlgorithm<'_> {
-    pub(crate) fn to_owned(&self) -> PublicKeyAlgorithm<'static> {
+    pub fn to_owned(&self) -> PublicKeyAlgorithm<'static> {
         match self {
             Self::EcdsaSha2Nistp256 => PublicKeyAlgorithm::EcdsaSha2Nistp256,
             Self::Ed25519 => PublicKeyAlgorithm::Ed25519,
@@ -181,7 +181,7 @@ impl<'a> Named<'a> for PublicKeyAlgorithm<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum EncryptionAlgorithm<'a> {
+pub enum EncryptionAlgorithm<'a> {
     /// aes128-ctr (<https://www.rfc-editor.org/rfc/rfc4344#section-4>)
     Aes128Ctr,
     Unknown(&'a str),
@@ -204,7 +204,7 @@ impl<'a> Named<'a> for EncryptionAlgorithm<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MacAlgorithm<'a> {
+pub enum MacAlgorithm<'a> {
     /// hmac-sha2-256 (<https://www.rfc-editor.org/rfc/rfc6668#section-2>)
     HmacSha2256,
     Unknown(&'a str),
@@ -227,7 +227,7 @@ impl<'a> Named<'a> for MacAlgorithm<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CompressionAlgorithm<'a> {
+pub enum CompressionAlgorithm<'a> {
     None,
     Unknown(&'a str),
 }
@@ -249,7 +249,7 @@ impl<'a> Named<'a> for CompressionAlgorithm<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Language<'a> {
+pub enum Language<'a> {
     Unknown(&'a str),
 }
 
@@ -265,7 +265,7 @@ impl<'a> Named<'a> for Language<'a> {
     }
 }
 
-pub(super) struct IncomingNameList<T>(pub(super) Vec<T>);
+pub(crate) struct IncomingNameList<T>(pub(super) Vec<T>);
 
 impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
@@ -304,7 +304,7 @@ impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
 }
 
 #[derive(Debug)]
-pub(crate) struct OutgoingNameList<'a, T>(pub(crate) &'a [T]);
+pub struct OutgoingNameList<'a, T>(pub &'a [T]);
 
 impl<'a, T: Named<'a>> Encode for OutgoingNameList<'_, T> {
     fn encode(&self, buf: &mut Vec<u8>) {
@@ -346,7 +346,7 @@ impl<'a, T: Named<'a>> Encode for T {
     }
 }
 
-pub(crate) trait Named<'a>: fmt::Debug + Send + Sync {
+pub trait Named<'a>: fmt::Debug + Send + Sync {
     fn typed(name: &'a str) -> Self;
 
     fn name(&self) -> &str;

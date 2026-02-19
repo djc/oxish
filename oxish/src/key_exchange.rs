@@ -7,16 +7,13 @@ use aws_lc_rs::{
     rand::{self, SystemRandom},
     signature::{KeyPair, Signature},
 };
+use proto::{
+    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
+    ProtoError, PublicKeyAlgorithm,
+};
 use tracing::{debug, error, warn};
 
-use crate::{
-    messages::{
-        Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit,
-        MessageType, ProtoError, PublicKeyAlgorithm,
-    },
-    proto::HandshakeHash,
-    ConnectionContext,
-};
+use crate::{proto::HandshakeHash, ConnectionContext};
 
 pub(crate) struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.

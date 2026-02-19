@@ -5,28 +5,29 @@ use thiserror::Error;
 use tracing::{debug, warn};
 
 mod base;
-pub(crate) use base::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType};
+pub use base::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType};
 mod channels;
-pub(crate) use channels::{
+pub use channels::{
     ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
-    ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, Mode, PtyReq,
+    ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, Env, Mode,
+    PtyReq,
 };
 mod named;
 use named::IncomingNameList;
-pub(crate) use named::{
+pub use named::{
     ChannelType, CompressionAlgorithm, EncryptionAlgorithm, ExtensionName, KeyExchangeAlgorithm,
     Language, MacAlgorithm, MethodName, Named, OutgoingNameList, PublicKeyAlgorithm, ServiceName,
 };
 
 #[derive(Debug)]
-pub(crate) struct Identification<'a> {
-    pub(crate) protocol: &'a str,
-    pub(crate) software: &'a str,
-    pub(crate) comments: &'a str,
+pub struct Identification<'a> {
+    pub protocol: &'a str,
+    pub software: &'a str,
+    pub comments: &'a str,
 }
 
 impl<'a> Identification<'a> {
-    pub(crate) fn decode(bytes: &'a [u8]) -> Result<Completion<Decoded<'a, Self>>, ProtoError> {
+    pub fn decode(bytes: &'a [u8]) -> Result<Completion<Decoded<'a, Self>>, ProtoError> {
         let Ok(message) = str::from_utf8(bytes) else {
             return Err(IdentificationError::InvalidUtf8.into());
         };
@@ -81,9 +82,9 @@ impl Encode for Identification<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct KeyExchangeInit<'a> {
+pub struct KeyExchangeInit<'a> {
     cookie: [u8; 16],
-    pub(crate) key_exchange_algorithms: Vec<KeyExchangeAlgorithm<'a>>,
+    pub key_exchange_algorithms: Vec<KeyExchangeAlgorithm<'a>>,
     pub(crate) server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
     pub(crate) encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
     pub(crate) encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
@@ -98,7 +99,7 @@ pub(crate) struct KeyExchangeInit<'a> {
 }
 
 impl KeyExchangeInit<'static> {
-    pub(crate) fn new(cookie: [u8; 16]) -> Result<Self, ProtoError> {
+    pub fn new(cookie: [u8; 16]) -> Result<Self, ProtoError> {
         Ok(Self {
             cookie,
             key_exchange_algorithms: vec![KeyExchangeAlgorithm::Curve25519Sha256],
@@ -235,7 +236,7 @@ impl Encode for KeyExchangeInit<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct NewKeys;
+pub struct NewKeys;
 
 impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
     type Error = ProtoError;
@@ -261,8 +262,8 @@ impl Encode for NewKeys {
 }
 
 #[derive(Debug)]
-pub(crate) struct ExtInfo<'a> {
-    pub(crate) extensions: Vec<(ExtensionName<'a>, &'a dyn Encode)>,
+pub struct ExtInfo<'a> {
+    pub extensions: Vec<(ExtensionName<'a>, &'a dyn Encode)>,
 }
 
 impl Encode for ExtInfo<'_> {
@@ -277,10 +278,10 @@ impl Encode for ExtInfo<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct UserAuthRequest<'a> {
-    pub(crate) user_name: &'a str,
-    pub(crate) service_name: ServiceName<'a>,
-    pub(crate) method: Method<'a>,
+pub struct UserAuthRequest<'a> {
+    pub user_name: &'a str,
+    pub service_name: ServiceName<'a>,
+    pub method: Method<'a>,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
@@ -350,16 +351,16 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) enum Method<'a> {
+pub enum Method<'a> {
     PublicKey(PublicKey<'a>),
     None,
 }
 
 #[derive(Debug)]
-pub(crate) struct PublicKey<'a> {
-    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
-    pub(crate) key_blob: &'a [u8],
-    pub(crate) signature: Option<Signature<'a>>,
+pub struct PublicKey<'a> {
+    pub algorithm: PublicKeyAlgorithm<'a>,
+    pub key_blob: &'a [u8],
+    pub signature: Option<Signature<'a>>,
 }
 
 impl<'a> Decode<'a> for PublicKey<'a> {
@@ -414,9 +415,9 @@ impl<'a> Decode<'a> for PublicKey<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Signature<'a> {
-    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
-    pub(crate) signature_blob: &'a [u8],
+pub struct Signature<'a> {
+    pub algorithm: PublicKeyAlgorithm<'a>,
+    pub signature_blob: &'a [u8],
 }
 
 impl<'a> Decode<'a> for Signature<'a> {
@@ -455,9 +456,9 @@ impl<'a> Decode<'a> for Signature<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct UserAuthFailure<'a> {
-    pub(crate) can_continue: &'a [MethodName<'a>],
-    pub(crate) partial_success: bool,
+pub struct UserAuthFailure<'a> {
+    pub can_continue: &'a [MethodName<'a>],
+    pub partial_success: bool,
 }
 
 impl Encode for UserAuthFailure<'_> {
@@ -469,9 +470,9 @@ impl Encode for UserAuthFailure<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct UserAuthPkOk<'a> {
-    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
-    pub(crate) key_blob: Cow<'a, [u8]>,
+pub struct UserAuthPkOk<'a> {
+    pub algorithm: PublicKeyAlgorithm<'a>,
+    pub key_blob: Cow<'a, [u8]>,
 }
 
 impl Encode for UserAuthPkOk<'_> {
@@ -482,17 +483,17 @@ impl Encode for UserAuthPkOk<'_> {
     }
 }
 
-pub(crate) struct SignatureData<'a> {
-    pub(crate) session_id: &'a [u8],
-    pub(crate) user_name: &'a str,
-    pub(crate) service_name: ServiceName<'a>,
-    pub(crate) algorithm: PublicKeyAlgorithm<'a>,
-    pub(crate) public_key: &'a [u8],
+pub struct SignatureData<'a> {
+    pub session_id: &'a [u8],
+    pub user_name: &'a str,
+    pub service_name: ServiceName<'a>,
+    pub algorithm: PublicKeyAlgorithm<'a>,
+    pub public_key: &'a [u8],
 }
 
 impl<'a> SignatureData<'a> {
     /// Build the data that the client signs for public key authentication (RFC 4252 Section 7)
-    pub(crate) fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.session_id.encode(&mut buf);
         MessageType::UserAuthRequest.encode(&mut buf);
@@ -507,8 +508,8 @@ impl<'a> SignatureData<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ServiceAccept<'a> {
-    pub(crate) service_name: ServiceName<'a>,
+pub struct ServiceAccept<'a> {
+    pub service_name: ServiceName<'a>,
 }
 
 impl Encode for ServiceAccept<'_> {
@@ -519,8 +520,8 @@ impl Encode for ServiceAccept<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ServiceRequest<'a> {
-    pub(crate) service_name: ServiceName<'a>,
+pub struct ServiceRequest<'a> {
+    pub service_name: ServiceName<'a>,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
@@ -544,9 +545,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Disconnect<'a> {
-    pub(crate) reason_code: DisconnectReason,
-    pub(crate) description: &'a str,
+pub struct Disconnect<'a> {
+    pub reason_code: DisconnectReason,
+    pub description: &'a str,
 }
 
 impl<'a> TryFrom<IncomingPacket<'a>> for Disconnect<'a> {
@@ -598,7 +599,7 @@ impl Encode for Disconnect<'_> {
 #[allow(dead_code)]
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum DisconnectReason {
+pub enum DisconnectReason {
     HostNotAllowedToConnect = 1,
     ProtocolError = 2,
     KeyExchangeFailed = 3,
@@ -642,7 +643,7 @@ impl TryFrom<u32> for DisconnectReason {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum ProtoError {
+pub enum ProtoError {
     #[error("failed to parse identification: {0}")]
     Identification(#[from] IdentificationError),
     #[error("incomplete message: {0:?}")]
@@ -656,7 +657,7 @@ pub(crate) enum ProtoError {
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum IdentificationError {
+pub enum IdentificationError {
     #[error("Invalid UTF-8")]
     InvalidUtf8,
     #[error("No SSH prefix")]
@@ -669,4 +670,4 @@ pub(crate) enum IdentificationError {
     UnsupportedVersion(String),
 }
 
-pub(crate) const PROTOCOL: &str = "2.0";
+pub const PROTOCOL: &str = "2.0";
