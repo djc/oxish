@@ -257,8 +257,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 }
             }
         };
-        // Main loop for handling channel messages
 
+        // Main loop for handling channel messages
         loop {
             tokio::select! {
                 result = self.read.packet(&mut self.stream) => {
@@ -280,43 +280,28 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     };
 
                     debug!(message = %Pretty(&channel_message), "handling channel message");
-                    let outgoing = match channel_message {
-                        IncomingChannelMessage::Open(open) => Some(self.channels.open(open)),
-                        IncomingChannelMessage::Request(request) => match self.channels.request(request) {
-                            Ok(outgoing) => outgoing,
-                            Err(error) => {
-                                error!(%error, "failed to handle channel request");
-                                return Err(());
-                            }
-                        }
+                    let mut encoder = self.write.encoder();
+                    let result = match channel_message {
+                        IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
+                        IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),
                         IncomingChannelMessage::Data(data) => match self.channels.data(&data) {
-                            Ok(Some((session, data))) => {
-                                if let Err(error) = session.write(data).await {
-                                    error!(%error, "failed to write data to session");
-                                    return Err(());
-                                }
-                                None
-                            }
-                            Ok(None) => None,
-                            Err(error) => {
-                                error!(%error, "failed to handle channel data");
-                                return Err(());
-                            }
+                            Ok(Some((session, data))) => match session.write(data).await {
+                                Ok(_) => Ok(()),
+                                Err(error) => Err(error.into()),
+                            },
+                            Ok(None) => Ok(()),
+                            Err(error) => Err(error.into()),
                         }
-                        IncomingChannelMessage::Eof(eof) => {
-                            if let Err(error) = self.channels.eof(&eof) {
-                                error!(%error, "failed to handle channel eof");
-                                return Err(());
-                            }
-                            None
-                        }
-                        IncomingChannelMessage::Close(close) => self.channels.close(&close),
+                        IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
+                        IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut encoder),
                     };
 
-                    if let Some(outgoing) = outgoing {
-                        debug!(outgoing = %Pretty(&outgoing), "sending channel message");
-                        self.send(&outgoing).await?;
+                    if let Err(error) = result {
+                        error!(%error, "failed to handle channel message");
+                        return Err(());
                     }
+
+                    encoder.flush(&mut self.stream).await?;
                 }
                 result = TerminalsFuture::new(self.channels.channels_mut()) => {
                     match result {
