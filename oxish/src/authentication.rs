@@ -19,7 +19,7 @@ use std::{
 };
 
 use aws_lc_rs::signature::{self, UnparsedPublicKey};
-use libc::{getpwnam_r, sysconf, O_DIRECTORY, O_RDONLY, _SC_GETPW_R_SIZE_MAX};
+use libc::{getpwnam_r, sysconf, _SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY};
 use proto::{Decode, Decoded, Named, ProtoError, PublicKeyAlgorithm, Signature, SignatureData};
 use tokio::task::spawn_blocking;
 use tracing::{debug, warn};
