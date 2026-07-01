@@ -7,12 +7,13 @@ use std::io;
 
 use aws_lc_rs::{
     cipher::{self, StreamingDecryptingKey, StreamingEncryptingKey, UnboundCipherKey},
-    constant_time, digest, hmac, rand,
+    constant_time, digest,
+    digest::Digest,
+    hmac, rand,
 };
 use proto::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tracing::error;
-use tracing::trace;
+use tracing::{error, trace};
 
 use crate::{key_exchange::RawKeys, Error};
 
@@ -431,7 +432,7 @@ impl HandshakeHash {
         self.0.update(data);
     }
 
-    pub(crate) fn finish(self) -> digest::Digest {
+    pub(crate) fn finish(self) -> Digest {
         self.0.finish()
     }
 }
