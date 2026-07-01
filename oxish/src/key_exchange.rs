@@ -2,10 +2,7 @@ use core::fmt;
 use std::{borrow::Cow, sync::Arc};
 
 use aws_lc_rs::{
-    agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
-    digest,
-    rand::{self, SystemRandom},
-    signature::{KeyPair, Signature},
+    agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519}, digest::{self, Digest}, rand::{self, SystemRandom}, signature::{KeyPair, Signature},
 };
 use proto::{
     Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
@@ -17,7 +14,7 @@ use crate::{buffers::HandshakeHash, ConnectionContext};
 
 pub(crate) struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
-    session_id: Option<digest::Digest>,
+    session_id: Option<Digest>,
 }
 
 impl EcdhKeyExchange {
@@ -26,7 +23,7 @@ impl EcdhKeyExchange {
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
         cx: &ConnectionContext,
-    ) -> Result<(EcdhKeyExchangeReply, digest::Digest, RawKeySet), ()> {
+    ) -> Result<(EcdhKeyExchangeReply, Digest, RawKeySet), ()> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
@@ -195,7 +192,7 @@ impl fmt::Debug for TaggedSignature<'_> {
 #[derive(Debug, Default)]
 pub(crate) struct KeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
-    session_id: Option<digest::Digest>,
+    session_id: Option<Digest>,
 }
 
 impl KeyExchange {
@@ -304,8 +301,8 @@ impl RawKeys {
 
 struct KeyDerivation {
     shared_secret: Vec<u8>,
-    exchange_hash: digest::Digest,
-    session_id: Arc<digest::Digest>,
+    exchange_hash: Digest,
+    session_id: Arc<Digest>,
 }
 
 impl KeyDerivation {
@@ -324,7 +321,7 @@ impl KeyDerivation {
 
 pub(crate) struct Key {
     base: digest::Context,
-    session_id: Arc<digest::Digest>,
+    session_id: Arc<Digest>,
     input: KeyInput,
 }
 
