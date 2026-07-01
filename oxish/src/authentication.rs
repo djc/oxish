@@ -162,74 +162,11 @@ pub(crate) fn authorized_keys(home_dir: &Path, uid: u32) -> Vec<AuthorizedKey> {
 
     let mut keys = Vec::new();
     for (line, key) in contents.lines().enumerate() {
-        let line = line + 1;
-        let key = match key.split_once('#') {
-            Some((contents, _)) => contents,
-            None => key,
+        match AuthorizedKey::from_str(key) {
+            Ok(Some(key)) => keys.push(key),
+            Ok(None) => continue,
+            Err(()) => debug!(line = line + 1, "skipping invalid authorized keys line"),
         }
-        .trim();
-
-        let mut parts = key.split_whitespace();
-        let Some(alg) = parts.next() else {
-            debug!(line, "missing algorithm");
-            continue;
-        };
-
-        // TODO: support options before key type
-        let algorithm = PublicKeyAlgorithm::typed(alg);
-        let alg = match algorithm {
-            PublicKeyAlgorithm::EcdsaSha2Nistp256 => &signature::ECDSA_P256_SHA256_FIXED,
-            algorithm => {
-                warn!(
-                    ?algorithm,
-                    line, "unsupported public key algorithm in authorized keys file"
-                );
-                continue;
-            }
-        };
-
-        let Some(key_data) = parts.next() else {
-            debug!(line, "missing key data");
-            continue;
-        };
-
-        let Ok(blob) = data_encoding::BASE64.decode(key_data.as_bytes()) else {
-            debug!(line, "invalid base64 key data");
-            continue;
-        };
-
-        let next = match <&[u8]>::decode(&blob) {
-            // Unused `key_type` field, should match `alg`
-            Ok(Decoded { next, .. }) => next,
-            Err(error) => {
-                debug!(%error, line, "invalid key type");
-                continue;
-            }
-        };
-
-        let next = match <&[u8]>::decode(next) {
-            // Unused `curve_name` field
-            Ok(Decoded { next, .. }) => next,
-            Err(error) => {
-                debug!(%error, line, "invalid curve name");
-                continue;
-            }
-        };
-
-        let q = match <&[u8]>::decode(next) {
-            // TODO: what does the trailing data mean?
-            Ok(Decoded { value: q, .. }) => q,
-            Err(error) => {
-                debug!(%error, line, "invalid public key data");
-                continue;
-            }
-        };
-
-        keys.push(AuthorizedKey {
-            algorithm: algorithm.to_owned(),
-            key: UnparsedPublicKey::new(alg, Cow::Owned(q.to_vec())),
-            blob,
-        });
     }
 
     keys
@@ -275,6 +212,80 @@ impl AuthorizedKey {
                 Cow::Borrowed(&Self::FAKE_KEY[..]),
             ),
         }
+    }
+
+    fn from_str(s: &str) -> Result<Option<Self>, ()> {
+        let key = match s.split_once('#') {
+            Some((contents, _)) => contents,
+            None => s,
+        }
+        .trim();
+
+        if key.is_empty() {
+            return Ok(None);
+        }
+
+        let mut parts = key.split_whitespace();
+        let Some(alg) = parts.next() else {
+            debug!("missing algorithm");
+            return Err(());
+        };
+
+        // TODO: support options before key type
+        let algorithm = PublicKeyAlgorithm::typed(alg);
+        let alg = match algorithm {
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => &signature::ECDSA_P256_SHA256_FIXED,
+            algorithm => {
+                warn!(
+                    ?algorithm,
+                    "unsupported public key algorithm in authorized keys file"
+                );
+                return Err(());
+            }
+        };
+
+        let Some(key_data) = parts.next() else {
+            debug!("missing key data");
+            return Err(());
+        };
+
+        let Ok(blob) = data_encoding::BASE64.decode(key_data.as_bytes()) else {
+            debug!("invalid base64 key data");
+            return Err(());
+        };
+
+        let next = match <&[u8]>::decode(&blob) {
+            // Unused `key_type` field, should match `alg`
+            Ok(Decoded { next, .. }) => next,
+            Err(error) => {
+                debug!(%error, "invalid key type");
+                return Err(());
+            }
+        };
+
+        let next = match <&[u8]>::decode(next) {
+            // Unused `curve_name` field
+            Ok(Decoded { next, .. }) => next,
+            Err(error) => {
+                debug!(%error, "invalid curve name");
+                return Err(());
+            }
+        };
+
+        let q = match <&[u8]>::decode(next) {
+            // TODO: what does the trailing data mean?
+            Ok(Decoded { value: q, .. }) => q,
+            Err(error) => {
+                debug!(%error, "invalid public key data");
+                return Err(());
+            }
+        };
+
+        Ok(Some(Self {
+            algorithm: algorithm.to_owned(),
+            key: UnparsedPublicKey::new(alg, Cow::Owned(q.to_vec())),
+            blob,
+        }))
     }
 
     pub(crate) async fn verify(
