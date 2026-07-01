@@ -14,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
 
 mod authentication;
-use authentication::{AuthorizedKey, User};
+use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
 use buffers::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
 mod connections;
@@ -22,6 +22,8 @@ use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod key_exchange;
 use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
 mod terminal;
+#[cfg(test)]
+mod tests;
 
 /// A single SSH connection
 pub struct Connection<T> {
@@ -37,11 +39,24 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     pub fn new(stream: T, addr: SocketAddr, host_key: Arc<Ed25519KeyPair>) -> Self {
         Self {
             stream,
-            context: ConnectionContext { addr, host_key },
+            context: ConnectionContext {
+                addr,
+                host_key,
+                auth: Auth::System,
+            },
             read: ReadState::default(),
             write: WriteState::default(),
             channels: Channels::default(),
         }
+    }
+
+    /// Use a fixed set of authorized keys for authentication
+    ///
+    /// By default, we find the `authorized_keys` file from the user's `.ssh` directory.
+    #[cfg(test)]
+    pub(crate) fn for_user(mut self, user: User) -> Self {
+        self.context.auth = Auth::Fixed(user);
+        self
     }
 
     /// Drive the connection forward
@@ -190,12 +205,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 continue;
             }
 
-            let user = match &mut cached_user {
-                Some(user) if user.name == user_auth_request.user_name => user,
-                _ => match User::from_system(user_auth_request.user_name) {
-                    Ok(new) => cached_user.insert(new),
-                    Err(error) => {
-                        error!(%error, "failed to get user information");
+            let user = match (&mut cached_user, &self.context.auth) {
+                (Some(user), _) if user.name == user_auth_request.user_name => user,
+                (_, auth) => match auth.resolve(user_auth_request.user_name) {
+                    Some(user) => cached_user.insert(user),
+                    None => {
                         self.send_auth_failed().await?;
                         continue;
                     }
@@ -375,6 +389,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 struct ConnectionContext {
     addr: SocketAddr,
     host_key: Arc<Ed25519KeyPair>,
+    auth: Auth,
 }
 
 #[derive(Default)]

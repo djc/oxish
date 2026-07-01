@@ -22,11 +22,46 @@ use aws_lc_rs::signature::{self, UnparsedPublicKey};
 use libc::{getpwnam_r, sysconf, _SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY};
 use proto::{Decode, Decoded, Named, ProtoError, PublicKeyAlgorithm, Signature, SignatureData};
 use tokio::task::spawn_blocking;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::Error;
 
-#[derive(Debug)]
+pub(crate) enum Auth {
+    /// Look up the requested user in the system database and read their
+    /// `authorized_keys` file.
+    System,
+    /// Authorize against a fixed set of keys, ignoring the system database.
+    #[cfg(test)]
+    Fixed(User),
+}
+
+impl Auth {
+    pub(crate) fn resolve(&self, name: &str) -> Option<User> {
+        match self {
+            Self::System => match User::from_system(name) {
+                Ok(new) => Some(new),
+                Err(error) => {
+                    error!(%error, "failed to get user information");
+                    None
+                }
+            },
+            #[cfg(test)]
+            Self::Fixed(user) => match user.name == name {
+                true => Some(user.clone()),
+                false => {
+                    warn!(
+                        requested_user = %name,
+                        authorized_user = %user.name,
+                        "requested user does not match authorized user",
+                    );
+                    None
+                }
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct User {
     pub(crate) name: String,
     #[expect(dead_code)]
@@ -93,6 +128,24 @@ impl User {
             authorized_keys: authorized_keys(&home_dir, id),
             home_dir,
         })
+    }
+
+    /// Create a new user with the given name and home directory
+    ///
+    /// This is primarily intended for testing.
+    #[cfg(test)]
+    pub(crate) fn new(
+        name: String,
+        id: u32,
+        home_dir: PathBuf,
+        authorized_keys: Vec<AuthorizedKey>,
+    ) -> Self {
+        Self {
+            name,
+            id,
+            home_dir,
+            authorized_keys,
+        }
     }
 
     const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
@@ -214,7 +267,7 @@ impl AuthorizedKey {
         }
     }
 
-    fn from_str(s: &str) -> Result<Option<Self>, ()> {
+    pub(crate) fn from_str(s: &str) -> Result<Option<Self>, ()> {
         let key = match s.split_once('#') {
             Some((contents, _)) => contents,
             None => s,
