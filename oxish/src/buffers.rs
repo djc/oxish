@@ -5,17 +5,20 @@ use core::{
 };
 use std::io;
 
-use aws_lc_rs::{
-    cipher::{self, StreamingDecryptingKey, StreamingEncryptingKey, UnboundCipherKey},
-    constant_time, digest,
-    digest::Digest,
-    hmac, rand,
+use proto::{
+    Completion, Decode, Decoded, Encode, EncryptionAlgorithm, IncomingPacket, MacAlgorithm,
+    MessageType, ProtoError,
 };
-use proto::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{error, trace};
 
-use crate::{key_exchange::RawKeys, Error};
+use crate::{
+    crypto::{
+        CryptoProvider, Decrypter, Digest, Encrypter, Hash, HashContext, HmacKey, SecureRandom,
+    },
+    key_exchange::RawKeys,
+    Error,
+};
 
 /// The reader and decryption state for an SSH connection
 pub(crate) struct ReadState {
@@ -29,7 +32,7 @@ pub(crate) struct ReadState {
 
     /// Buffer with blocks of decrypted data
     ///
-    /// aws-lc-rs does not support in-place decryption for AES-CTR.
+    /// The [`Decrypter`] interface decrypts into a separate output buffer.
     decrypted_buf: Vec<u8>,
     /// Whether the a first block including the packet length has been decrypted
     decrypted_first_block: bool,
@@ -83,7 +86,7 @@ impl ReadState {
         }
 
         let (packet_length, mac_len) = if let Some(keys) = &mut self.decryption_key {
-            let block_len = keys.decrypter.algorithm().block_len();
+            let block_len = keys.decrypter.block_len();
 
             let needed = block_len;
             if self.buf.len() < needed {
@@ -92,12 +95,8 @@ impl ReadState {
             self.decrypted_buf.resize(self.buf.len() + block_len, 0);
 
             if !self.decrypted_first_block {
-                // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
-                let update = keys
-                    .decrypter
-                    .less_safe_update(&self.buf[..block_len], &mut self.decrypted_buf[..block_len])
-                    .unwrap();
-                assert_eq!(update.remainder().len(), 0);
+                keys.decrypter
+                    .decrypt(&self.buf[..block_len], &mut self.decrypted_buf[..block_len]);
                 self.decrypted_first_block = true;
             }
 
@@ -107,40 +106,29 @@ impl ReadState {
             } = PacketLength::decode(&self.decrypted_buf[..4])?;
             assert!(next.is_empty());
 
-            let needed = 4
-                + packet_length.inner as usize
-                + keys.mac.algorithm().digest_algorithm().output_len;
+            let mac_len = keys.mac.tag_len();
+            let needed = 4 + packet_length.inner as usize + mac_len;
             if self.buf.len() < needed {
                 return Ok(Completion::Incomplete(Some(needed)));
             }
 
-            // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
-            let update = keys
-                .decrypter
-                .less_safe_update(
-                    &self.buf[block_len..4 + packet_length.inner as usize],
-                    &mut self.decrypted_buf[block_len..4 + packet_length.inner as usize],
-                )
-                .unwrap();
-            assert_eq!(update.remainder().len(), 0);
+            keys.decrypter.decrypt(
+                &self.buf[block_len..4 + packet_length.inner as usize],
+                &mut self.decrypted_buf[block_len..4 + packet_length.inner as usize],
+            );
 
             let packet_excl_mac = &self.decrypted_buf[..4 + packet_length.inner as usize];
 
-            let mut hmac_ctx = hmac::Context::with_key(&keys.mac);
-            hmac_ctx.update(&self.sequence_number.to_be_bytes());
-            hmac_ctx.update(packet_excl_mac);
-            let actual_mac = hmac_ctx.sign();
-            let expected_mac = &self.buf[4 + packet_length.inner as usize
-                ..4 + packet_length.inner as usize
-                    + keys.mac.algorithm().digest_algorithm().output_len];
-            if constant_time::verify_slices_are_equal(actual_mac.as_ref(), expected_mac).is_err() {
+            let expected_mac = &self.buf
+                [4 + packet_length.inner as usize..4 + packet_length.inner as usize + mac_len];
+            if !keys.mac.verify(
+                &[&self.sequence_number.to_be_bytes(), packet_excl_mac],
+                expected_mac,
+            ) {
                 return Err(Error::InvalidMac);
             }
 
-            (
-                packet_length,
-                keys.mac.algorithm().digest_algorithm().output_len,
-            )
+            (packet_length, mac_len)
         } else {
             let needed = 4;
             if self.buf.len() < needed {
@@ -249,21 +237,26 @@ impl Default for ReadState {
 
 /// Decryption and HMAC key for the incoming stream
 pub(crate) struct ReadKeys {
-    decrypter: StreamingDecryptingKey,
-    mac: hmac::Key,
+    decrypter: Box<dyn Decrypter>,
+    mac: Box<dyn HmacKey>,
 }
 
 impl ReadKeys {
-    pub(crate) fn new(keys: RawKeys) -> Self {
-        Self {
-            decrypter: StreamingDecryptingKey::ctr(
-                UnboundCipherKey::new(&cipher::AES_128, &keys.encryption_key.derive::<16>())
-                    .unwrap(),
-                cipher::DecryptionContext::Iv128(keys.initial_iv.derive::<16>().into()),
-            )
-            .unwrap(),
-            mac: hmac::Key::new(hmac::HMAC_SHA256, &keys.integrity_key.derive::<32>()),
-        }
+    pub(crate) fn new(
+        keys: RawKeys,
+        encryption_algorithm: &EncryptionAlgorithm<'_>,
+        mac_algorithm: &MacAlgorithm<'_>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, crate::crypto::Error> {
+        Ok(Self {
+            decrypter: provider.cipher(encryption_algorithm)?.decrypter(
+                &keys.encryption_key.derive::<16>(),
+                &keys.initial_iv.derive::<16>(),
+            ),
+            mac: provider
+                .hmac(mac_algorithm)?
+                .with_key(&keys.integrity_key.derive::<32>()),
+        })
     }
 }
 
@@ -273,7 +266,7 @@ pub(crate) struct WriteState {
 
     /// Buffer with encrypted data ready to be sent to the transport stream
     ///
-    /// aws-lc-rs does not support in-place encryption for AES-CTR.
+    /// The [`Encrypter`] interface encrypts into a separate output buffer.
     encrypted_buf: Vec<u8>,
 
     /// The amount of bytes at the start of `encrypted_buf`` that have already
@@ -282,9 +275,23 @@ pub(crate) struct WriteState {
 
     sequence_number: u32,
     pub(crate) keys: Option<WriteKeys>,
+
+    /// Source of random bytes for packet padding
+    secure_random: &'static dyn SecureRandom,
 }
 
 impl WriteState {
+    pub(crate) fn new(secure_random: &'static dyn SecureRandom) -> Self {
+        Self {
+            buf: Vec::with_capacity(16_384),
+            encrypted_buf: Vec::with_capacity(16_384),
+            written: 0,
+            sequence_number: 0,
+            keys: None,
+            secure_random,
+        }
+    }
+
     pub(crate) fn handle_packet(
         &mut self,
         payload: &impl Encode,
@@ -298,34 +305,27 @@ impl WriteState {
         let pending_length = self.encrypted_buf.len();
 
         let Some(keys) = &mut self.keys else {
-            let packet = EncodedPacket::new(&mut self.encrypted_buf, payload, 1)?;
+            let packet =
+                EncodedPacket::new(&mut self.encrypted_buf, payload, 1, self.secure_random)?;
             if let Some(exchange_hash) = exchange_hash {
                 exchange_hash.prefixed(packet.payload());
             }
             return Ok(());
         };
 
-        let block_len = keys.encrypter.algorithm().block_len();
+        let block_len = keys.encrypter.block_len();
 
-        let packet = EncodedPacket::new(&mut self.buf, payload, block_len)?;
+        let packet = EncodedPacket::new(&mut self.buf, payload, block_len, self.secure_random)?;
         if let Some(exchange_hash) = exchange_hash {
             exchange_hash.prefixed(packet.payload());
         }
         let data = packet.without_mac();
 
-        self.encrypted_buf
-            .resize(pending_length + data.len() + block_len, 0);
-        let update = keys
-            .encrypter
-            .update(data, &mut self.encrypted_buf[pending_length..])
-            .unwrap();
-        assert_eq!(update.remainder().len(), block_len);
-        self.encrypted_buf.truncate(pending_length + data.len());
+        self.encrypted_buf.resize(pending_length + data.len(), 0);
+        keys.encrypter
+            .encrypt(data, &mut self.encrypted_buf[pending_length..]);
 
-        let mut hmac_ctx = hmac::Context::with_key(&keys.mac);
-        hmac_ctx.update(&sequence_number.to_be_bytes());
-        hmac_ctx.update(data);
-        let mac = hmac_ctx.sign();
+        let mac = keys.mac.sign(&[&sequence_number.to_be_bytes(), data]);
         self.encrypted_buf.extend_from_slice(mac.as_ref());
 
         Ok(())
@@ -360,18 +360,6 @@ impl WriteState {
     }
 }
 
-impl Default for WriteState {
-    fn default() -> Self {
-        Self {
-            buf: Vec::with_capacity(16_384),
-            encrypted_buf: Vec::with_capacity(16_384),
-            written: 0,
-            sequence_number: 0,
-            keys: None,
-        }
-    }
-}
-
 pub(crate) struct Encoder<'a> {
     write: &'a mut WriteState,
     pub(crate) buffered: bool,
@@ -402,27 +390,36 @@ impl Encoder<'_> {
 
 /// Encryption and HMAC key for the outgoing stream
 pub(crate) struct WriteKeys {
-    encrypter: StreamingEncryptingKey,
-    mac: hmac::Key,
+    encrypter: Box<dyn Encrypter>,
+    mac: Box<dyn HmacKey>,
 }
 
 impl WriteKeys {
-    pub(crate) fn new(keys: RawKeys) -> Self {
-        Self {
-            encrypter: StreamingEncryptingKey::less_safe_ctr(
-                UnboundCipherKey::new(&cipher::AES_128, &keys.encryption_key.derive::<16>())
-                    .unwrap(),
-                cipher::EncryptionContext::Iv128(keys.initial_iv.derive::<16>().into()),
-            )
-            .unwrap(),
-            mac: hmac::Key::new(hmac::HMAC_SHA256, &keys.integrity_key.derive::<32>()),
-        }
+    pub(crate) fn new(
+        keys: RawKeys,
+        encryption_algorithm: &EncryptionAlgorithm<'_>,
+        mac_algorithm: &MacAlgorithm<'_>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, crate::crypto::Error> {
+        Ok(Self {
+            encrypter: provider.cipher(encryption_algorithm)?.encrypter(
+                &keys.encryption_key.derive::<16>(),
+                &keys.initial_iv.derive::<16>(),
+            ),
+            mac: provider
+                .hmac(mac_algorithm)?
+                .with_key(&keys.integrity_key.derive::<32>()),
+        })
     }
 }
 
-pub(crate) struct HandshakeHash(digest::Context);
+pub(crate) struct HandshakeHash(Box<dyn HashContext>);
 
 impl HandshakeHash {
+    pub(crate) fn new(hash: &dyn Hash) -> Self {
+        Self(hash.start())
+    }
+
     pub(crate) fn prefixed(&mut self, data: &[u8]) {
         self.0.update(&(data.len() as u32).to_be_bytes());
         self.0.update(data);
@@ -434,12 +431,6 @@ impl HandshakeHash {
 
     pub(crate) fn finish(self) -> Digest {
         self.0.finish()
-    }
-}
-
-impl Default for HandshakeHash {
-    fn default() -> Self {
-        Self(digest::Context::new(&digest::SHA256))
     }
 }
 
@@ -456,6 +447,7 @@ impl<'a> EncodedPacket<'a> {
         buf: &'a mut Vec<u8>,
         payload: &impl Encode,
         cipher_block_len: usize,
+        secure_random: &dyn SecureRandom,
     ) -> Result<Self, Error> {
         let start = buf.len();
 
@@ -497,7 +489,7 @@ impl<'a> EncodedPacket<'a> {
         let padding_start = buf.len();
         buf.extend(iter::repeat_n(0, padding_len)); // padding
         if let Some(padding) = buf.get_mut(padding_start..) {
-            if rand::fill(padding).is_err() {
+            if secure_random.fill(padding).is_err() {
                 return Err(ProtoError::Unreachable("failed to get random padding").into());
             }
         }

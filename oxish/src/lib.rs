@@ -2,21 +2,23 @@ use core::{fmt, future, net::SocketAddr};
 use std::{borrow::Cow, io, str, sync::Arc};
 
 use ::proto::{
-    Completion, Decoded, Disconnect, DisconnectReason, Encode, ExtInfo, ExtensionName,
-    Identification, IdentificationError, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
-    Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept,
-    ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
-    PROTOCOL,
+    Completion, Decoded, Disconnect, DisconnectReason, Encode, EncryptionAlgorithm, ExtInfo,
+    ExtensionName, Identification, IdentificationError, KeyExchangeAlgorithm, KeyExchangeInit,
+    MessageType, Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
+    ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
+    UserAuthRequest, PROTOCOL,
 };
-use aws_lc_rs::signature::Ed25519KeyPair;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
 
 mod authentication;
+pub mod aws_lc;
 use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
 use buffers::{HandshakeHash, ReadKeys, ReadState, WriteKeys, WriteState};
+pub mod crypto;
+use crypto::{CryptoProvider, SigningKey};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod key_exchange;
@@ -36,16 +38,22 @@ pub struct Connection<T> {
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Create a new [`Connection`]
-    pub fn new(stream: T, addr: SocketAddr, host_key: Arc<Ed25519KeyPair>) -> Self {
+    pub fn new(
+        stream: T,
+        addr: SocketAddr,
+        host_key: Arc<dyn SigningKey>,
+        provider: &'static dyn CryptoProvider,
+    ) -> Self {
         Self {
             stream,
             context: ConnectionContext {
                 addr,
                 host_key,
                 auth: Auth::System,
+                provider,
             },
             read: ReadState::default(),
-            write: WriteState::default(),
+            write: WriteState::new(provider.secure_random()),
             channels: Channels::default(),
         }
     }
@@ -62,7 +70,17 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.context.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
-        let mut exchange = HandshakeHash::default();
+        // The exchange hash is fed data from the version exchange onward, before
+        // the key exchange algorithm is negotiated; assume our only supported one.
+        let Ok(hash) = self
+            .context
+            .provider
+            .hash(&KeyExchangeAlgorithm::Curve25519Sha256)
+        else {
+            error!("unsupported hash algorithm");
+            return Err(());
+        };
+        let mut exchange = HandshakeHash::new(hash);
         let state = VersionExchange::default();
         let state = match state.advance(&mut exchange, &mut self).await {
             Ok(state) => state,
@@ -207,7 +225,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
             let user = match (&mut cached_user, &self.context.auth) {
                 (Some(user), _) if user.name == user_auth_request.user_name => user,
-                (_, auth) => match auth.resolve(user_auth_request.user_name) {
+                (_, auth) => match auth.resolve(user_auth_request.user_name, self.context.provider)
+                {
                     Some(user) => cached_user.insert(user),
                     None => {
                         self.send_auth_failed().await?;
@@ -224,7 +243,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 // Signature, authorized key => verify signature
                 (Some(sig), Some(key)) if sig.algorithm == key.algorithm => (sig, key.clone()),
                 // Signature, no authorized key => verify signature against fake key
-                (Some(sig), None) => (sig, AuthorizedKey::fake()),
+                (Some(sig), None) => (sig, AuthorizedKey::fake(self.context.provider)),
                 // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
                 (Some(_), Some(_)) => {
                     warn!(
@@ -349,8 +368,26 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Cipher and MAC algorithms are negotiated during key exchange.
         // Currently this hard codes AES-128-CTR and HMAC-SHA256.
-        self.read.decryption_key = Some(ReadKeys::new(client_to_server));
-        self.write.keys = Some(WriteKeys::new(server_to_client));
+        let (Ok(read_keys), Ok(write_keys)) = (
+            ReadKeys::new(
+                client_to_server,
+                &EncryptionAlgorithm::Aes128Ctr,
+                &proto::MacAlgorithm::HmacSha2256,
+                self.context.provider,
+            ),
+            WriteKeys::new(
+                server_to_client,
+                &EncryptionAlgorithm::Aes128Ctr,
+                &proto::MacAlgorithm::HmacSha2256,
+                self.context.provider,
+            ),
+        ) else {
+            error!("unsupported cipher or mac algorithm");
+            return Err(());
+        };
+
+        self.read.decryption_key = Some(read_keys);
+        self.write.keys = Some(write_keys);
         Ok(())
     }
 
@@ -388,8 +425,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
 struct ConnectionContext {
     addr: SocketAddr,
-    host_key: Arc<Ed25519KeyPair>,
+    host_key: Arc<dyn SigningKey>,
     auth: Auth,
+    provider: &'static dyn CryptoProvider,
 }
 
 #[derive(Default)]

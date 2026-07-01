@@ -6,7 +6,6 @@ use std::os::linux::fs::MetadataExt;
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "linux")))]
 use std::os::unix::fs::MetadataExt;
 use std::{
-    borrow::Cow,
     ffi::{CStr, CString, OsStr},
     fs::File,
     io::{self, Read},
@@ -16,14 +15,15 @@ use std::{
     },
     path::{Path, PathBuf},
     str,
+    sync::Arc,
 };
 
-use aws_lc_rs::signature::{self, UnparsedPublicKey};
 use libc::{getpwnam_r, sysconf, _SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY};
 use proto::{Decode, Decoded, Named, ProtoError, PublicKeyAlgorithm, Signature, SignatureData};
 use tokio::task::spawn_blocking;
 use tracing::{debug, error, warn};
 
+use crate::crypto::{CryptoProvider, VerifyingKey};
 use crate::Error;
 
 pub(crate) enum Auth {
@@ -36,9 +36,9 @@ pub(crate) enum Auth {
 }
 
 impl Auth {
-    pub(crate) fn resolve(&self, name: &str) -> Option<User> {
+    pub(crate) fn resolve(&self, name: &str, provider: &dyn CryptoProvider) -> Option<User> {
         match self {
-            Self::System => match User::from_system(name) {
+            Self::System => match User::from_system(name, provider) {
                 Ok(new) => Some(new),
                 Err(error) => {
                     error!(%error, "failed to get user information");
@@ -76,7 +76,7 @@ pub(crate) struct User {
 }
 
 impl User {
-    pub(crate) fn from_system(name: &str) -> Result<Self, Error> {
+    pub(crate) fn from_system(name: &str, provider: &dyn CryptoProvider) -> Result<Self, Error> {
         let c_name = CString::new(name).map_err(|_| Error::InvalidUsername)?;
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
@@ -125,7 +125,7 @@ impl User {
         Ok(Self {
             name: name.to_owned(),
             id,
-            authorized_keys: authorized_keys(&home_dir, id),
+            authorized_keys: authorized_keys(&home_dir, id, provider),
             home_dir,
         })
     }
@@ -158,7 +158,11 @@ impl User {
 /// - None of the path components have group or other write permissions
 /// - Each of the path components are owned by root or the target user
 /// - Avoid TOCTOU issues when opening each path component
-pub(crate) fn authorized_keys(home_dir: &Path, uid: u32) -> Vec<AuthorizedKey> {
+pub(crate) fn authorized_keys(
+    home_dir: &Path,
+    uid: u32,
+    provider: &dyn CryptoProvider,
+) -> Vec<AuthorizedKey> {
     let home = match File::open(home_dir) {
         Ok(file) => file,
         Err(error) => {
@@ -215,7 +219,7 @@ pub(crate) fn authorized_keys(home_dir: &Path, uid: u32) -> Vec<AuthorizedKey> {
 
     let mut keys = Vec::new();
     for (line, key) in contents.lines().enumerate() {
-        match AuthorizedKey::from_str(key) {
+        match AuthorizedKey::from_str(key, provider) {
             Ok(Some(key)) => keys.push(key),
             Ok(None) => continue,
             Err(()) => debug!(line = line + 1, "skipping invalid authorized keys line"),
@@ -252,22 +256,21 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
 pub(crate) struct AuthorizedKey {
     pub(crate) algorithm: PublicKeyAlgorithm<'static>,
     pub(crate) blob: Vec<u8>,
-    pub(crate) key: UnparsedPublicKey<Cow<'static, [u8]>>,
+    pub(crate) key: Arc<dyn VerifyingKey>,
 }
 
 impl AuthorizedKey {
-    pub(crate) fn fake() -> Self {
+    pub(crate) fn fake(provider: &dyn CryptoProvider) -> Self {
         Self {
             algorithm: PublicKeyAlgorithm::EcdsaSha2Nistp256,
             blob: Vec::new(),
-            key: UnparsedPublicKey::new(
-                &signature::ECDSA_P256_SHA256_FIXED,
-                Cow::Borrowed(&Self::FAKE_KEY[..]),
-            ),
+            key: provider
+                .verifying_key(&Self::FAKE_KEY[..], &PublicKeyAlgorithm::EcdsaSha2Nistp256)
+                .expect("fake key uses a supported algorithm"),
         }
     }
 
-    pub(crate) fn from_str(s: &str) -> Result<Option<Self>, ()> {
+    pub(crate) fn from_str(s: &str, provider: &dyn CryptoProvider) -> Result<Option<Self>, ()> {
         let key = match s.split_once('#') {
             Some((contents, _)) => contents,
             None => s,
@@ -286,17 +289,6 @@ impl AuthorizedKey {
 
         // TODO: support options before key type
         let algorithm = PublicKeyAlgorithm::typed(alg);
-        let alg = match algorithm {
-            PublicKeyAlgorithm::EcdsaSha2Nistp256 => &signature::ECDSA_P256_SHA256_FIXED,
-            algorithm => {
-                warn!(
-                    ?algorithm,
-                    "unsupported public key algorithm in authorized keys file"
-                );
-                return Err(());
-            }
-        };
-
         let Some(key_data) = parts.next() else {
             debug!("missing key data");
             return Err(());
@@ -336,7 +328,7 @@ impl AuthorizedKey {
 
         Ok(Some(Self {
             algorithm: algorithm.to_owned(),
-            key: UnparsedPublicKey::new(alg, Cow::Owned(q.to_vec())),
+            key: provider.verifying_key(q, &algorithm).map_err(|_| ())?,
             blob,
         }))
     }
@@ -409,7 +401,7 @@ impl AuthorizedKey {
 impl fmt::Debug for AuthorizedKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthorizedKey")
-            .field("key", &self.key)
+            .field("algorithm", &self.algorithm)
             .finish_non_exhaustive()
     }
 }
