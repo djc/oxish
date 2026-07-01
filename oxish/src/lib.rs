@@ -192,7 +192,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
             let user = match &mut cached_user {
                 Some(user) if user.name == user_auth_request.user_name => user,
-                _ => match User::new(user_auth_request.user_name) {
+                _ => match User::from_system(user_auth_request.user_name) {
                     Ok(new) => cached_user.insert(new),
                     Err(error) => {
                         error!(%error, "failed to get user information");

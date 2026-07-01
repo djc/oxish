@@ -41,7 +41,7 @@ pub(crate) struct User {
 }
 
 impl User {
-    pub(crate) fn new(name: &str) -> Result<Self, Error> {
+    pub(crate) fn from_system(name: &str) -> Result<Self, Error> {
         let c_name = CString::new(name).map_err(|_| Error::InvalidUsername)?;
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
