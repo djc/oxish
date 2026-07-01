@@ -1,10 +1,11 @@
 use core::{net::Ipv4Addr, time::Duration};
-use std::{fs, path::PathBuf, process::Stdio, sync::Arc};
+use std::{fs, path::PathBuf, process::Stdio};
 
-use aws_lc_rs::signature::Ed25519KeyPair;
+use proto::PublicKeyAlgorithm;
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
+use crate::aws_lc::DEFAULT_PROVIDER;
 use crate::{AuthorizedKey, Connection, User};
 
 #[tokio::test]
@@ -27,21 +28,24 @@ async fn handshake() {
         .expect("failed to run ssh-keygen");
     assert!(status.success(), "ssh-keygen failed");
 
+    let provider = DEFAULT_PROVIDER;
     let authorized_key = fs::read_to_string(key_path.with_extension("pub")).unwrap();
-    let key = AuthorizedKey::from_str(&authorized_key)
+    let key = AuthorizedKey::from_str(&authorized_key, provider)
         .unwrap()
         .expect("failed to parse generated public key");
     let user = User::new(USER.to_string(), 0, PathBuf::from("/var/empty"), vec![key]);
 
     // Start the server on a loopback port and serve exactly one connection.
-    let host_key = Arc::new(Ed25519KeyPair::generate().expect("failed to generate host key"));
+    let (host_key, _) = provider
+        .generate_signing_key(&PublicKeyAlgorithm::Ed25519)
+        .expect("failed to generate host key");
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();
         stream.set_nodelay(true).ok();
-        let _ = Connection::new(stream, peer, host_key)
+        let _ = Connection::new(stream, peer, host_key, provider)
             .for_user(user)
             .run()
             .await;

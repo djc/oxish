@@ -1,23 +1,20 @@
 use core::fmt;
-use std::{borrow::Cow, sync::Arc};
+use std::borrow::Cow;
 
-use aws_lc_rs::{
-    agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
-    digest::{self, Digest},
-    rand::{self, SystemRandom},
-    signature::{KeyPair, Signature},
-};
 use proto::{
     Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
     ProtoError, PublicKeyAlgorithm,
 };
 use tracing::{debug, error, warn};
 
+use crate::crypto::{Digest, Hash, HashContext};
 use crate::{buffers::HandshakeHash, ConnectionContext};
 
 pub(crate) struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
     session_id: Option<Digest>,
+    /// The negotiated key exchange algorithm, which also determines the hash.
+    key_exchange: KeyExchangeAlgorithm<'static>,
 }
 
 impl EcdhKeyExchange {
@@ -31,8 +28,8 @@ impl EcdhKeyExchange {
 
         let mut host_key_buf = Vec::with_capacity(128);
         TaggedPublicKey {
-            algorithm: PublicKeyAlgorithm::Ed25519,
-            key: Cow::Owned(cx.host_key.public_key().as_ref().to_owned()),
+            algorithm: cx.host_key.algorithm(),
+            key: Cow::Owned(cx.host_key.public_key().to_owned()),
         }
         .encode(&mut host_key_buf);
         exchange.update(&host_key_buf);
@@ -41,27 +38,20 @@ impl EcdhKeyExchange {
 
         exchange.prefixed(ecdh_key_exchange_init.client_ephemeral_public_key);
 
-        let random = SystemRandom::new();
-        let Ok(kx_private_key) = EphemeralPrivateKey::generate(&X25519, &random) else {
+        let Ok(key_exchange) = cx.provider.key_exchange(&self.key_exchange) else {
+            warn!(addr = %cx.addr, algorithm = ?self.key_exchange, "unsupported key exchange algorithm");
+            return Err(());
+        };
+
+        let Ok(kx) = key_exchange.start() else {
             warn!(addr = %cx.addr, "failed to generate key exchange private key");
             return Err(());
         };
 
-        let Ok(kx_public_key) = kx_private_key.compute_public_key() else {
-            warn!(addr = %cx.addr, "failed to compute key exchange public key");
-            return Err(());
-        };
-
-        let client_kx_public_key =
-            UnparsedPublicKey::new(&X25519, ecdh_key_exchange_init.client_ephemeral_public_key);
-
-        exchange.prefixed(kx_public_key.as_ref());
-        let Ok(shared_secret) = agreement::agree_ephemeral(
-            kx_private_key,
-            client_kx_public_key,
-            aws_lc_rs::error::Unspecified,
-            |shared_secret| Ok(shared_secret.to_vec()),
-        ) else {
+        let kx_public_key = kx.public_key().to_owned();
+        exchange.prefixed(&kx_public_key);
+        let Ok(shared_secret) = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key)
+        else {
             warn!(addr = %cx.addr, "key exchange failed");
             return Err(());
         };
@@ -72,22 +62,28 @@ impl EcdhKeyExchange {
         let signature = cx.host_key.sign(exchange_hash.as_ref());
         let key_exchange_reply = EcdhKeyExchangeReply {
             server_public_host_key: TaggedPublicKey {
-                algorithm: PublicKeyAlgorithm::Ed25519,
-                key: Cow::Owned(cx.host_key.public_key().as_ref().to_owned()),
+                algorithm: cx.host_key.algorithm(),
+                key: Cow::Owned(cx.host_key.public_key().to_owned()),
             },
-            server_ephemeral_public_key: kx_public_key.as_ref().to_owned(),
+            server_ephemeral_public_key: kx_public_key,
             exchange_hash_signature: TaggedSignature {
-                algorithm: PublicKeyAlgorithm::Ed25519,
+                algorithm: cx.host_key.algorithm(),
                 signature,
             },
+        };
+
+        let Ok(hash) = cx.provider.hash(&self.key_exchange) else {
+            warn!(addr = %cx.addr, algorithm = ?self.key_exchange, "unsupported hash algorithm");
+            return Err(());
         };
 
         // The first exchange hash is used as session id.
         let session_id = self.session_id.unwrap_or(exchange_hash);
         let derivation = KeyDerivation {
+            hash,
             shared_secret,
             exchange_hash,
-            session_id: Arc::new(session_id),
+            session_id,
         };
 
         Ok((
@@ -168,7 +164,7 @@ impl Encode for TaggedPublicKey<'_> {
 
 struct TaggedSignature<'a> {
     algorithm: PublicKeyAlgorithm<'a>,
-    signature: Signature,
+    signature: Vec<u8>,
 }
 
 impl Encode for TaggedSignature<'_> {
@@ -176,7 +172,7 @@ impl Encode for TaggedSignature<'_> {
         let start = buf.len();
         buf.extend([0; 4]);
         self.algorithm.encode(buf);
-        self.signature.as_ref().encode(buf);
+        self.signature.as_slice().encode(buf);
         let len = (buf.len() - start - 4) as u32;
         if let Some(dst) = buf.get_mut(start..start + 4) {
             dst.copy_from_slice(&len.to_be_bytes());
@@ -205,7 +201,7 @@ impl KeyExchange {
         cx: &ConnectionContext,
     ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ()> {
         let mut cookie = [0; 16];
-        if rand::fill(&mut cookie).is_err() {
+        if cx.provider.secure_random().fill(&mut cookie).is_err() {
             error!("failed to generate key exchange cookie");
             return Err(());
         };
@@ -238,6 +234,7 @@ impl KeyExchange {
             key_exchange_init,
             EcdhKeyExchange {
                 session_id: self.session_id,
+                key_exchange: algorithms.key_exchange,
             },
         ))
     }
@@ -303,46 +300,49 @@ impl RawKeys {
 }
 
 struct KeyDerivation {
+    hash: &'static dyn Hash,
     shared_secret: Vec<u8>,
     exchange_hash: Digest,
-    session_id: Arc<Digest>,
+    session_id: Digest,
 }
 
 impl KeyDerivation {
     fn key(&self, input: KeyInput) -> Key {
-        let mut base = digest::Context::new(&digest::SHA256);
+        let mut base = self.hash.start();
         with_mpint_bytes(&self.shared_secret, |bytes| base.update(bytes));
         base.update(self.exchange_hash.as_ref());
 
         Key {
             base,
-            session_id: self.session_id.clone(),
+            block_len: self.hash.output_len(),
+            session_id: self.session_id,
             input,
         }
     }
 }
 
 pub(crate) struct Key {
-    base: digest::Context,
-    session_id: Arc<Digest>,
+    base: Box<dyn HashContext>,
+    block_len: usize,
+    session_id: Digest,
     input: KeyInput,
 }
 
 impl Key {
     pub(crate) fn derive<const N: usize>(self) -> [u8; N] {
-        let block_len = digest::SHA256.output_len();
+        let block_len = self.block_len;
 
         let mut key = [0; N];
 
         if block_len < N {
-            let mut context = self.base.clone();
+            let mut context = self.base.fork();
             context.update(&[u8::from(self.input)]);
-            context.update((*self.session_id).as_ref());
+            context.update(self.session_id.as_ref());
             key[0..block_len].copy_from_slice(context.finish().as_ref());
 
             let mut i = block_len;
             while i < 64 {
-                let mut context = self.base.clone();
+                let mut context = self.base.fork();
                 context.update(&key[..i]);
                 key[i..i + block_len].copy_from_slice(context.finish().as_ref());
                 i += block_len;
@@ -350,7 +350,7 @@ impl Key {
         } else {
             let mut context = self.base;
             context.update(&[u8::from(self.input)]);
-            context.update((*self.session_id).as_ref());
+            context.update(self.session_id.as_ref());
             key[..N].copy_from_slice(&context.finish().as_ref()[..N]);
         }
 

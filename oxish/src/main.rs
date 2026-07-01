@@ -2,13 +2,13 @@ use core::net::{Ipv4Addr, SocketAddr};
 use std::{
     fs::{self, File},
     io::{self, Write},
-    sync::Arc,
 };
 
-use aws_lc_rs::signature::Ed25519KeyPair;
 use clap::Parser;
 use listenfd::ListenFd;
+use oxish::aws_lc::DEFAULT_PROVIDER;
 use oxish::Connection;
+use proto::PublicKeyAlgorithm;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
@@ -18,16 +18,18 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    let provider = DEFAULT_PROVIDER;
     let args = Args::parse();
-
-    let host_key = Arc::new(if args.generate_host_key {
+    let host_key = if args.generate_host_key {
         match File::create_new(&args.host_key_file) {
             Ok(mut host_key_file) => {
-                let Ok(host_key) = Ed25519KeyPair::generate() else {
+                let Ok((_, pkcs8)) = provider.generate_signing_key(&PublicKeyAlgorithm::Ed25519)
+                else {
                     anyhow::bail!("failed to generate host key");
                 };
+
                 // FIXME ensure the host key is only readable by the ssh server user
-                host_key_file.write_all(host_key.to_pkcs8v1()?.as_ref())?;
+                host_key_file.write_all(&pkcs8)?;
                 eprintln!("generated host key at {}", args.host_key_file);
                 return Ok(());
             }
@@ -37,8 +39,11 @@ async fn main() -> anyhow::Result<()> {
             Err(err) => return Err(err.into()),
         }
     } else {
-        Ed25519KeyPair::from_pkcs8(&fs::read(args.host_key_file)?)?
-    });
+        let Ok(host_key) = provider.signing_key_from_pkcs8(&fs::read(args.host_key_file)?) else {
+            anyhow::bail!("failed to load host key");
+        };
+        host_key
+    };
 
     let listener = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
         (Some(listener), None) => {
@@ -62,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
                     warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
                 }
 
-                tokio::spawn(Connection::new(stream, addr, host_key.clone()).run());
+                tokio::spawn(Connection::new(stream, addr, host_key.clone(), provider).run());
             }
             Err(error) => {
                 warn!(%error, "failed to accept connection");
