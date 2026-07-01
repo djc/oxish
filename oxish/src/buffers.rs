@@ -35,7 +35,7 @@ pub(crate) struct ReadState {
     decrypted_first_block: bool,
 
     sequence_number: u32,
-    pub(crate) decryption_key: Option<AesCtrReadKeys>,
+    pub(crate) decryption_key: Option<ReadKeys>,
 }
 
 impl ReadState {
@@ -83,7 +83,7 @@ impl ReadState {
         }
 
         let (packet_length, mac_len) = if let Some(keys) = &mut self.decryption_key {
-            let block_len = keys.decryption.algorithm().block_len();
+            let block_len = keys.decrypter.algorithm().block_len();
 
             let needed = block_len;
             if self.buf.len() < needed {
@@ -94,7 +94,7 @@ impl ReadState {
             if !self.decrypted_first_block {
                 // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
                 let update = keys
-                    .decryption
+                    .decrypter
                     .less_safe_update(&self.buf[..block_len], &mut self.decrypted_buf[..block_len])
                     .unwrap();
                 assert_eq!(update.remainder().len(), 0);
@@ -116,7 +116,7 @@ impl ReadState {
 
             // It is fine to use less_safe_update as we make sure to decrypt whole blocks at a time
             let update = keys
-                .decryption
+                .decrypter
                 .less_safe_update(
                     &self.buf[block_len..4 + packet_length.inner as usize],
                     &mut self.decrypted_buf[block_len..4 + packet_length.inner as usize],
@@ -247,16 +247,16 @@ impl Default for ReadState {
     }
 }
 
-/// Decryption and HMAC key for AES-128-CTR + HMAC-SHA256
-pub(crate) struct AesCtrReadKeys {
-    decryption: StreamingDecryptingKey,
+/// Decryption and HMAC key for the incoming stream
+pub(crate) struct ReadKeys {
+    decrypter: StreamingDecryptingKey,
     mac: hmac::Key,
 }
 
-impl AesCtrReadKeys {
+impl ReadKeys {
     pub(crate) fn new(keys: RawKeys) -> Self {
         Self {
-            decryption: StreamingDecryptingKey::ctr(
+            decrypter: StreamingDecryptingKey::ctr(
                 UnboundCipherKey::new(&cipher::AES_128, &keys.encryption_key.derive::<16>())
                     .unwrap(),
                 cipher::DecryptionContext::Iv128(keys.initial_iv.derive::<16>().into()),
@@ -281,7 +281,7 @@ pub(crate) struct WriteState {
     written: usize,
 
     sequence_number: u32,
-    pub(crate) keys: Option<AesCtrWriteKeys>,
+    pub(crate) keys: Option<WriteKeys>,
 }
 
 impl WriteState {
@@ -305,7 +305,7 @@ impl WriteState {
             return Ok(());
         };
 
-        let block_len = keys.encryption.algorithm().block_len();
+        let block_len = keys.encrypter.algorithm().block_len();
 
         let packet = EncodedPacket::new(&mut self.buf, payload, block_len)?;
         if let Some(exchange_hash) = exchange_hash {
@@ -316,7 +316,7 @@ impl WriteState {
         self.encrypted_buf
             .resize(pending_length + data.len() + block_len, 0);
         let update = keys
-            .encryption
+            .encrypter
             .update(data, &mut self.encrypted_buf[pending_length..])
             .unwrap();
         assert_eq!(update.remainder().len(), block_len);
@@ -400,16 +400,16 @@ impl Encoder<'_> {
     }
 }
 
-/// Encryption and HMAC key for AES-128-CTR + HMAC-SHA256
-pub(crate) struct AesCtrWriteKeys {
-    encryption: StreamingEncryptingKey,
+/// Encryption and HMAC key for the outgoing stream
+pub(crate) struct WriteKeys {
+    encrypter: StreamingEncryptingKey,
     mac: hmac::Key,
 }
 
-impl AesCtrWriteKeys {
+impl WriteKeys {
     pub(crate) fn new(keys: RawKeys) -> Self {
         Self {
-            encryption: StreamingEncryptingKey::less_safe_ctr(
+            encrypter: StreamingEncryptingKey::less_safe_ctr(
                 UnboundCipherKey::new(&cipher::AES_128, &keys.encryption_key.derive::<16>())
                     .unwrap(),
                 cipher::EncryptionContext::Iv128(keys.initial_iv.derive::<16>().into()),

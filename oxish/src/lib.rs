@@ -16,7 +16,7 @@ use tracing::{debug, error, info, instrument, warn};
 mod authentication;
 use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
-use buffers::{AesCtrReadKeys, AesCtrWriteKeys, HandshakeHash, ReadState, WriteState};
+use buffers::{HandshakeHash, ReadKeys, ReadState, WriteKeys, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod key_exchange;
@@ -349,8 +349,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Cipher and MAC algorithms are negotiated during key exchange.
         // Currently this hard codes AES-128-CTR and HMAC-SHA256.
-        self.read.decryption_key = Some(AesCtrReadKeys::new(client_to_server));
-        self.write.keys = Some(AesCtrWriteKeys::new(server_to_client));
+        self.read.decryption_key = Some(ReadKeys::new(client_to_server));
+        self.write.keys = Some(WriteKeys::new(server_to_client));
         Ok(())
     }
 

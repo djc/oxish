@@ -2,7 +2,10 @@ use core::fmt;
 use std::{borrow::Cow, sync::Arc};
 
 use aws_lc_rs::{
-    agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519}, digest::{self, Digest}, rand::{self, SystemRandom}, signature::{KeyPair, Signature},
+    agreement::{self, EphemeralPrivateKey, UnparsedPublicKey, X25519},
+    digest::{self, Digest},
+    rand::{self, SystemRandom},
+    signature::{KeyPair, Signature},
 };
 use proto::{
     Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
