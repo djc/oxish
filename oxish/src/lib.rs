@@ -14,7 +14,6 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
 
 mod authentication;
-pub mod aws_lc;
 use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
 use buffers::{HandshakeHash, ReadKeys, ReadState, WriteKeys, WriteState};

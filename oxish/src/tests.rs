@@ -1,11 +1,11 @@
 use core::{net::Ipv4Addr, time::Duration};
 use std::{fs, path::PathBuf, process::Stdio};
 
+use aws_lc::DEFAULT_PROVIDER;
 use proto::PublicKeyAlgorithm;
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
-use crate::aws_lc::DEFAULT_PROVIDER;
 use crate::{AuthorizedKey, Connection, User};
 
 #[tokio::test]

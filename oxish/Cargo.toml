@@ -7,7 +7,7 @@ license = "Apache-2.0 OR MIT"
 
 [dependencies]
 anyhow = { workspace = true }
-aws-lc-rs = { workspace = true }
+aws-lc = { package = "oxish-aws-lc", version = "0.1.0", path = "../oxish-aws-lc" }
 bitflags = { workspace = true }
 clap = { workspace = true }
 data-encoding = { workspace = true }
