@@ -2,13 +2,14 @@ use core::fmt;
 use std::borrow::Cow;
 
 use proto::{
-    crypto::{Digest, Hash, HashContext},
     Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
     ProtoError, PublicKeyAlgorithm,
+    crypto::{Digest, KeyDerivation, KeySourceSide},
+    with_mpint_bytes,
 };
 use tracing::{debug, error, warn};
 
-use crate::{buffers::HandshakeHash, ConnectionContext};
+use crate::{ConnectionContext, buffers::HandshakeHash};
 
 pub(crate) struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
@@ -273,126 +274,4 @@ impl Algorithms {
 pub(crate) struct KeySourceSet {
     pub(crate) client_to_server: KeySourceSide,
     pub(crate) server_to_client: KeySourceSide,
-}
-
-pub(crate) struct KeySourceSide {
-    pub(crate) initial_iv: KeySource,
-    pub(crate) encryption_key: KeySource,
-    pub(crate) integrity_key: KeySource,
-}
-
-impl KeySourceSide {
-    fn client_to_server(derivation: &KeyDerivation) -> Self {
-        Self {
-            initial_iv: derivation.key(KeyInput::InitialIvClientToServer),
-            encryption_key: derivation.key(KeyInput::EncryptionKeyClientToServer),
-            integrity_key: derivation.key(KeyInput::IntegrityKeyClientToServer),
-        }
-    }
-
-    fn server_to_client(derivation: &KeyDerivation) -> Self {
-        Self {
-            initial_iv: derivation.key(KeyInput::InitialIvServerToClient),
-            encryption_key: derivation.key(KeyInput::EncryptionKeyServerToClient),
-            integrity_key: derivation.key(KeyInput::IntegrityKeyServerToClient),
-        }
-    }
-}
-
-struct KeyDerivation {
-    hash: &'static dyn Hash,
-    shared_secret: Vec<u8>,
-    exchange_hash: Digest,
-    session_id: Digest,
-}
-
-impl KeyDerivation {
-    fn key(&self, input: KeyInput) -> KeySource {
-        let mut base = self.hash.start();
-        with_mpint_bytes(&self.shared_secret, |bytes| base.update(bytes));
-        base.update(self.exchange_hash.as_ref());
-
-        KeySource {
-            base,
-            block_len: self.hash.output_len(),
-            session_id: self.session_id,
-            input,
-        }
-    }
-}
-
-pub(crate) struct KeySource {
-    base: Box<dyn HashContext>,
-    block_len: usize,
-    session_id: Digest,
-    input: KeyInput,
-}
-
-impl KeySource {
-    pub(crate) fn derive<const N: usize>(self) -> [u8; N] {
-        let block_len = self.block_len;
-
-        let mut key = [0; N];
-
-        if block_len < N {
-            let mut context = self.base.fork();
-            context.update(&[u8::from(self.input)]);
-            context.update(self.session_id.as_ref());
-            key[0..block_len].copy_from_slice(context.finish().as_ref());
-
-            let mut i = block_len;
-            while i < 64 {
-                let mut context = self.base.fork();
-                context.update(&key[..i]);
-                key[i..i + block_len].copy_from_slice(context.finish().as_ref());
-                i += block_len;
-            }
-        } else {
-            let mut context = self.base;
-            context.update(&[u8::from(self.input)]);
-            context.update(self.session_id.as_ref());
-            key[..N].copy_from_slice(&context.finish().as_ref()[..N]);
-        }
-
-        key
-    }
-}
-
-enum KeyInput {
-    InitialIvClientToServer,
-    InitialIvServerToClient,
-    EncryptionKeyClientToServer,
-    EncryptionKeyServerToClient,
-    IntegrityKeyClientToServer,
-    IntegrityKeyServerToClient,
-}
-
-impl From<KeyInput> for u8 {
-    fn from(value: KeyInput) -> Self {
-        match value {
-            KeyInput::InitialIvClientToServer => b'A',
-            KeyInput::InitialIvServerToClient => b'B',
-            KeyInput::EncryptionKeyClientToServer => b'C',
-            KeyInput::EncryptionKeyServerToClient => b'D',
-            KeyInput::IntegrityKeyClientToServer => b'E',
-            KeyInput::IntegrityKeyServerToClient => b'F',
-        }
-    }
-}
-
-/// The mpint data type is defined in RFC4251 section 5.
-///
-/// Remove leading zeros, and prepend a zero byte if the first byte has its
-/// most significant bit set.
-fn with_mpint_bytes(int: &[u8], mut f: impl FnMut(&[u8])) {
-    let leading_zeros = int.iter().take_while(|&&b| b == 0).count();
-    // This slice indexing is safe as leading_zeros can be no larger than the length of int
-    let int = &int[leading_zeros..];
-    let prepend = matches!(int.first(), Some(&b) if b & 0x80 != 0);
-    let len = int.len() + if prepend { 1 } else { 0 };
-    f(&(len as u32).to_be_bytes());
-    if prepend {
-        f(&[0]);
-    }
-    f(int);
 }

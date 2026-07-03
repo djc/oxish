@@ -1,7 +1,7 @@
 use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
-use crate::named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm};
+use crate::{named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm}, with_mpint_bytes};
 
 /// A bundle of cryptographic algorithm implementations
 pub trait CryptoProvider: Send + Sync {
@@ -139,6 +139,111 @@ impl Tag {
 impl AsRef<[u8]> for Tag {
     fn as_ref(&self) -> &[u8] {
         &self.buf[..self.used]
+    }
+}
+
+pub struct KeySourceSide {
+    pub initial_iv: KeySource,
+    pub encryption_key: KeySource,
+    pub integrity_key: KeySource,
+}
+
+impl KeySourceSide {
+    pub fn client_to_server(derivation: &KeyDerivation) -> Self {
+        Self {
+            initial_iv: derivation.key(KeyInput::InitialIvClientToServer),
+            encryption_key: derivation.key(KeyInput::EncryptionKeyClientToServer),
+            integrity_key: derivation.key(KeyInput::IntegrityKeyClientToServer),
+        }
+    }
+
+    pub fn server_to_client(derivation: &KeyDerivation) -> Self {
+        Self {
+            initial_iv: derivation.key(KeyInput::InitialIvServerToClient),
+            encryption_key: derivation.key(KeyInput::EncryptionKeyServerToClient),
+            integrity_key: derivation.key(KeyInput::IntegrityKeyServerToClient),
+        }
+    }
+}
+
+pub struct KeyDerivation {
+    pub hash: &'static dyn Hash,
+    pub shared_secret: Vec<u8>,
+    pub exchange_hash: Digest,
+    pub session_id: Digest,
+}
+
+impl KeyDerivation {
+    fn key(&self, input: KeyInput) -> KeySource {
+        let mut base = self.hash.start();
+        with_mpint_bytes(&self.shared_secret, |bytes| base.update(bytes));
+        base.update(self.exchange_hash.as_ref());
+
+        KeySource {
+            base,
+            block_len: self.hash.output_len(),
+            session_id: self.session_id,
+            input,
+        }
+    }
+}
+
+pub struct KeySource {
+    base: Box<dyn HashContext>,
+    block_len: usize,
+    session_id: Digest,
+    input: KeyInput,
+}
+
+impl KeySource {
+    pub fn derive<const N: usize>(self) -> [u8; N] {
+        let block_len = self.block_len;
+
+        let mut key = [0; N];
+
+        if block_len < N {
+            let mut context = self.base.fork();
+            context.update(&[u8::from(self.input)]);
+            context.update(self.session_id.as_ref());
+            key[0..block_len].copy_from_slice(context.finish().as_ref());
+
+            let mut i = block_len;
+            while i < 64 {
+                let mut context = self.base.fork();
+                context.update(&key[..i]);
+                key[i..i + block_len].copy_from_slice(context.finish().as_ref());
+                i += block_len;
+            }
+        } else {
+            let mut context = self.base;
+            context.update(&[u8::from(self.input)]);
+            context.update(self.session_id.as_ref());
+            key[..N].copy_from_slice(&context.finish().as_ref()[..N]);
+        }
+
+        key
+    }
+}
+
+enum KeyInput {
+    InitialIvClientToServer,
+    InitialIvServerToClient,
+    EncryptionKeyClientToServer,
+    EncryptionKeyServerToClient,
+    IntegrityKeyClientToServer,
+    IntegrityKeyServerToClient,
+}
+
+impl From<KeyInput> for u8 {
+    fn from(value: KeyInput) -> Self {
+        match value {
+            KeyInput::InitialIvClientToServer => b'A',
+            KeyInput::InitialIvServerToClient => b'B',
+            KeyInput::EncryptionKeyClientToServer => b'C',
+            KeyInput::EncryptionKeyServerToClient => b'D',
+            KeyInput::IntegrityKeyClientToServer => b'E',
+            KeyInput::IntegrityKeyServerToClient => b'F',
+        }
     }
 }
 
