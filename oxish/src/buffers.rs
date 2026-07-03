@@ -245,7 +245,7 @@ impl ReadKeys {
         encryption_algorithm: &EncryptionAlgorithm<'_>,
         mac_algorithm: &MacAlgorithm<'_>,
         provider: &dyn CryptoProvider,
-    ) -> Result<Self, crypto::Error> {
+    ) -> Result<Self, crypto::CryptoError> {
         Ok(Self {
             decrypter: provider.cipher(encryption_algorithm)?.decrypter(
                 &keys.encryption_key.derive::<16>(),
@@ -398,7 +398,7 @@ impl WriteKeys {
         encryption_algorithm: &EncryptionAlgorithm<'_>,
         mac_algorithm: &MacAlgorithm<'_>,
         provider: &dyn CryptoProvider,
-    ) -> Result<Self, crypto::Error> {
+    ) -> Result<Self, crypto::CryptoError> {
         Ok(Self {
             encrypter: provider.cipher(encryption_algorithm)?.encrypter(
                 &keys.encryption_key.derive::<16>(),

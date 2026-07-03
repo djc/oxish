@@ -12,7 +12,7 @@ use ::aws_lc_rs::{
 use proto::{
     EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm,
     crypto::{
-        ActiveKeyExchange, Cipher, CryptoProvider, Decrypter, Digest, Encrypter, Error, Hash,
+        ActiveKeyExchange, Cipher, CryptoError, CryptoProvider, Decrypter, Digest, Encrypter, Hash,
         HashContext, Hmac, HmacKey, KeyExchange, SecureRandom, SigningKey, Tag, VerifyingKey,
     },
 };
@@ -27,20 +27,27 @@ impl CryptoProvider for Provider {
     fn generate_signing_key(
         &self,
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<(Arc<dyn SigningKey>, Vec<u8>), Error> {
+    ) -> Result<(Arc<dyn SigningKey>, Vec<u8>), CryptoError> {
         match algorithm {
             PublicKeyAlgorithm::Ed25519 => {
-                let key_pair = Ed25519KeyPair::generate().map_err(|_| Error)?;
-                let pkcs8 = key_pair.to_pkcs8v1().map_err(|_| Error)?.as_ref().to_vec();
+                let key_pair =
+                    Ed25519KeyPair::generate().map_err(|_| CryptoError::KeyGenerationFailed)?;
+
+                let pkcs8 = key_pair
+                    .to_pkcs8v1()
+                    .map_err(|_| CryptoError::Unspecified)?
+                    .as_ref()
+                    .to_vec();
+
                 Ok((Arc::new(Ed25519SigningKey::new(key_pair)), pkcs8))
             }
-            _ => Err(Error),
+            _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
-    fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Arc<dyn SigningKey>, Error> {
+    fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Arc<dyn SigningKey>, CryptoError> {
         Ok(Arc::new(Ed25519SigningKey::new(
-            Ed25519KeyPair::from_pkcs8(pkcs8).map_err(|_| Error)?,
+            Ed25519KeyPair::from_pkcs8(pkcs8).map_err(|_| CryptoError::KeyRejected)?,
         )))
     }
 
@@ -48,43 +55,46 @@ impl CryptoProvider for Provider {
         &self,
         key: &[u8],
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<Arc<dyn VerifyingKey>, Error> {
+    ) -> Result<Arc<dyn VerifyingKey>, CryptoError> {
         match algorithm {
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => Ok(Arc::new(EcdsaP256VerifyingKey {
                 key: UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, key.to_owned()),
             })),
-            _ => Err(Error),
+            _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
-    fn cipher(&self, algorithm: &EncryptionAlgorithm<'_>) -> Result<&'static dyn Cipher, Error> {
+    fn cipher(
+        &self,
+        algorithm: &EncryptionAlgorithm<'_>,
+    ) -> Result<&'static dyn Cipher, CryptoError> {
         match algorithm {
             EncryptionAlgorithm::Aes128Ctr => Ok(&Aes128Ctr),
-            _ => Err(Error),
+            _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn key_exchange(
         &self,
         algorithm: &KeyExchangeAlgorithm<'_>,
-    ) -> Result<&'static dyn KeyExchange, Error> {
+    ) -> Result<&'static dyn KeyExchange, CryptoError> {
         match algorithm {
             KeyExchangeAlgorithm::Curve25519Sha256 => Ok(&X25519Kx),
-            _ => Err(Error),
+            _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
-    fn hmac(&self, algorithm: &MacAlgorithm<'_>) -> Result<&'static dyn Hmac, Error> {
+    fn hmac(&self, algorithm: &MacAlgorithm<'_>) -> Result<&'static dyn Hmac, CryptoError> {
         match algorithm {
             MacAlgorithm::HmacSha2256 => Ok(&HmacSha256),
-            _ => Err(Error),
+            _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
-    fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, Error> {
+    fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, CryptoError> {
         match algorithm {
             KeyExchangeAlgorithm::Curve25519Sha256 => Ok(&Sha256),
-            _ => Err(Error),
+            _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
@@ -183,10 +193,15 @@ impl Decrypter for Aes128CtrDecrypter {
 struct X25519Kx;
 
 impl KeyExchange for X25519Kx {
-    fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, Error> {
+    fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, CryptoError> {
         let random = rand::SystemRandom::new();
-        let private_key = EphemeralPrivateKey::generate(&X25519, &random).map_err(|_| Error)?;
-        let public_key = private_key.compute_public_key().map_err(|_| Error)?;
+        let private_key = EphemeralPrivateKey::generate(&X25519, &random)
+            .map_err(|_| CryptoError::KeyGenerationFailed)?;
+
+        let public_key = private_key
+            .compute_public_key()
+            .map_err(|_| CryptoError::Unspecified)?;
+
         Ok(Box::new(X25519KeyExchange {
             private_key,
             public_key: public_key.as_ref().to_vec(),
@@ -204,11 +219,14 @@ impl ActiveKeyExchange for X25519KeyExchange {
         &self.public_key
     }
 
-    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<Vec<u8>, Error> {
+    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let peer = agreement::UnparsedPublicKey::new(&X25519, peer_public_key);
-        agreement::agree_ephemeral(self.private_key, peer, Error, |shared_secret| {
-            Ok(shared_secret.to_vec())
-        })
+        agreement::agree_ephemeral(
+            self.private_key,
+            peer,
+            CryptoError::KeyAgreementFailed,
+            |shared_secret| Ok(shared_secret.to_vec()),
+        )
     }
 }
 
@@ -246,8 +264,10 @@ struct EcdsaP256VerifyingKey {
 }
 
 impl VerifyingKey for EcdsaP256VerifyingKey {
-    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), Error> {
-        self.key.verify(message, signature).map_err(|_| Error)
+    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
+        self.key
+            .verify(message, signature)
+            .map_err(|_| CryptoError::VerificationFailed)
     }
 }
 
@@ -320,7 +340,7 @@ impl HashContext for Sha256Context {
 struct SystemRandom;
 
 impl SecureRandom for SystemRandom {
-    fn fill(&self, buf: &mut [u8]) -> Result<(), Error> {
-        rand::fill(buf).map_err(|_| Error)
+    fn fill(&self, buf: &mut [u8]) -> Result<(), CryptoError> {
+        rand::fill(buf).map_err(|_| CryptoError::NoRandomness)
     }
 }
