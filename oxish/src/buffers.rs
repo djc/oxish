@@ -16,7 +16,7 @@ use proto::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{error, trace};
 
-use crate::{key_exchange::RawKeys, Error};
+use crate::{key_exchange::KeySourceSide, Error};
 
 /// The reader and decryption state for an SSH connection
 pub(crate) struct ReadState {
@@ -241,7 +241,7 @@ pub(crate) struct ReadKeys {
 
 impl ReadKeys {
     pub(crate) fn new(
-        keys: RawKeys,
+        keys: KeySourceSide,
         encryption_algorithm: &EncryptionAlgorithm<'_>,
         mac_algorithm: &MacAlgorithm<'_>,
         provider: &dyn CryptoProvider,
@@ -394,7 +394,7 @@ pub(crate) struct WriteKeys {
 
 impl WriteKeys {
     pub(crate) fn new(
-        keys: RawKeys,
+        keys: KeySourceSide,
         encryption_algorithm: &EncryptionAlgorithm<'_>,
         mac_algorithm: &MacAlgorithm<'_>,
         provider: &dyn CryptoProvider,

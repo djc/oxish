@@ -20,7 +20,7 @@ use buffers::{HandshakeHash, ReadKeys, ReadState, WriteKeys, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod key_exchange;
-use key_exchange::{EcdhKeyExchangeInit, KeyExchange, RawKeySet};
+use key_exchange::{EcdhKeyExchangeInit, KeyExchange, KeySourceSet};
 mod terminal;
 #[cfg(test)]
 mod tests;
@@ -351,7 +351,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
     }
 
-    async fn update_keys(&mut self, keys: RawKeySet) -> Result<(), ()> {
+    async fn update_keys(&mut self, keys: KeySourceSet) -> Result<(), ()> {
         let packet = self.read.packet(&mut self.stream).await?;
         if let Err(error) = NewKeys::try_from(packet) {
             error!(%error, "failed to read new keys packet");
@@ -359,7 +359,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         self.send(&NewKeys).await?;
-        let RawKeySet {
+        let KeySourceSet {
             client_to_server,
             server_to_client,
         } = keys;
