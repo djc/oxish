@@ -2,14 +2,13 @@ use core::fmt;
 use std::borrow::Cow;
 
 use proto::{
-    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
-    ProtoError, PublicKeyAlgorithm,
     crypto::{Digest, KeyDerivation, KeySourceSide},
-    with_mpint_bytes,
+    with_mpint_bytes, Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm,
+    KeyExchangeInit, MessageType, ProtoError, PublicKeyAlgorithm,
 };
 use tracing::{debug, error, warn};
 
-use crate::{ConnectionContext, buffers::HandshakeHash};
+use crate::{buffers::HandshakeHash, ConnectionContext};
 
 pub(crate) struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.

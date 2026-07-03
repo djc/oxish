@@ -1,17 +1,13 @@
 use core::{
     future, iter,
     pin::Pin,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 use std::io;
 
 use proto::{
-    Completion, Decode, Decoded, Encode, EncryptionAlgorithm, IncomingPacket, MacAlgorithm,
-    MessageType, ProtoError,
-    crypto::{
-        self, CryptoProvider, Decrypter, Digest, Encrypter, Hash, HashContext, HmacKey,
-        KeySourceSide, SecureRandom,
-    },
+    crypto::{Digest, Hash, HashContext, OpeningKey, SealingKey, SecureRandom},
+    Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{error, trace};
@@ -22,21 +18,17 @@ use crate::Error;
 pub(crate) struct ReadState {
     /// Buffer for incoming data from the transport stream
     buf: Vec<u8>,
-    /// Full length of the last decoded packet, including packet length and MAC
+    /// Full length of the last decoded packet, including packet length and tag
     ///
     /// Set after decoding and decrypting a packet successfully in `poll_packet()`; reduced at
     /// the start of each call to `poll_packet()`.
     last_length: usize,
 
-    /// Buffer with blocks of decrypted data
-    ///
-    /// The [`Decrypter`] interface decrypts into a separate output buffer.
+    /// Buffer with the decrypted packet
     decrypted_buf: Vec<u8>,
-    /// Whether the a first block including the packet length has been decrypted
-    decrypted_first_block: bool,
 
     sequence_number: u32,
-    pub(crate) decryption_key: Option<ReadKeys>,
+    pub(crate) opener: Option<Box<dyn OpeningKey>>,
 }
 
 impl ReadState {
@@ -80,73 +72,57 @@ impl ReadState {
             self.buf.truncate(self.buf.len() - self.last_length);
             self.last_length = 0;
             self.decrypted_buf.clear();
-            self.decrypted_first_block = false;
         }
 
-        let (packet_length, mac_len) = if let Some(keys) = &mut self.decryption_key {
-            let block_len = keys.decrypter.block_len();
+        let (packet_length, tag_len) = if let Some(opener) = &mut self.opener {
+            // The packet length is transmitted in cleartext (authenticated as AAD).
+            let Some((length, _)) = self.buf.split_first_chunk() else {
+                return Ok(Completion::Incomplete(Some(4)));
+            };
 
-            let needed = block_len;
-            if self.buf.len() < needed {
-                return Ok(Completion::Incomplete(Some(needed)));
-            }
-            self.decrypted_buf.resize(self.buf.len() + block_len, 0);
-
-            if !self.decrypted_first_block {
-                keys.decrypter
-                    .decrypt(&self.buf[..block_len], &mut self.decrypted_buf[..block_len]);
-                self.decrypted_first_block = true;
-            }
-
+            let length_bytes = opener.decrypt_packet_length(self.sequence_number, *length);
             let Decoded {
                 value: packet_length,
                 next,
-            } = PacketLength::decode(&self.decrypted_buf[..4])?;
+            } = PacketLength::decode(&length_bytes)?;
             assert!(next.is_empty());
 
-            let mac_len = keys.mac.tag_len();
-            let needed = 4 + packet_length.inner as usize + mac_len;
-            if self.buf.len() < needed {
-                return Ok(Completion::Incomplete(Some(needed)));
-            }
+            let tag_len = opener.tag_len();
+            let end = 4 + packet_length.inner as usize;
+            let Some((length_data_tag, _)) = self.buf.split_at_checked(end + tag_len) else {
+                return Ok(Completion::Incomplete(Some(end + tag_len)));
+            };
 
-            keys.decrypter.decrypt(
-                &self.buf[block_len..4 + packet_length.inner as usize],
-                &mut self.decrypted_buf[block_len..4 + packet_length.inner as usize],
-            );
+            let Some((length_data, tag)) = length_data_tag.split_at_checked(end) else {
+                return Ok(Completion::Incomplete(Some(end + tag_len)));
+            };
 
-            let packet_excl_mac = &self.decrypted_buf[..4 + packet_length.inner as usize];
+            // Verify and decrypt the packet in place in `decrypted_buf`. `open_in_place`
+            // authenticates the cleartext length field, so it is copied in alongside the
+            // ciphertext even though it is not itself decrypted.
+            self.decrypted_buf.clear();
+            self.decrypted_buf.extend_from_slice(length_data);
+            opener.open_in_place(self.sequence_number, &mut self.decrypted_buf, tag)?;
 
-            let expected_mac = &self.buf
-                [4 + packet_length.inner as usize..4 + packet_length.inner as usize + mac_len];
-            if !keys.mac.verify(
-                &[&self.sequence_number.to_be_bytes(), packet_excl_mac],
-                expected_mac,
-            ) {
-                return Err(Error::InvalidMac);
-            }
-
-            (packet_length, mac_len)
+            (packet_length, tag_len)
         } else {
-            let needed = 4;
-            if self.buf.len() < needed {
-                return Ok(Completion::Incomplete(Some(needed)));
-            }
+            let Some((length, _)) = self.buf.split_at_checked(4) else {
+                return Ok(Completion::Incomplete(Some(4)));
+            };
+
             let Decoded {
                 value: packet_length,
                 next,
-            } = PacketLength::decode(&self.buf[..4])?;
+            } = PacketLength::decode(length)?;
             assert!(next.is_empty());
 
             let needed = 4 + packet_length.inner as usize;
-            if self.buf.len() < needed {
+            let Some((length_data, _)) = self.buf.split_at_checked(needed) else {
                 return Ok(Completion::Incomplete(Some(needed)));
-            }
+            };
 
             self.decrypted_buf.clear();
-            self.decrypted_buf
-                .extend_from_slice(&self.buf[..4 + packet_length.inner as usize]);
-
+            self.decrypted_buf.extend_from_slice(length_data);
             (packet_length, 0)
         };
 
@@ -154,7 +130,7 @@ impl ReadState {
         // this async function is cancel-safe
         let sequence_number = self.sequence_number;
         self.sequence_number = self.sequence_number.wrapping_add(1);
-        self.last_length = 4 + packet_length.inner as usize + mac_len;
+        self.last_length = 4 + packet_length.inner as usize + tag_len;
         Ok(Completion::Complete((sequence_number, packet_length)))
     }
 
@@ -226,35 +202,9 @@ impl Default for ReadState {
             buf: Vec::with_capacity(16_384),
             decrypted_buf: Vec::with_capacity(16_384),
             last_length: 0,
-            decrypted_first_block: false,
             sequence_number: 0,
-            decryption_key: None,
+            opener: None,
         }
-    }
-}
-
-/// Decryption and HMAC key for the incoming stream
-pub(crate) struct ReadKeys {
-    decrypter: Box<dyn Decrypter>,
-    mac: Box<dyn HmacKey>,
-}
-
-impl ReadKeys {
-    pub(crate) fn new(
-        keys: KeySourceSide,
-        encryption_algorithm: &EncryptionAlgorithm<'_>,
-        mac_algorithm: &MacAlgorithm<'_>,
-        provider: &dyn CryptoProvider,
-    ) -> Result<Self, crypto::CryptoError> {
-        Ok(Self {
-            decrypter: provider.cipher(encryption_algorithm)?.decrypter(
-                &keys.encryption_key.derive::<16>(),
-                &keys.initial_iv.derive::<16>(),
-            ),
-            mac: provider
-                .hmac(mac_algorithm)?
-                .with_key(&keys.integrity_key.derive::<32>()),
-        })
     }
 }
 
@@ -263,8 +213,6 @@ pub(crate) struct WriteState {
     buf: Vec<u8>,
 
     /// Buffer with encrypted data ready to be sent to the transport stream
-    ///
-    /// The [`Encrypter`] interface encrypts into a separate output buffer.
     encrypted_buf: Vec<u8>,
 
     /// The amount of bytes at the start of `encrypted_buf`` that have already
@@ -272,7 +220,7 @@ pub(crate) struct WriteState {
     written: usize,
 
     sequence_number: u32,
-    pub(crate) keys: Option<WriteKeys>,
+    pub(crate) sealer: Option<Box<dyn SealingKey>>,
 
     /// Source of random bytes for packet padding
     secure_random: &'static dyn SecureRandom,
@@ -285,7 +233,7 @@ impl WriteState {
             encrypted_buf: Vec::with_capacity(16_384),
             written: 0,
             sequence_number: 0,
-            keys: None,
+            sealer: None,
             secure_random,
         }
     }
@@ -297,34 +245,37 @@ impl WriteState {
     ) -> Result<(), Error> {
         self.buf.clear();
 
+        let pending_length = self.encrypted_buf.len();
         let sequence_number = self.sequence_number;
         self.sequence_number = self.sequence_number.wrapping_add(1);
-
-        let pending_length = self.encrypted_buf.len();
-
-        let Some(keys) = &mut self.keys else {
+        let Some(sealer) = &mut self.sealer else {
             let packet =
-                EncodedPacket::new(&mut self.encrypted_buf, payload, 1, self.secure_random)?;
+                EncodedPacket::new(&mut self.encrypted_buf, payload, None, self.secure_random)?;
             if let Some(exchange_hash) = exchange_hash {
                 exchange_hash.prefixed(packet.payload());
             }
             return Ok(());
         };
 
-        let block_len = keys.encrypter.block_len();
-
-        let packet = EncodedPacket::new(&mut self.buf, payload, block_len, self.secure_random)?;
+        // For AES-GCM the cipher block size is 16 and the 4-byte packet_length field is
+        // excluded from the block-aligned, encrypted region.
+        let packet =
+            EncodedPacket::new(&mut self.buf, payload, Some(&**sealer), self.secure_random)?;
         if let Some(exchange_hash) = exchange_hash {
             exchange_hash.prefixed(packet.payload());
         }
-        let data = packet.without_mac();
 
-        self.encrypted_buf.resize(pending_length + data.len(), 0);
-        keys.encrypter
-            .encrypt(data, &mut self.encrypted_buf[pending_length..]);
+        self.encrypted_buf
+            .resize(pending_length + packet.len() + sealer.tag_len(), 0);
+        let Some((_, body_tag)) = self.encrypted_buf.split_at_mut_checked(pending_length) else {
+            return Err(ProtoError::Unreachable("unable to split encrypted buffer").into());
+        };
 
-        let mac = keys.mac.sign(&[&sequence_number.to_be_bytes(), data]);
-        self.encrypted_buf.extend_from_slice(mac.as_ref());
+        let Some((body, tag)) = body_tag.split_at_mut_checked(packet.len()) else {
+            return Err(ProtoError::Unreachable("unable to split tag from body").into());
+        };
+        body.copy_from_slice(packet.encoded());
+        sealer.seal_in_place(sequence_number, body, tag)?;
 
         Ok(())
     }
@@ -386,31 +337,6 @@ impl Encoder<'_> {
     }
 }
 
-/// Encryption and HMAC key for the outgoing stream
-pub(crate) struct WriteKeys {
-    encrypter: Box<dyn Encrypter>,
-    mac: Box<dyn HmacKey>,
-}
-
-impl WriteKeys {
-    pub(crate) fn new(
-        keys: KeySourceSide,
-        encryption_algorithm: &EncryptionAlgorithm<'_>,
-        mac_algorithm: &MacAlgorithm<'_>,
-        provider: &dyn CryptoProvider,
-    ) -> Result<Self, crypto::CryptoError> {
-        Ok(Self {
-            encrypter: provider.cipher(encryption_algorithm)?.encrypter(
-                &keys.encryption_key.derive::<16>(),
-                &keys.initial_iv.derive::<16>(),
-            ),
-            mac: provider
-                .hmac(mac_algorithm)?
-                .with_key(&keys.integrity_key.derive::<32>()),
-        })
-    }
-}
-
 pub(crate) struct HandshakeHash(Box<dyn HashContext>);
 
 impl HandshakeHash {
@@ -432,8 +358,9 @@ impl HandshakeHash {
     }
 }
 
-/// An encoded outgoing packet including length field and padding, but
-/// excluding encryption and MAC
+/// An encoded outgoing packet
+///
+/// Includes packet length, padding length, payload and padding.
 #[must_use]
 struct EncodedPacket<'a> {
     packet: &'a [u8],
@@ -444,11 +371,10 @@ impl<'a> EncodedPacket<'a> {
     fn new(
         buf: &'a mut Vec<u8>,
         payload: &impl Encode,
-        cipher_block_len: usize,
+        sealer: Option<&dyn SealingKey>,
         secure_random: &dyn SecureRandom,
     ) -> Result<Self, Error> {
         let start = buf.len();
-
         buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
         buf.push(0); // padding_length
 
@@ -458,23 +384,31 @@ impl<'a> EncodedPacket<'a> {
 
         // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
         //
-        // Note that the length of the concatenation of 'packet_length',
-        // 'padding_length', 'payload', and 'random padding' MUST be a multiple
-        // of the cipher block size or 8, whichever is larger.  This constraint
-        // MUST be enforced, even when using stream ciphers.  Note that the
-        // 'packet_length' field is also encrypted, and processing it requires
-        // special care when sending or receiving packets.  Also note that the
-        // insertion of variable amounts of 'random padding' may help thwart
-        // traffic analysis.
+        // Note that the length of the concatenation of 'packet_length', 'padding_length',
+        // 'payload', and 'random padding' MUST be a multiple of the cipher block size or 8,
+        // whichever is larger. This constraint MUST be enforced, even when using stream ciphers.
         //
-        // The minimum size of a packet is 16 (or the cipher block size,
-        // whichever is larger) bytes (plus 'mac').  Implementations SHOULD
-        // decrypt the length after receiving the first 8 (or cipher block size,
-        // whichever is larger) bytes of a packet.
+        // For AEAD ciphers (like aes128-gcm@openssh.com, RFC 5647) the 'packet_length' field is
+        // transmitted in cleartext and is excluded from the block-aligned region;
+        // `unencrypted_prefix` is 4 in that case and 0 otherwise.
 
-        let block_size = cipher_block_len.max(8);
-        let min_packet_len = (buf.len() - start).next_multiple_of(block_size).max(16);
-        let min_padding = min_packet_len - (buf.len() - start);
+        let block_size = Ord::max(
+            match sealer {
+                Some(sealer) => sealer.block_len(),
+                None => 0,
+            },
+            8,
+        );
+
+        let unencrypted_prefix = match sealer {
+            Some(_) => 4,
+            None => 0,
+        };
+
+        let region = buf.len() - start - unencrypted_prefix;
+        // The minimum size of a packet is 16 bytes
+        let min_padding = Ord::max(region.next_multiple_of(block_size), 16) - region;
+        // Padding is at least 4 bytes
         let padding_len = match min_padding < 4 {
             true => min_padding + block_size,
             false => min_padding,
@@ -507,8 +441,13 @@ impl<'a> EncodedPacket<'a> {
         self.payload
     }
 
-    fn without_mac(&self) -> &[u8] {
+    /// The full encoded packet: `packet_length`, `padding_length`, payload and padding
+    fn encoded(&self) -> &[u8] {
         self.packet
+    }
+
+    fn len(&self) -> usize {
+        self.packet.len()
     }
 }
 

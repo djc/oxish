@@ -182,22 +182,22 @@ impl<'a> Named<'a> for PublicKeyAlgorithm<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EncryptionAlgorithm<'a> {
-    /// aes128-ctr (<https://www.rfc-editor.org/rfc/rfc4344#section-4>)
-    Aes128Ctr,
+    /// aes128-gcm@openssh.com (<https://www.rfc-editor.org/rfc/rfc5647>)
+    Aes128Gcm,
     Unknown(&'a str),
 }
 
 impl<'a> Named<'a> for EncryptionAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
-            "aes128-ctr" => Self::Aes128Ctr,
+            "aes128-gcm@openssh.com" => Self::Aes128Gcm,
             _ => Self::Unknown(name),
         }
     }
 
     fn name(&self) -> &str {
         match self {
-            Self::Aes128Ctr => "aes128-ctr",
+            Self::Aes128Gcm => "aes128-gcm@openssh.com",
             Self::Unknown(name) => name,
         }
     }
@@ -207,6 +207,7 @@ impl<'a> Named<'a> for EncryptionAlgorithm<'a> {
 pub enum MacAlgorithm<'a> {
     /// hmac-sha2-256 (<https://www.rfc-editor.org/rfc/rfc6668#section-2>)
     HmacSha2256,
+    None,
     Unknown(&'a str),
 }
 
@@ -214,6 +215,7 @@ impl<'a> Named<'a> for MacAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
             "hmac-sha2-256" => Self::HmacSha2256,
+            "none" => Self::None,
             _ => Self::Unknown(name),
         }
     }
@@ -221,6 +223,7 @@ impl<'a> Named<'a> for MacAlgorithm<'a> {
     fn name(&self) -> &str {
         match self {
             Self::HmacSha2256 => "hmac-sha2-256",
+            Self::None => "none",
             Self::Unknown(name) => name,
         }
     }

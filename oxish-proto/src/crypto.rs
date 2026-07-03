@@ -1,7 +1,10 @@
 use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
-use crate::{named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm}, with_mpint_bytes};
+use crate::{
+    named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm},
+    with_mpint_bytes,
+};
 
 /// A bundle of cryptographic algorithm implementations
 pub trait CryptoProvider: Send + Sync {
@@ -26,13 +29,19 @@ pub trait CryptoProvider: Send + Sync {
         algorithm: &PublicKeyAlgorithm<'_>,
     ) -> Result<Arc<dyn VerifyingKey>, CryptoError>;
 
-    /// The transport cipher
-    ///
-    /// Returns `Err` if the algorithm is not supported.
-    fn cipher(
+    /// Build a decryption state from `key` and `iv`
+    fn opening_key(
         &self,
+        source: KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
-    ) -> Result<&'static dyn Cipher, CryptoError>;
+    ) -> Result<Box<dyn OpeningKey>, CryptoError>;
+
+    /// Build an encryption state from `key` and `iv`
+    fn sealing_key(
+        &self,
+        source: KeySourceSide,
+        algorithm: &EncryptionAlgorithm<'_>,
+    ) -> Result<Box<dyn SealingKey>, CryptoError>;
 
     /// The key exchange group
     ///
@@ -41,11 +50,6 @@ pub trait CryptoProvider: Send + Sync {
         &self,
         algorithm: &KeyExchangeAlgorithm<'_>,
     ) -> Result<&'static dyn KeyExchange, CryptoError>;
-
-    /// The MAC used to protect transport packets
-    ///
-    /// Returns `Err` if the algorithm is not supported.
-    fn hmac(&self, algorithm: &MacAlgorithm<'_>) -> Result<&'static dyn Hmac, CryptoError>;
 
     /// The hash function used for the exchange hash and key derivation
     ///
@@ -56,96 +60,54 @@ pub trait CryptoProvider: Send + Sync {
     fn secure_random(&self) -> &'static dyn SecureRandom;
 }
 
-/// A symmetric cipher
-pub trait Cipher: Send + Sync {
-    /// Build an encryption state from `key` and `iv`
-    fn encrypter(&self, key: &[u8], iv: &[u8]) -> Box<dyn Encrypter>;
+/// An in-progress decryption, produced by [`CryptoProvider::opening_key()`]
+pub trait OpeningKey: Send + Sync {
+    /// Verify and decrypt a packet in place
+    ///
+    /// `data` is the `packet_length` field (4 bytes) followed by the ciphertext. On
+    /// success the ciphertext portion is decrypted in place; returns `Err` if the tag
+    /// does not verify.
+    fn open_in_place(
+        &mut self,
+        sequence_number: u32,
+        data: &mut [u8],
+        tag: &[u8],
+    ) -> Result<(), CryptoError>;
 
-    /// Build a decryption state from `key` and `iv`
-    fn decrypter(&self, key: &[u8], iv: &[u8]) -> Box<dyn Decrypter>;
+    /// Recover the 4-byte `packet_length` field
+    ///
+    /// For ciphers that transmit the length in cleartext (like AES-GCM) this returns
+    /// `encrypted` unchanged; ciphers that encrypt the length override this.
+    fn decrypt_packet_length(&mut self, seq: u32, encrypted: [u8; 4]) -> [u8; 4];
 
-    /// The cipher's block length in bytes
-    fn block_len(&self) -> usize;
-
-    /// The length in bytes of the key this cipher expects
-    fn key_len(&self) -> usize;
-
-    /// The length in bytes of the IV this cipher expects
-    fn iv_len(&self) -> usize;
-}
-
-/// An in-progress encryption, produced by [`Cipher::encrypter`]
-pub trait Encrypter: Send {
-    /// Encrypt `input` (a whole number of blocks) into `output` (same length)
-    fn encrypt(&mut self, input: &[u8], output: &mut [u8]);
-
-    /// The cipher's block length in bytes
-    fn block_len(&self) -> usize;
-}
-
-/// An in-progress decryption, produced by [`Cipher::decrypter`]
-pub trait Decrypter: Send {
-    /// Decrypt `input` (a whole number of blocks) into `output` (same length)
-    fn decrypt(&mut self, input: &[u8], output: &mut [u8]);
-
-    /// The cipher's block length in bytes
-    fn block_len(&self) -> usize;
-}
-
-/// A keyed MAC algorithm
-pub trait Hmac: Send + Sync {
-    /// Prepare to use `key` as a MAC key
-    fn with_key(&self, key: &[u8]) -> Box<dyn HmacKey>;
-
-    /// The length in bytes of the tags produced by this algorithm
-    fn output_len(&self) -> usize;
-}
-
-/// A MAC key that is ready for use
-pub trait HmacKey: Send + Sync {
-    /// Compute a tag over the concatenation of the slices in `data`
-    fn sign(&self, data: &[&[u8]]) -> Tag;
-
-    /// Verify, in constant time, that `tag` matches a fresh computation over `data`
-    fn verify(&self, data: &[&[u8]], tag: &[u8]) -> bool;
-
-    /// The length in bytes of the tags produced by this key
+    /// The length in bytes of the authentication tag
     fn tag_len(&self) -> usize;
 }
 
-/// A MAC tag, stored inline
-#[derive(Clone, Copy)]
-pub struct Tag {
-    buf: [u8; Self::MAX_LEN],
-    used: usize,
-}
+/// An in-progress encryption, produced by [`CryptoProvider::sealing_key()`]
+pub trait SealingKey: Send + Sync {
+    /// Encrypt a packet in place and write its authentication tag
+    ///
+    /// `data` is the `packet_length` field (4 bytes) followed by the plaintext
+    /// (`padding_length`, `payload` and `padding`). The plaintext portion is encrypted
+    /// in place and `tag` is filled with the authentication tag.
+    fn seal_in_place(
+        &mut self,
+        seq: u32,
+        data: &mut [u8],
+        tag: &mut [u8],
+    ) -> Result<(), CryptoError>;
 
-impl Tag {
-    /// Build a `Tag` from a slice of no more than [`Self::MAX_LEN`] bytes
-    pub fn new(bytes: &[u8]) -> Self {
-        debug_assert!(bytes.len() <= Self::MAX_LEN);
-        let mut buf = [0; Self::MAX_LEN];
-        buf[..bytes.len()].copy_from_slice(bytes);
-        Self {
-            buf,
-            used: bytes.len(),
-        }
-    }
+    /// The length in bytes of the block size for this cipher
+    fn block_len(&self) -> usize;
 
-    /// Maximum supported tag size: enough for HMAC-SHA512
-    pub const MAX_LEN: usize = 64;
-}
-
-impl AsRef<[u8]> for Tag {
-    fn as_ref(&self) -> &[u8] {
-        &self.buf[..self.used]
-    }
+    /// The length in bytes of the authentication tag
+    fn tag_len(&self) -> usize;
 }
 
 pub struct KeySourceSide {
     pub initial_iv: KeySource,
     pub encryption_key: KeySource,
-    pub integrity_key: KeySource,
 }
 
 impl KeySourceSide {
@@ -153,7 +115,6 @@ impl KeySourceSide {
         Self {
             initial_iv: derivation.key(KeyInput::InitialIvClientToServer),
             encryption_key: derivation.key(KeyInput::EncryptionKeyClientToServer),
-            integrity_key: derivation.key(KeyInput::IntegrityKeyClientToServer),
         }
     }
 
@@ -161,7 +122,6 @@ impl KeySourceSide {
         Self {
             initial_iv: derivation.key(KeyInput::InitialIvServerToClient),
             encryption_key: derivation.key(KeyInput::EncryptionKeyServerToClient),
-            integrity_key: derivation.key(KeyInput::IntegrityKeyServerToClient),
         }
     }
 }
@@ -230,8 +190,6 @@ enum KeyInput {
     InitialIvServerToClient,
     EncryptionKeyClientToServer,
     EncryptionKeyServerToClient,
-    IntegrityKeyClientToServer,
-    IntegrityKeyServerToClient,
 }
 
 impl From<KeyInput> for u8 {
@@ -241,8 +199,6 @@ impl From<KeyInput> for u8 {
             KeyInput::InitialIvServerToClient => b'B',
             KeyInput::EncryptionKeyClientToServer => b'C',
             KeyInput::EncryptionKeyServerToClient => b'D',
-            KeyInput::IntegrityKeyClientToServer => b'E',
-            KeyInput::IntegrityKeyServerToClient => b'F',
         }
     }
 }
@@ -339,10 +295,13 @@ pub trait SecureRandom: Send + Sync {
 /// An error returned by a cryptographic operation
 #[derive(Clone, Copy, Debug)]
 pub enum CryptoError {
+    DecryptionFailed,
+    EncryptionFailed,
     InvalidLength,
     KeyAgreementFailed,
     KeyGenerationFailed,
     KeyRejected,
+    NonceOverflow,
     NoRandomness,
     UnknownAlgorithm,
     Unspecified,
@@ -352,10 +311,13 @@ pub enum CryptoError {
 impl fmt::Display for CryptoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DecryptionFailed => write!(f, "decryption failed"),
+            Self::EncryptionFailed => write!(f, "encryption failed"),
             Self::InvalidLength => write!(f, "invalid length"),
             Self::KeyAgreementFailed => write!(f, "key agreement failed"),
             Self::KeyGenerationFailed => write!(f, "key generation failed"),
             Self::KeyRejected => write!(f, "key rejected"),
+            Self::NonceOverflow => write!(f, "nonce overflow"),
             Self::NoRandomness => write!(f, "no randomness available"),
             Self::UnknownAlgorithm => write!(f, "unknown algorithm"),
             Self::Unspecified => write!(f, "unspecified error"),
