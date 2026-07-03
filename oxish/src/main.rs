@@ -4,9 +4,9 @@ use std::{
     io::{self, Write},
 };
 
+use aws_lc::DEFAULT_PROVIDER;
 use clap::Parser;
 use listenfd::ListenFd;
-use oxish::aws_lc::DEFAULT_PROVIDER;
 use oxish::Connection;
 use proto::PublicKeyAlgorithm;
 use tokio::net::TcpListener;

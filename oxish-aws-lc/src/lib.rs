@@ -10,11 +10,11 @@ use ::aws_lc_rs::{
     signature::{self, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
 };
 use proto::{
+    EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm,
     crypto::{
         ActiveKeyExchange, Cipher, CryptoProvider, Decrypter, Digest, Encrypter, Error, Hash,
         HashContext, Hmac, HmacKey, KeyExchange, SecureRandom, SigningKey, Tag, VerifyingKey,
     },
-    EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm,
 };
 
 pub const DEFAULT_PROVIDER: &'static dyn CryptoProvider = &Provider;
