@@ -12,6 +12,7 @@ pub use channels::{
     ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, Env, Mode,
     PtyReq,
 };
+pub mod crypto;
 mod named;
 use named::IncomingNameList;
 pub use named::{
