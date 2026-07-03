@@ -2,12 +2,12 @@ use core::fmt;
 use std::borrow::Cow;
 
 use proto::{
+    crypto::{Digest, Hash, HashContext},
     Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
     ProtoError, PublicKeyAlgorithm,
 };
 use tracing::{debug, error, warn};
 
-use crate::crypto::{Digest, Hash, HashContext};
 use crate::{buffers::HandshakeHash, ConnectionContext};
 
 pub(crate) struct EcdhKeyExchange {

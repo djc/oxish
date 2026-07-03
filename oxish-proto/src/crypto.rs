@@ -1,7 +1,7 @@
 use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
-use proto::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm};
+use crate::named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm};
 
 /// A bundle of cryptographic algorithm implementations
 pub trait CryptoProvider: Send + Sync {

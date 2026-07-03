@@ -6,19 +6,17 @@ use core::{
 use std::io;
 
 use proto::{
+    crypto::{
+        self, CryptoProvider, Decrypter, Digest, Encrypter, Hash, HashContext, HmacKey,
+        SecureRandom,
+    },
     Completion, Decode, Decoded, Encode, EncryptionAlgorithm, IncomingPacket, MacAlgorithm,
     MessageType, ProtoError,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{error, trace};
 
-use crate::{
-    crypto::{
-        CryptoProvider, Decrypter, Digest, Encrypter, Hash, HashContext, HmacKey, SecureRandom,
-    },
-    key_exchange::RawKeys,
-    Error,
-};
+use crate::{key_exchange::RawKeys, Error};
 
 /// The reader and decryption state for an SSH connection
 pub(crate) struct ReadState {
@@ -247,7 +245,7 @@ impl ReadKeys {
         encryption_algorithm: &EncryptionAlgorithm<'_>,
         mac_algorithm: &MacAlgorithm<'_>,
         provider: &dyn CryptoProvider,
-    ) -> Result<Self, crate::crypto::Error> {
+    ) -> Result<Self, crypto::Error> {
         Ok(Self {
             decrypter: provider.cipher(encryption_algorithm)?.decrypter(
                 &keys.encryption_key.derive::<16>(),
@@ -400,7 +398,7 @@ impl WriteKeys {
         encryption_algorithm: &EncryptionAlgorithm<'_>,
         mac_algorithm: &MacAlgorithm<'_>,
         provider: &dyn CryptoProvider,
-    ) -> Result<Self, crate::crypto::Error> {
+    ) -> Result<Self, crypto::Error> {
         Ok(Self {
             encrypter: provider.cipher(encryption_algorithm)?.encrypter(
                 &keys.encryption_key.derive::<16>(),

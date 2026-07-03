@@ -2,6 +2,7 @@ use core::{fmt, future, net::SocketAddr};
 use std::{borrow::Cow, io, str, sync::Arc};
 
 use ::proto::{
+    crypto::{CryptoProvider, SigningKey},
     Completion, Decoded, Disconnect, DisconnectReason, Encode, EncryptionAlgorithm, ExtInfo,
     ExtensionName, Identification, IdentificationError, KeyExchangeAlgorithm, KeyExchangeInit,
     MessageType, Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
@@ -17,8 +18,6 @@ pub mod aws_lc;
 use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
 use buffers::{HandshakeHash, ReadKeys, ReadState, WriteKeys, WriteState};
-pub mod crypto;
-use crypto::{CryptoProvider, SigningKey};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod key_exchange;
