@@ -1,22 +1,22 @@
 use core::{
     future, iter,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use std::io;
 
 use proto::{
-    crypto::{
-        self, CryptoProvider, Decrypter, Digest, Encrypter, Hash, HashContext, HmacKey,
-        SecureRandom,
-    },
     Completion, Decode, Decoded, Encode, EncryptionAlgorithm, IncomingPacket, MacAlgorithm,
     MessageType, ProtoError,
+    crypto::{
+        self, CryptoProvider, Decrypter, Digest, Encrypter, Hash, HashContext, HmacKey,
+        KeySourceSide, SecureRandom,
+    },
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{error, trace};
 
-use crate::{key_exchange::KeySourceSide, Error};
+use crate::Error;
 
 /// The reader and decryption state for an SSH connection
 pub(crate) struct ReadState {
