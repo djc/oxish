@@ -12,10 +12,10 @@ pub trait CryptoProvider: Send + Sync {
     fn generate_signing_key(
         &self,
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<(Arc<dyn SigningKey>, Vec<u8>), Error>;
+    ) -> Result<(Arc<dyn SigningKey>, Vec<u8>), CryptoError>;
 
     /// Load a signing key from its PKCS#8 serialization
-    fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Arc<dyn SigningKey>, Error>;
+    fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Arc<dyn SigningKey>, CryptoError>;
 
     /// Build a public key that can verify signatures for `algorithm`
     ///
@@ -24,12 +24,15 @@ pub trait CryptoProvider: Send + Sync {
         &self,
         key: &[u8],
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<Arc<dyn VerifyingKey>, Error>;
+    ) -> Result<Arc<dyn VerifyingKey>, CryptoError>;
 
     /// The transport cipher
     ///
     /// Returns `Err` if the algorithm is not supported.
-    fn cipher(&self, algorithm: &EncryptionAlgorithm<'_>) -> Result<&'static dyn Cipher, Error>;
+    fn cipher(
+        &self,
+        algorithm: &EncryptionAlgorithm<'_>,
+    ) -> Result<&'static dyn Cipher, CryptoError>;
 
     /// The key exchange group
     ///
@@ -37,17 +40,17 @@ pub trait CryptoProvider: Send + Sync {
     fn key_exchange(
         &self,
         algorithm: &KeyExchangeAlgorithm<'_>,
-    ) -> Result<&'static dyn KeyExchange, Error>;
+    ) -> Result<&'static dyn KeyExchange, CryptoError>;
 
     /// The MAC used to protect transport packets
     ///
     /// Returns `Err` if the algorithm is not supported.
-    fn hmac(&self, algorithm: &MacAlgorithm<'_>) -> Result<&'static dyn Hmac, Error>;
+    fn hmac(&self, algorithm: &MacAlgorithm<'_>) -> Result<&'static dyn Hmac, CryptoError>;
 
     /// The hash function used for the exchange hash and key derivation
     ///
     /// Returns `Err` if the algorithm is not supported.
-    fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, Error>;
+    fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, CryptoError>;
 
     /// A source of cryptographically secure random bytes
     fn secure_random(&self) -> &'static dyn SecureRandom;
@@ -192,7 +195,7 @@ impl AsRef<[u8]> for Digest {
 /// A key exchange group
 pub trait KeyExchange: Send + Sync {
     /// Start an ephemeral key exchange, generating our ephemeral key pair
-    fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, Error>;
+    fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, CryptoError>;
 }
 
 /// An in-progress key exchange, produced by [`KeyExchange::start`]
@@ -201,7 +204,7 @@ pub trait ActiveKeyExchange: Send {
     fn public_key(&self) -> &[u8];
 
     /// Complete the exchange using the peer's public key, returning the shared secret
-    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<Vec<u8>, Error>;
+    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<Vec<u8>, CryptoError>;
 }
 
 /// A key pair that can sign messages
@@ -219,23 +222,41 @@ pub trait SigningKey: Send + Sync {
 /// A public key that can verify signatures
 pub trait VerifyingKey: Send + Sync {
     /// Verify that `signature` is a valid signature over `message`
-    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), Error>;
+    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError>;
 }
 
 /// A source of cryptographically secure randomness.
 pub trait SecureRandom: Send + Sync {
     /// Fill `buf` with random bytes
-    fn fill(&self, buf: &mut [u8]) -> Result<(), Error>;
+    fn fill(&self, buf: &mut [u8]) -> Result<(), CryptoError>;
 }
 
 /// An error returned by a cryptographic operation
 #[derive(Clone, Copy, Debug)]
-pub struct Error;
+pub enum CryptoError {
+    InvalidLength,
+    KeyAgreementFailed,
+    KeyGenerationFailed,
+    KeyRejected,
+    NoRandomness,
+    UnknownAlgorithm,
+    Unspecified,
+    VerificationFailed,
+}
 
-impl fmt::Display for Error {
+impl fmt::Display for CryptoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("cryptographic operation failed")
+        match self {
+            Self::InvalidLength => write!(f, "invalid length"),
+            Self::KeyAgreementFailed => write!(f, "key agreement failed"),
+            Self::KeyGenerationFailed => write!(f, "key generation failed"),
+            Self::KeyRejected => write!(f, "key rejected"),
+            Self::NoRandomness => write!(f, "no randomness available"),
+            Self::UnknownAlgorithm => write!(f, "unknown algorithm"),
+            Self::Unspecified => write!(f, "unspecified error"),
+            Self::VerificationFailed => write!(f, "signature verification failed"),
+        }
     }
 }
 
-impl StdError for Error {}
+impl StdError for CryptoError {}

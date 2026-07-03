@@ -13,6 +13,7 @@ pub use channels::{
     PtyReq,
 };
 pub mod crypto;
+use crypto::CryptoError;
 mod named;
 use named::IncomingNameList;
 pub use named::{
@@ -645,6 +646,8 @@ impl TryFrom<u32> for DisconnectReason {
 
 #[derive(Debug, Error)]
 pub enum ProtoError {
+    #[error("crypto error: {0}")]
+    Crypto(#[from] CryptoError),
     #[error("failed to parse identification: {0}")]
     Identification(#[from] IdentificationError),
     #[error("incomplete message: {0:?}")]
