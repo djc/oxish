@@ -23,7 +23,7 @@ impl EcdhKeyExchange {
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
         cx: &ConnectionContext,
-    ) -> Result<(EcdhKeyExchangeReply, Digest, RawKeySet), ()> {
+    ) -> Result<(EcdhKeyExchangeReply, Digest, KeySourceSet), ()> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
@@ -89,9 +89,9 @@ impl EcdhKeyExchange {
         Ok((
             key_exchange_reply,
             session_id,
-            RawKeySet {
-                client_to_server: RawKeys::client_to_server(&derivation),
-                server_to_client: RawKeys::server_to_client(&derivation),
+            KeySourceSet {
+                client_to_server: KeySourceSide::client_to_server(&derivation),
+                server_to_client: KeySourceSide::server_to_client(&derivation),
             },
         ))
     }
@@ -270,18 +270,18 @@ impl Algorithms {
 /// The raw hashes from which we will derive the crypto keys.
 ///
 /// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
-pub(crate) struct RawKeySet {
-    pub(crate) client_to_server: RawKeys,
-    pub(crate) server_to_client: RawKeys,
+pub(crate) struct KeySourceSet {
+    pub(crate) client_to_server: KeySourceSide,
+    pub(crate) server_to_client: KeySourceSide,
 }
 
-pub(crate) struct RawKeys {
-    pub(crate) initial_iv: Key,
-    pub(crate) encryption_key: Key,
-    pub(crate) integrity_key: Key,
+pub(crate) struct KeySourceSide {
+    pub(crate) initial_iv: KeySource,
+    pub(crate) encryption_key: KeySource,
+    pub(crate) integrity_key: KeySource,
 }
 
-impl RawKeys {
+impl KeySourceSide {
     fn client_to_server(derivation: &KeyDerivation) -> Self {
         Self {
             initial_iv: derivation.key(KeyInput::InitialIvClientToServer),
@@ -307,12 +307,12 @@ struct KeyDerivation {
 }
 
 impl KeyDerivation {
-    fn key(&self, input: KeyInput) -> Key {
+    fn key(&self, input: KeyInput) -> KeySource {
         let mut base = self.hash.start();
         with_mpint_bytes(&self.shared_secret, |bytes| base.update(bytes));
         base.update(self.exchange_hash.as_ref());
 
-        Key {
+        KeySource {
             base,
             block_len: self.hash.output_len(),
             session_id: self.session_id,
@@ -321,14 +321,14 @@ impl KeyDerivation {
     }
 }
 
-pub(crate) struct Key {
+pub(crate) struct KeySource {
     base: Box<dyn HashContext>,
     block_len: usize,
     session_id: Digest,
     input: KeyInput,
 }
 
-impl Key {
+impl KeySource {
     pub(crate) fn derive<const N: usize>(self) -> [u8; N] {
         let block_len = self.block_len;
 
