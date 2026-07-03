@@ -9,6 +9,7 @@ use ::proto::{
     ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
     UserAuthRequest, PROTOCOL,
 };
+use proto::crypto::CryptoError;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
@@ -16,7 +17,7 @@ use tracing::{debug, error, info, instrument, warn};
 mod authentication;
 use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
-use buffers::{HandshakeHash, ReadKeys, ReadState, WriteKeys, WriteState};
+use buffers::{HandshakeHash, ReadState, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod key_exchange;
@@ -364,29 +365,27 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             server_to_client,
         } = keys;
 
-        // Cipher and MAC algorithms are negotiated during key exchange.
-        // Currently this hard codes AES-128-CTR and HMAC-SHA256.
-        let (Ok(read_keys), Ok(write_keys)) = (
-            ReadKeys::new(
-                client_to_server,
-                &EncryptionAlgorithm::Aes128Ctr,
-                &proto::MacAlgorithm::HmacSha2256,
-                self.context.provider,
-            ),
-            WriteKeys::new(
-                server_to_client,
-                &EncryptionAlgorithm::Aes128Ctr,
-                &proto::MacAlgorithm::HmacSha2256,
-                self.context.provider,
-            ),
-        ) else {
-            error!("unsupported cipher or mac algorithm");
-            return Err(());
-        };
-
-        self.read.decryption_key = Some(read_keys);
-        self.write.keys = Some(write_keys);
-        Ok(())
+        // The cipher is negotiated during key exchange; currently this hard codes
+        // aes128-gcm@openssh.com, an AEAD that also provides integrity protection.
+        let results = (
+            self.context
+                .provider
+                .opening_key(client_to_server, &EncryptionAlgorithm::Aes128Gcm),
+            self.context
+                .provider
+                .sealing_key(server_to_client, &EncryptionAlgorithm::Aes128Gcm),
+        );
+        match results {
+            (Ok(opener), Ok(sealer)) => {
+                self.read.opener = Some(opener);
+                self.write.sealer = Some(sealer);
+                Ok(())
+            }
+            (Err(error), _) | (_, Err(error)) => {
+                error!(%error, "failed to create opening or sealing key");
+                Err(())
+            }
+        }
     }
 
     async fn send_auth_failed(&mut self) -> Result<(), ()> {
@@ -491,10 +490,14 @@ enum Error {
     InvalidUsername,
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    #[error("invalid mac for packet")]
-    InvalidMac,
     #[error("proto: {0}")]
     Proto(#[from] ProtoError),
+}
+
+impl From<CryptoError> for Error {
+    fn from(error: CryptoError) -> Self {
+        Self::Proto(ProtoError::Crypto(error))
+    }
 }
 
 struct Pretty<T>(T);

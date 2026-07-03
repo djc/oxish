@@ -1,19 +1,16 @@
 use std::sync::Arc;
 
 use ::aws_lc_rs::{
+    aead::{AES_128_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey},
     agreement::{self, EphemeralPrivateKey, X25519},
-    cipher::{
-        self, DecryptionContext, EncryptionContext, StreamingDecryptingKey, StreamingEncryptingKey,
-        UnboundCipherKey,
-    },
-    constant_time, digest, hmac, rand,
+    digest, rand,
     signature::{self, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
 };
 use proto::{
-    EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm,
+    EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm,
     crypto::{
-        ActiveKeyExchange, Cipher, CryptoError, CryptoProvider, Decrypter, Digest, Encrypter, Hash,
-        HashContext, Hmac, HmacKey, KeyExchange, SecureRandom, SigningKey, Tag, VerifyingKey,
+        ActiveKeyExchange, CryptoError, CryptoProvider, Digest, Hash, HashContext, KeyExchange,
+        KeySourceSide, OpeningKey, SealingKey, SecureRandom, SigningKey, VerifyingKey,
     },
 };
 
@@ -64,12 +61,24 @@ impl CryptoProvider for Provider {
         }
     }
 
-    fn cipher(
+    fn opening_key(
         &self,
+        source: KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
-    ) -> Result<&'static dyn Cipher, CryptoError> {
+    ) -> Result<Box<dyn OpeningKey>, CryptoError> {
         match algorithm {
-            EncryptionAlgorithm::Aes128Ctr => Ok(&Aes128Ctr),
+            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmOpener(GcmState::new(source)?))),
+            _ => Err(CryptoError::UnknownAlgorithm),
+        }
+    }
+
+    fn sealing_key(
+        &self,
+        source: KeySourceSide,
+        algorithm: &EncryptionAlgorithm<'_>,
+    ) -> Result<Box<dyn SealingKey>, CryptoError> {
+        match algorithm {
+            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmSealer(GcmState::new(source)?))),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -80,13 +89,6 @@ impl CryptoProvider for Provider {
     ) -> Result<&'static dyn KeyExchange, CryptoError> {
         match algorithm {
             KeyExchangeAlgorithm::Curve25519Sha256 => Ok(&X25519Kx),
-            _ => Err(CryptoError::UnknownAlgorithm),
-        }
-    }
-
-    fn hmac(&self, algorithm: &MacAlgorithm<'_>) -> Result<&'static dyn Hmac, CryptoError> {
-        match algorithm {
-            MacAlgorithm::HmacSha2256 => Ok(&HmacSha256),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -103,90 +105,105 @@ impl CryptoProvider for Provider {
     }
 }
 
-struct Aes128Ctr;
+struct Aes128GcmSealer(GcmState);
 
-impl Aes128Ctr {
-    const BLOCK_LEN: usize = 16;
-    const KEY_LEN: usize = 16;
-    const IV_LEN: usize = 16;
+impl SealingKey for Aes128GcmSealer {
+    fn seal_in_place(
+        &mut self,
+        _seq: u32,
+        data: &mut [u8],
+        tag: &mut [u8],
+    ) -> Result<(), CryptoError> {
+        let nonce = self.0.nonce()?;
+        let Some((length, plaintext)) = data.split_at_mut_checked(4) else {
+            return Err(CryptoError::InvalidLength);
+        };
+
+        let computed = self
+            .0
+            .key
+            .seal_in_place_separate_tag(nonce, Aad::from(length), plaintext)
+            .map_err(|_| CryptoError::EncryptionFailed)?;
+
+        tag.copy_from_slice(computed.as_ref());
+        Ok(())
+    }
+
+    fn block_len(&self) -> usize {
+        16
+    }
+
+    fn tag_len(&self) -> usize {
+        self.0.key.algorithm().tag_len()
+    }
 }
 
-impl Cipher for Aes128Ctr {
-    fn encrypter(&self, key: &[u8], iv: &[u8]) -> Box<dyn Encrypter> {
-        let iv: [u8; Self::IV_LEN] = iv.try_into().expect("iv length");
-        let key = StreamingEncryptingKey::less_safe_ctr(
-            UnboundCipherKey::new(&cipher::AES_128, key).expect("aes-128 key"),
-            EncryptionContext::Iv128(iv.into()),
-        )
-        .expect("aes-128-ctr encrypter");
-        Box::new(Aes128CtrEncrypter {
-            key,
-            scratch: Vec::new(),
+struct Aes128GcmOpener(GcmState);
+
+impl OpeningKey for Aes128GcmOpener {
+    fn open_in_place(&mut self, _seq: u32, data: &mut [u8], tag: &[u8]) -> Result<(), CryptoError> {
+        let nonce = self.0.nonce()?;
+        let Some((length, ciphertext)) = data.split_at_mut_checked(4) else {
+            return Err(CryptoError::InvalidLength);
+        };
+
+        self.0
+            .key
+            .open_in_place_separate_tag(nonce, Aad::from(&length[..]), tag, ciphertext)
+            .map_err(|_| CryptoError::DecryptionFailed)?;
+
+        Ok(())
+    }
+
+    fn decrypt_packet_length(&mut self, _seq: u32, encrypted: [u8; 4]) -> [u8; 4] {
+        // The packet length is transmitted in cleartext (authenticated as AAD).
+        encrypted
+    }
+
+    fn tag_len(&self) -> usize {
+        self.0.key.algorithm().tag_len()
+    }
+}
+
+/// Shared AES-128-GCM state: the key and the current 12-byte nonce
+struct GcmState {
+    key: LessSafeKey,
+    nonce: [u8; NONCE_LEN],
+}
+
+impl GcmState {
+    fn new(source: KeySourceSide) -> Result<Self, CryptoError> {
+        Ok(Self {
+            key: LessSafeKey::new(
+                UnboundKey::new(&AES_128_GCM, &source.encryption_key.derive::<16>())
+                    .map_err(|_| CryptoError::InvalidLength)?,
+            ),
+            nonce: source.initial_iv.derive::<NONCE_LEN>(),
         })
     }
 
-    fn decrypter(&self, key: &[u8], iv: &[u8]) -> Box<dyn Decrypter> {
-        let iv: [u8; Self::IV_LEN] = iv.try_into().expect("iv length");
-        let key = StreamingDecryptingKey::ctr(
-            UnboundCipherKey::new(&cipher::AES_128, key).expect("aes-128 key"),
-            DecryptionContext::Iv128(iv.into()),
-        )
-        .expect("aes-128-ctr decrypter");
-        Box::new(Aes128CtrDecrypter(key))
-    }
+    /// Return the nonce for the next packet and advance the invocation counter
+    ///
+    /// <https://www.rfc-editor.org/rfc/rfc5647#section-7.1>: the low 8 bytes form a
+    /// big-endian invocation counter that is incremented after each packet.
+    fn nonce(&mut self) -> Result<Nonce, CryptoError> {
+        let nonce = Nonce::assume_unique_for_key(self.nonce);
+        let Some((_, counter)) = self.nonce.split_first_chunk_mut::<4>() else {
+            return Err(CryptoError::InvalidLength);
+        };
 
-    fn block_len(&self) -> usize {
-        Self::BLOCK_LEN
-    }
+        let Some((counter, rest)) = counter.split_first_chunk_mut::<8>() else {
+            return Err(CryptoError::InvalidLength);
+        };
 
-    fn key_len(&self) -> usize {
-        Self::KEY_LEN
-    }
+        debug_assert!(rest.is_empty(), "nonce length is not 12 bytes");
+        let count = u64::from_be_bytes(*counter);
+        let Some(next) = count.checked_add(1) else {
+            return Err(CryptoError::NonceOverflow);
+        };
 
-    fn iv_len(&self) -> usize {
-        Self::IV_LEN
-    }
-}
-
-struct Aes128CtrEncrypter {
-    key: StreamingEncryptingKey,
-    /// aws-lc-rs requires an output buffer up to one block larger than the
-    /// input; we encrypt into this scratch buffer and copy back the written
-    /// bytes (of which, for CTR, there are exactly `input.len()`).
-    scratch: Vec<u8>,
-}
-
-impl Encrypter for Aes128CtrEncrypter {
-    fn encrypt(&mut self, input: &[u8], output: &mut [u8]) {
-        self.scratch.resize(input.len() + Aes128Ctr::BLOCK_LEN, 0);
-        let update = self
-            .key
-            .update(input, &mut self.scratch)
-            .expect("aes-128-ctr update");
-        let written = update.written().len();
-        debug_assert_eq!(written, output.len());
-        output.copy_from_slice(&self.scratch[..written]);
-    }
-
-    fn block_len(&self) -> usize {
-        Aes128Ctr::BLOCK_LEN
-    }
-}
-
-struct Aes128CtrDecrypter(StreamingDecryptingKey);
-
-impl Decrypter for Aes128CtrDecrypter {
-    fn decrypt(&mut self, input: &[u8], output: &mut [u8]) {
-        // It is fine to use `less_safe_update` as we always decrypt whole blocks at a time
-        let update = self
-            .0
-            .less_safe_update(input, output)
-            .expect("aes-128-ctr update");
-        debug_assert_eq!(update.remainder().len(), 0);
-    }
-
-    fn block_len(&self) -> usize {
-        Aes128Ctr::BLOCK_LEN
+        *counter = next.to_be_bytes();
+        Ok(nonce)
     }
 }
 
@@ -268,44 +285,6 @@ impl VerifyingKey for EcdsaP256VerifyingKey {
         self.key
             .verify(message, signature)
             .map_err(|_| CryptoError::VerificationFailed)
-    }
-}
-
-struct HmacSha256;
-
-impl Hmac for HmacSha256 {
-    fn with_key(&self, key: &[u8]) -> Box<dyn HmacKey> {
-        Box::new(HmacSha256Key(hmac::Key::new(hmac::HMAC_SHA256, key)))
-    }
-
-    fn output_len(&self) -> usize {
-        digest::SHA256.output_len()
-    }
-}
-
-struct HmacSha256Key(hmac::Key);
-
-impl HmacSha256Key {
-    fn compute(&self, data: &[&[u8]]) -> hmac::Tag {
-        let mut context = hmac::Context::with_key(&self.0);
-        for slice in data {
-            context.update(slice);
-        }
-        context.sign()
-    }
-}
-
-impl HmacKey for HmacSha256Key {
-    fn sign(&self, data: &[&[u8]]) -> Tag {
-        Tag::new(self.compute(data).as_ref())
-    }
-
-    fn verify(&self, data: &[&[u8]], tag: &[u8]) -> bool {
-        constant_time::verify_slices_are_equal(self.compute(data).as_ref(), tag).is_ok()
-    }
-
-    fn tag_len(&self) -> usize {
-        self.0.algorithm().digest_algorithm().output_len
     }
 }
 
