@@ -14,7 +14,7 @@ Please don't publicize this project at its current stage. Funding to advance its
 ## Limitations
 
 * Will only support modern clients
-* May require a modern platform/Rust compiler (currently 1.75)
+* May require a modern platform/Rust compiler
 * No support for older cryptographic algorithms
 
 ## References to RFCs consulted during development
