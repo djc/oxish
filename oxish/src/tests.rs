@@ -1,5 +1,5 @@
 use core::{net::Ipv4Addr, time::Duration};
-use std::{fs, path::PathBuf, process::Stdio};
+use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio};
 
 use aws_lc::DEFAULT_PROVIDER;
 use proto::PublicKeyAlgorithm;
@@ -80,10 +80,18 @@ async fn handshake() {
         .await
         .expect("ssh client timed out")
         .expect("failed to wait for ssh");
-    server.abort();
-    server.await.unwrap();
-    let _ = fs::remove_dir_all(&dir);
 
+    // The server task normally completes on its own once the ssh client disconnects; abort() only
+    // matters if it is still running. Awaiting an aborted task yields `JoinError::Cancelled`,
+    // which is expected here — but a genuine panic inside the task should still fail the test.
+    server.abort();
+    if let Err(err) = server.await {
+        if !err.is_cancelled() {
+            resume_unwind(err.into_panic());
+        }
+    }
+
+    let _ = fs::remove_dir_all(&dir);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
