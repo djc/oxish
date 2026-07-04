@@ -1,0 +1,12 @@
+[package]
+name = "oxish-graviola"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+graviola = { workspace = true }
+proto = { package = "oxish-proto", version = "0.1", path = "../oxish-proto" }
+
+[lints]
+workspace = true
