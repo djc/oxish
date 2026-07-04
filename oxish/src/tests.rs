@@ -1,15 +1,25 @@
 use core::{net::Ipv4Addr, time::Duration};
 use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio};
 
-use aws_lc::DEFAULT_PROVIDER;
-use proto::PublicKeyAlgorithm;
+use proto::{crypto::CryptoProvider, PublicKeyAlgorithm};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
 use crate::{AuthorizedKey, Connection, User};
 
+/// Exercise a full handshake and session against the aws-lc-rs provider.
 #[tokio::test]
-async fn handshake() {
+async fn handshake_aws_lc() {
+    handshake(aws_lc::DEFAULT_PROVIDER).await;
+}
+
+/// Exercise a full handshake and session against the graviola provider.
+#[tokio::test]
+async fn handshake_graviola() {
+    handshake(graviola::DEFAULT_PROVIDER).await;
+}
+
+async fn handshake(provider: &'static dyn CryptoProvider) {
     let dir = TempDir::new().unwrap();
     let key_path = dir.path().join("key");
 
@@ -28,7 +38,6 @@ async fn handshake() {
         .expect("failed to run ssh-keygen");
     assert!(status.success(), "ssh-keygen failed");
 
-    let provider = DEFAULT_PROVIDER;
     let authorized_key = fs::read_to_string(key_path.with_extension("pub")).unwrap();
     let key = AuthorizedKey::from_str(&authorized_key, provider)
         .unwrap()

@@ -24,6 +24,7 @@ tracing-subscriber = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+graviola = { package = "oxish-graviola", version = "0.1.0", path = "../oxish-graviola" }
 tempfile = { workspace = true }
 
 [lints]

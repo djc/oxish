@@ -285,6 +285,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "graviola"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8596c4fa98466aae2fcf4c72a665bc0e021c0aaab1e47d82044d3dc3e309a76"
+dependencies = [
+ "cfg-if",
+ "getrandom",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -418,6 +428,7 @@ dependencies = [
  "libc",
  "listenfd",
  "oxish-aws-lc",
+ "oxish-graviola",
  "oxish-proto",
  "rustix",
  "tempfile",
@@ -433,6 +444,14 @@ name = "oxish-aws-lc"
 version = "0.1.0"
 dependencies = [
  "aws-lc-rs",
+ "oxish-proto",
+]
+
+[[package]]
+name = "oxish-graviola"
+version = "0.1.0"
+dependencies = [
+ "graviola",
  "oxish-proto",
 ]
 
