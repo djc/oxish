@@ -9,5 +9,9 @@ license = "Apache-2.0 OR MIT"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+
 [lints]
 workspace = true
