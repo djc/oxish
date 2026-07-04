@@ -8,7 +8,7 @@ pub trait CryptoProvider: Send + Sync {
     /// Generate a fresh signing key
     ///
     /// Returns the key together with its PKCS#8 serialization, so the caller can
-    /// persist it and load it again later with [`Self::host_key_from_pkcs8()`].
+    /// persist it and load it again later with [`Self::signing_key_from_pkcs8()`].
     fn generate_signing_key(
         &self,
         algorithm: &PublicKeyAlgorithm<'_>,
