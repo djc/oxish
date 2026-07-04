@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['main']
+    branches: ["main"]
   pull_request:
   schedule:
     - cron: "34 6 * * 5"
@@ -47,8 +47,19 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # use nightly to mirror docs.rs
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: cargo doc
+        run: cargo doc --locked --all-features --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+
   audit:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v7
-    - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
