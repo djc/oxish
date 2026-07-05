@@ -1,10 +1,7 @@
 use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
-use crate::{
-    named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm},
-    with_mpint_bytes,
-};
+use crate::named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm};
 
 /// A bundle of cryptographic algorithm implementations
 pub trait CryptoProvider: Send + Sync {
@@ -128,6 +125,7 @@ impl KeySourceSide {
 
 pub struct KeyDerivation {
     pub hash: &'static dyn Hash,
+    /// The shared secret `K`, encoded exactly as fed into the exchange hash
     pub shared_secret: Vec<u8>,
     pub exchange_hash: Digest,
     pub session_id: Digest,
@@ -136,7 +134,7 @@ pub struct KeyDerivation {
 impl KeyDerivation {
     fn key(&self, input: KeyInput) -> KeySource {
         let mut base = self.hash.start();
-        with_mpint_bytes(&self.shared_secret, |bytes| base.update(bytes));
+        base.update(&self.shared_secret);
         base.update(self.exchange_hash.as_ref());
 
         KeySource {
@@ -259,11 +257,17 @@ pub trait KeyExchange: Send + Sync {
 
 /// An in-progress key exchange, produced by [`KeyExchange::start`]
 pub trait ActiveKeyExchange: Send {
-    /// Our ephemeral public key, to be sent to the peer
-    fn public_key(&self) -> &[u8];
+    /// Complete the exchange using the peer's public value
+    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<AgreedKey, CryptoError>;
+}
 
-    /// Complete the exchange using the peer's public key, returning the shared secret
-    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<Vec<u8>, CryptoError>;
+/// The result of completing a key exchange, produced by [`ActiveKeyExchange::complete`]
+pub struct AgreedKey {
+    /// Our public value to send to the peer (`Q_S` / `S_REPLY`)
+    pub public_key: Vec<u8>,
+
+    /// The shared secret `K`
+    pub shared_secret: SharedSecret,
 }
 
 /// A key pair that can sign messages
@@ -288,6 +292,20 @@ pub trait VerifyingKey: Send + Sync {
 pub trait SecureRandom: Send + Sync {
     /// Fill `buf` with random bytes
     fn fill(&self, buf: &mut [u8]) -> Result<(), CryptoError>;
+}
+
+pub struct SharedSecret(Vec<u8>);
+
+impl SharedSecret {
+    pub fn secret_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for SharedSecret {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value)
+    }
 }
 
 /// An error returned by a cryptographic operation
@@ -449,8 +467,9 @@ mod tests {
         for vector in vectors {
             let derivation = KeyDerivation {
                 hash,
-                // Drop the 4-byte mpint length prefix to recover the raw shared secret.
-                shared_secret: vector.k[4..].to_vec(),
+                // `vector.k` is already the shared secret as an mpint (with its length
+                // prefix), which is exactly the encoded form fed into the KDF.
+                shared_secret: vector.k.to_vec(),
                 exchange_hash: Digest::new(vector.h),
                 session_id: Digest::new(vector.session_id),
             };

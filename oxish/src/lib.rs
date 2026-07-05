@@ -74,7 +74,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let Ok(hash) = self
             .context
             .provider
-            .hash(&KeyExchangeAlgorithm::Curve25519Sha256)
+            .hash(&KeyExchangeAlgorithm::Mlkem768X25519Sha256)
         else {
             error!("unsupported hash algorithm");
             return Err(());
