@@ -118,8 +118,8 @@ impl<'a> Named<'a> for ChannelType<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyExchangeAlgorithm<'a> {
-    /// curve25519-sha256 (<https://www.rfc-editor.org/rfc/rfc8731>)
-    Curve25519Sha256,
+    /// mlkem768x25519-sha256 (<https://datatracker.ietf.org/doc/draft-kampanakis-curdle-ssh-pq-ke/>)
+    Mlkem768X25519Sha256,
     /// ext-info-c (<https://www.rfc-editor.org/rfc/rfc8308>)
     ExtInfoC,
     Unknown(&'a str),
@@ -128,7 +128,7 @@ pub enum KeyExchangeAlgorithm<'a> {
 impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
-            "curve25519-sha256" => Self::Curve25519Sha256,
+            "mlkem768x25519-sha256" => Self::Mlkem768X25519Sha256,
             "ext-info-c" => Self::ExtInfoC,
             _ => Self::Unknown(name),
         }
@@ -136,7 +136,7 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
 
     fn name(&self) -> &str {
         match self {
-            Self::Curve25519Sha256 => "curve25519-sha256",
+            Self::Mlkem768X25519Sha256 => "mlkem768x25519-sha256",
             Self::ExtInfoC => "ext-info-c",
             Self::Unknown(name) => name,
         }

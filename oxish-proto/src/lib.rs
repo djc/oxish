@@ -104,7 +104,7 @@ impl KeyExchangeInit<'static> {
     pub fn new(cookie: [u8; 16]) -> Result<Self, ProtoError> {
         Ok(Self {
             cookie,
-            key_exchange_algorithms: vec![KeyExchangeAlgorithm::Curve25519Sha256],
+            key_exchange_algorithms: vec![KeyExchangeAlgorithm::Mlkem768X25519Sha256],
             server_host_key_algorithms: vec![PublicKeyAlgorithm::Ed25519],
             encryption_algorithms_client_to_server: vec![EncryptionAlgorithm::Aes128Gcm],
             encryption_algorithms_server_to_client: vec![EncryptionAlgorithm::Aes128Gcm],
@@ -642,23 +642,6 @@ impl TryFrom<u32> for DisconnectReason {
             _ => return Err(ProtoError::InvalidPacket("unknown disconnect reason code")),
         })
     }
-}
-
-/// The mpint data type is defined in RFC4251 section 5.
-///
-/// Remove leading zeros, and prepend a zero byte if the first byte has its
-/// most significant bit set.
-pub fn with_mpint_bytes(int: &[u8], mut f: impl FnMut(&[u8])) {
-    let leading_zeros = int.iter().take_while(|&&b| b == 0).count();
-    // This slice indexing is safe as leading_zeros can be no larger than the length of int
-    let int = &int[leading_zeros..];
-    let prepend = matches!(int.first(), Some(&b) if b & 0x80 != 0);
-    let len = int.len() + if prepend { 1 } else { 0 };
-    f(&(len as u32).to_be_bytes());
-    if prepend {
-        f(&[0]);
-    }
-    f(int);
 }
 
 #[derive(Debug, Error)]

@@ -3,14 +3,18 @@ use std::sync::Arc;
 use ::aws_lc_rs::{
     aead::{AES_128_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey},
     agreement::{self, EphemeralPrivateKey, X25519},
-    digest, rand,
+    digest,
+    kem::ML_KEM_768,
+    rand,
     signature::{self, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
 };
+use aws_lc_rs::kem::EncapsulationKey;
 use proto::{
     EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm,
     crypto::{
-        ActiveKeyExchange, CryptoError, CryptoProvider, Digest, Hash, HashContext, KeyExchange,
-        KeySourceSide, OpeningKey, SealingKey, SecureRandom, SigningKey, VerifyingKey,
+        ActiveKeyExchange, AgreedKey, CryptoError, CryptoProvider, Digest, Hash, HashContext,
+        KeyExchange, KeySourceSide, OpeningKey, SealingKey, SecureRandom, SharedSecret, SigningKey,
+        VerifyingKey,
     },
 };
 
@@ -88,14 +92,14 @@ impl CryptoProvider for Provider {
         algorithm: &KeyExchangeAlgorithm<'_>,
     ) -> Result<&'static dyn KeyExchange, CryptoError> {
         match algorithm {
-            KeyExchangeAlgorithm::Curve25519Sha256 => Ok(&X25519Kx),
+            KeyExchangeAlgorithm::Mlkem768X25519Sha256 => Ok(&Mlkem768X25519Kx),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, CryptoError> {
         match algorithm {
-            KeyExchangeAlgorithm::Curve25519Sha256 => Ok(&Sha256),
+            KeyExchangeAlgorithm::Mlkem768X25519Sha256 => Ok(&Sha256),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -207,43 +211,70 @@ impl GcmState {
     }
 }
 
-struct X25519Kx;
+/// The `mlkem768x25519-sha256` key exchange
+struct Mlkem768X25519Kx;
 
-impl KeyExchange for X25519Kx {
+impl KeyExchange for Mlkem768X25519Kx {
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, CryptoError> {
+        Ok(Box::new(Mlkem768X25519KeyExchange))
+    }
+}
+
+struct Mlkem768X25519KeyExchange;
+
+impl Mlkem768X25519KeyExchange {
+    /// Length of an ML-KEM-768 encapsulation key
+    const MLKEM768_ENCAPS_KEY_LEN: usize = 1184;
+}
+
+impl ActiveKeyExchange for Mlkem768X25519KeyExchange {
+    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<AgreedKey, CryptoError> {
+        // `C_INIT` = ML-KEM-768 encapsulation key || X25519 public key
+        let Some((encaps_key, peer_x25519)) =
+            peer_public_key.split_at_checked(Self::MLKEM768_ENCAPS_KEY_LEN)
+        else {
+            return Err(CryptoError::InvalidLength);
+        };
+
+        let encaps_key =
+            EncapsulationKey::new(&ML_KEM_768, encaps_key).map_err(|_| CryptoError::KeyRejected)?;
+        let (ciphertext, pq_secret) = encaps_key
+            .encapsulate()
+            .map_err(|_| CryptoError::KeyAgreementFailed)?;
+
         let random = rand::SystemRandom::new();
         let private_key = EphemeralPrivateKey::generate(&X25519, &random)
             .map_err(|_| CryptoError::KeyGenerationFailed)?;
-
-        let public_key = private_key
+        let classic_public_key = private_key
             .compute_public_key()
-            .map_err(|_| CryptoError::Unspecified)?;
+            .map_err(|_| CryptoError::Unspecified)?
+            .as_ref()
+            .to_vec();
 
-        Ok(Box::new(X25519KeyExchange {
+        let peer = agreement::UnparsedPublicKey::new(&X25519, peer_x25519);
+        let classic_secret = agreement::agree_ephemeral(
             private_key,
-            public_key: public_key.as_ref().to_vec(),
-        }))
-    }
-}
-
-struct X25519KeyExchange {
-    private_key: EphemeralPrivateKey,
-    public_key: Vec<u8>,
-}
-
-impl ActiveKeyExchange for X25519KeyExchange {
-    fn public_key(&self) -> &[u8] {
-        &self.public_key
-    }
-
-    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let peer = agreement::UnparsedPublicKey::new(&X25519, peer_public_key);
-        agreement::agree_ephemeral(
-            self.private_key,
             peer,
             CryptoError::KeyAgreementFailed,
             |shared_secret| Ok(shared_secret.to_vec()),
-        )
+        )?;
+
+        // K = SHA256(K_PQ || K_CL)
+        let mut context = digest::Context::new(&digest::SHA256);
+        context.update(pq_secret.as_ref());
+        context.update(&classic_secret);
+        let shared_secret = SharedSecret::from(context.finish().as_ref().to_vec());
+
+        // `S_REPLY` = ML-KEM-768 ciphertext || X25519 public key
+        let mut public_key =
+            Vec::with_capacity(ciphertext.as_ref().len() + classic_public_key.len());
+        public_key.extend_from_slice(ciphertext.as_ref());
+        public_key.extend_from_slice(&classic_public_key);
+
+        Ok(AgreedKey {
+            public_key,
+            shared_secret,
+        })
     }
 }
 

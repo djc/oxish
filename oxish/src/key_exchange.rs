@@ -3,8 +3,8 @@ use std::borrow::Cow;
 
 use proto::{
     crypto::{Digest, KeyDerivation, KeySourceSide},
-    with_mpint_bytes, Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm,
-    KeyExchangeInit, MessageType, ProtoError, PublicKeyAlgorithm,
+    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
+    ProtoError, PublicKeyAlgorithm,
 };
 use tracing::{debug, error, warn};
 
@@ -48,15 +48,17 @@ impl EcdhKeyExchange {
             return Err(());
         };
 
-        let kx_public_key = kx.public_key().to_owned();
-        exchange.prefixed(&kx_public_key);
-        let Ok(shared_secret) = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key)
-        else {
+        let Ok(completed) = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key) else {
             warn!(addr = %cx.addr, "key exchange failed");
             return Err(());
         };
 
-        with_mpint_bytes(&shared_secret, |bytes| exchange.update(bytes));
+        // Write the server's reply public value (`Q_S` / `S_REPLY`) to the exchange hash
+        exchange.prefixed(&completed.public_key);
+        let secret_bytes = completed.shared_secret.secret_bytes();
+        let mut shared_secret = Vec::with_capacity(secret_bytes.len() + 4);
+        secret_bytes.encode(&mut shared_secret);
+        exchange.update(&shared_secret);
 
         let exchange_hash = exchange.finish();
         let signature = cx.host_key.sign(exchange_hash.as_ref());
@@ -65,7 +67,7 @@ impl EcdhKeyExchange {
                 algorithm: cx.host_key.algorithm(),
                 key: Cow::Owned(cx.host_key.public_key().to_owned()),
             },
-            server_ephemeral_public_key: kx_public_key,
+            server_ephemeral_public_key: completed.public_key,
             exchange_hash_signature: TaggedSignature {
                 algorithm: cx.host_key.algorithm(),
                 signature,
@@ -225,7 +227,7 @@ impl KeyExchange {
             }
         };
 
-        if algorithms.key_exchange != KeyExchangeAlgorithm::Curve25519Sha256 {
+        if algorithms.key_exchange != KeyExchangeAlgorithm::Mlkem768X25519Sha256 {
             warn!(addr = %cx.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
             return Err(());
         }
