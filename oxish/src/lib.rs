@@ -300,7 +300,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                             Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
                             Err(error) => warn!(%error, "failed to read disconnect packet"),
                         }
-                        return Err(());
+                        return Ok(());
                     }
 
                     let channel_message = match IncomingChannelMessage::try_from(packet) {
