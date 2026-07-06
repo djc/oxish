@@ -1,5 +1,5 @@
 use core::{net::Ipv4Addr, time::Duration};
-use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio};
+use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
 use proto::{crypto::CryptoProvider, PublicKeyAlgorithm};
 use tempfile::TempDir;
@@ -20,6 +20,8 @@ async fn handshake_graviola() {
 }
 
 async fn handshake(provider: &'static dyn CryptoProvider) {
+    subscribe();
+
     let dir = TempDir::new().unwrap();
     let key_path = dir.path().join("key");
 
@@ -54,14 +56,12 @@ async fn handshake(provider: &'static dyn CryptoProvider) {
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();
         stream.set_nodelay(true).ok();
-        let _ = Connection::new(stream, peer, host_key, provider)
+        Connection::new(stream, peer, host_key, provider)
             .for_user(user)
             .run()
-            .await;
+            .await
     });
 
-    // Drive the real ssh client. `-tt` forces PTY allocation (the server only
-    // supports shell sessions behind a PTY) even though stdin is a pipe.
     let mut child = Command::new("ssh")
         .arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
         .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
@@ -72,7 +72,7 @@ async fn handshake(provider: &'static dyn CryptoProvider) {
         .args(["-o", "UserKnownHostsFile=/dev/null"])
         .args(["-o", "GlobalKnownHostsFile=/dev/null"]) // ignore system known hosts
         .args(["-o", "IdentitiesOnly=yes"]) // don't offer agent keys
-        .args(["-o", "LogLevel=ERROR"]) // keep client diagnostics out of stderr
+        .args(["-o", "LogLevel=DEBUG3"]) // verbose client diagnostics, captured on stderr for failure triage
         .arg(format!("{USER}@{}", addr.ip()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -90,23 +90,42 @@ async fn handshake(provider: &'static dyn CryptoProvider) {
         .expect("ssh client timed out")
         .expect("failed to wait for ssh");
 
-    // The server task normally completes on its own once the ssh client disconnects; abort() only
-    // matters if it is still running. Awaiting an aborted task yields `JoinError::Cancelled`,
-    // which is expected here — but a genuine panic inside the task should still fail the test.
-    server.abort();
-    if let Err(err) = server.await {
-        if !err.is_cancelled() {
-            resume_unwind(err.into_panic());
-        }
-    }
+    // The server task completes on its own once the ssh client tears down the connection: cleanly
+    // (Ok) if the client sent a disconnect, or with Err if it just closed the socket. The client
+    // process can be reaped a moment before the server observes that teardown, so give the server a
+    // bounded window to finish rather than aborting it out from under that race. Only a genuine hang
+    // — the server never noticing the disconnect — should fail the test.
+    match timeout(Duration::from_secs(10), server).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(()))) => println!("server task yielded Err(())"),
+        Ok(Err(err)) => resume_unwind(err.into_panic()),
+        Err(_elapsed) => panic!("server still running after client disconnected"),
+    };
 
     let _ = fs::remove_dir_all(&dir);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stdout.contains(OUTPUT),
-        "expected command output {OUTPUT:?} in session output.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        "expected command output {OUTPUT:?} in session output.\n\
+         --- ssh exit status: {status} ---\n\
+         --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
+         --- stderr ({stderr_len} bytes) ---\n{stderr}",
+        status = output.status,
+        stdout_len = output.stdout.len(),
+        stderr_len = output.stderr.len(),
     );
+}
+
+fn subscribe() {
+    static INSTALL_TRACING_SUBSCRIBER: Once = Once::new();
+    INSTALL_TRACING_SUBSCRIBER.call_once(|| {
+        let subscriber = tracing_subscriber::FmtSubscriber::builder()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("debug"))
+            .with_test_writer()
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+    });
 }
 
 const USER: &str = "oxish-e2e";
