@@ -11,10 +11,10 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-26.04, macos-latest]
         rust: [stable]
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-26.04
             rust: beta
 
     runs-on: ${{ matrix.os }}
