@@ -24,9 +24,6 @@ pub(crate) struct ReadState {
     /// the start of each call to `poll_packet()`.
     last_length: usize,
 
-    /// Buffer with the decrypted packet
-    decrypted_buf: Vec<u8>,
-
     sequence_number: u32,
     pub(crate) opener: Option<Box<dyn OpeningKey>>,
 }
@@ -71,7 +68,6 @@ impl ReadState {
             self.buf.copy_within(self.last_length.., 0);
             self.buf.truncate(self.buf.len() - self.last_length);
             self.last_length = 0;
-            self.decrypted_buf.clear();
         }
 
         let (packet_length, tag_len) = if let Some(opener) = &mut self.opener {
@@ -89,20 +85,18 @@ impl ReadState {
 
             let tag_len = opener.tag_len();
             let end = 4 + packet_length.inner as usize;
-            let Some((length_data_tag, _)) = self.buf.split_at_checked(end + tag_len) else {
+            let Some((length_data, rest)) = self.buf.split_at_mut_checked(end) else {
                 return Ok(Completion::Incomplete(Some(end + tag_len)));
             };
 
-            let Some((length_data, tag)) = length_data_tag.split_at_checked(end) else {
+            let Some(tag) = rest.get(..tag_len) else {
                 return Ok(Completion::Incomplete(Some(end + tag_len)));
             };
 
-            // Verify and decrypt the packet in place in `decrypted_buf`. `open_in_place`
-            // authenticates the cleartext length field, so it is copied in alongside the
-            // ciphertext even though it is not itself decrypted.
-            self.decrypted_buf.clear();
-            self.decrypted_buf.extend_from_slice(length_data);
-            opener.open_in_place(self.sequence_number, &mut self.decrypted_buf, tag)?;
+            // Verify and decrypt the packet in place in `buf`. `open_in_place` authenticates
+            // the cleartext length field, which stays in `buf` alongside the ciphertext even
+            // though it is not itself decrypted.
+            opener.open_in_place(self.sequence_number, length_data, tag)?;
 
             (packet_length, tag_len)
         } else {
@@ -117,12 +111,10 @@ impl ReadState {
             assert!(next.is_empty());
 
             let needed = 4 + packet_length.inner as usize;
-            let Some((length_data, _)) = self.buf.split_at_checked(needed) else {
+            if self.buf.len() < needed {
                 return Ok(Completion::Incomplete(Some(needed)));
-            };
+            }
 
-            self.decrypted_buf.clear();
-            self.decrypted_buf.extend_from_slice(length_data);
             (packet_length, 0)
         };
 
@@ -142,7 +134,7 @@ impl ReadState {
         let Decoded {
             value: padding_length,
             next,
-        } = PaddingLength::decode(&self.decrypted_buf[4..4 + packet_length.inner as usize])?;
+        } = PaddingLength::decode(&self.buf[4..4 + packet_length.inner as usize])?;
 
         let payload_len = (packet_length.inner - 1 - padding_length.inner as u32) as usize;
         let Some(payload) = next.get(..payload_len) else {
@@ -200,7 +192,6 @@ impl Default for ReadState {
     fn default() -> Self {
         Self {
             buf: Vec::with_capacity(16_384),
-            decrypted_buf: Vec::with_capacity(16_384),
             last_length: 0,
             sequence_number: 0,
             opener: None,
