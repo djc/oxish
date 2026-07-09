@@ -14,6 +14,10 @@ pub use channels::{
 };
 pub mod crypto;
 use crypto::CryptoError;
+mod key_exchange;
+pub use key_exchange::{
+    EcdhKeyExchange, EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchange, KeySourceSet,
+};
 mod named;
 use named::IncomingNameList;
 pub use named::{

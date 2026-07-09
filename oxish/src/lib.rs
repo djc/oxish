@@ -3,11 +3,11 @@ use std::{borrow::Cow, io, str, sync::Arc};
 
 use ::proto::{
     crypto::{CryptoProvider, HandshakeHash, SigningKey},
-    Completion, Decoded, Disconnect, DisconnectReason, Encode, EncryptionAlgorithm, ExtInfo,
-    ExtensionName, Identification, IdentificationError, KeyExchangeAlgorithm, KeyExchangeInit,
-    MessageType, Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
-    ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
-    UserAuthRequest, PROTOCOL,
+    Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, Encode,
+    EncryptionAlgorithm, ExtInfo, ExtensionName, Identification, IdentificationError, KeyExchange,
+    KeyExchangeAlgorithm, KeyExchangeInit, KeySourceSet, MessageType, Method, MethodName, NewKeys,
+    OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept, ServiceName, ServiceRequest,
+    SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest, PROTOCOL,
 };
 use proto::crypto::CryptoError;
 use thiserror::Error;
@@ -20,8 +20,6 @@ mod buffers;
 use buffers::{ReadState, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
-mod key_exchange;
-use key_exchange::{EcdhKeyExchangeInit, KeyExchange, KeySourceSet};
 mod terminal;
 #[cfg(test)]
 mod tests;
