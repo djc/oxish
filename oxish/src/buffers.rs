@@ -6,7 +6,7 @@ use core::{
 use std::io;
 
 use proto::{
-    crypto::{Digest, Hash, HashContext, OpeningKey, SealingKey, SecureRandom},
+    crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
@@ -325,27 +325,6 @@ impl Encoder<'_> {
             .map_err(|error| {
                 error!(%error, "failed to write queued packets to stream");
             })
-    }
-}
-
-pub(crate) struct HandshakeHash(Box<dyn HashContext>);
-
-impl HandshakeHash {
-    pub(crate) fn new(hash: &dyn Hash) -> Self {
-        Self(hash.start())
-    }
-
-    pub(crate) fn prefixed(&mut self, data: &[u8]) {
-        self.0.update(&(data.len() as u32).to_be_bytes());
-        self.0.update(data);
-    }
-
-    pub(crate) fn update(&mut self, data: &[u8]) {
-        self.0.update(data);
-    }
-
-    pub(crate) fn finish(self) -> Digest {
-        self.0.finish()
     }
 }
 

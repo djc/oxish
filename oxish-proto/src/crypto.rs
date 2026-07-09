@@ -199,6 +199,27 @@ impl From<KeyInput> for u8 {
     }
 }
 
+pub struct HandshakeHash(Box<dyn HashContext>);
+
+impl HandshakeHash {
+    pub fn new(hash: &dyn Hash) -> Self {
+        Self(hash.start())
+    }
+
+    pub fn prefixed(&mut self, data: &[u8]) {
+        self.0.update(&(data.len() as u32).to_be_bytes());
+        self.0.update(data);
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.update(data);
+    }
+
+    pub fn finish(self) -> Digest {
+        self.0.finish()
+    }
+}
+
 /// A cryptographic hash function
 pub trait Hash: Send + Sync {
     /// Start an incremental hash computation

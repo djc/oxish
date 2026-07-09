@@ -2,7 +2,7 @@ use core::{fmt, future, net::SocketAddr};
 use std::{borrow::Cow, io, str, sync::Arc};
 
 use ::proto::{
-    crypto::{CryptoProvider, SigningKey},
+    crypto::{CryptoProvider, HandshakeHash, SigningKey},
     Completion, Decoded, Disconnect, DisconnectReason, Encode, EncryptionAlgorithm, ExtInfo,
     ExtensionName, Identification, IdentificationError, KeyExchangeAlgorithm, KeyExchangeInit,
     MessageType, Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
@@ -17,7 +17,7 @@ use tracing::{debug, error, info, instrument, warn};
 mod authentication;
 use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
-use buffers::{HandshakeHash, ReadState, WriteState};
+use buffers::{ReadState, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod key_exchange;
