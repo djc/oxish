@@ -210,9 +210,6 @@ pub(crate) struct WriteState {
     /// Buffer for encoded but unencrypted packets
     buf: Vec<u8>,
 
-    /// Buffer with encrypted data ready to be sent to the transport stream
-    encrypted_buf: Vec<u8>,
-
     /// The amount of bytes at the start of `encrypted_buf`` that have already
     /// been sent to the transport stream
     written: usize,
@@ -228,7 +225,6 @@ impl WriteState {
     pub(crate) fn new(secure_random: &'static dyn SecureRandom) -> Self {
         Self {
             buf: Vec::with_capacity(16_384),
-            encrypted_buf: Vec::with_capacity(16_384),
             written: 0,
             sequence_number: 0,
             sealer: None,
@@ -241,40 +237,91 @@ impl WriteState {
         payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,
     ) -> Result<(), Error> {
-        self.buf.clear();
+        let start = self.buf.len();
+        self.buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
+        self.buf.push(0); // padding_length
 
-        let pending_length = self.encrypted_buf.len();
-        let sequence_number = self.sequence_number;
-        self.sequence_number = self.sequence_number.wrapping_add(1);
-        let Some(sealer) = &mut self.sealer else {
-            let packet =
-                EncodedPacket::new(&mut self.encrypted_buf, payload, None, self.secure_random)?;
-            if let Some(exchange_hash) = exchange_hash {
-                exchange_hash.prefixed(packet.payload);
-            }
-            return Ok(());
+        let payload_start = self.buf.len();
+        payload.encode(&mut self.buf);
+        let payload_len = self.buf.len() - payload_start;
+
+        // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
+        //
+        // Note that the length of the concatenation of 'packet_length', 'padding_length',
+        // 'payload', and 'random padding' MUST be a multiple of the cipher block size or 8,
+        // whichever is larger. This constraint MUST be enforced, even when using stream ciphers.
+        //
+        // For AEAD ciphers (like aes128-gcm@openssh.com, RFC 5647) the 'packet_length' field is
+        // transmitted in cleartext and is excluded from the block-aligned region;
+        // `unencrypted_prefix` is 4 in that case and 0 otherwise.
+
+        let block_size = Ord::max(
+            match &self.sealer {
+                Some(sealer) => sealer.block_len(),
+                None => 0,
+            },
+            8,
+        );
+
+        let unencrypted_prefix = match &self.sealer {
+            Some(_) => 4,
+            None => 0,
         };
 
-        // For AES-GCM the cipher block size is 16 and the 4-byte packet_length field is
-        // excluded from the block-aligned, encrypted region.
-        let packet =
-            EncodedPacket::new(&mut self.buf, payload, Some(&**sealer), self.secure_random)?;
-        if let Some(exchange_hash) = exchange_hash {
-            exchange_hash.prefixed(packet.payload);
+        let region = self.buf.len() - start - unencrypted_prefix;
+        // The minimum size of a packet is 16 bytes
+        let min_padding = Ord::max(region.next_multiple_of(block_size), 16) - region;
+        // Padding is at least 4 bytes
+        let padding_len = match min_padding < 4 {
+            true => min_padding + block_size,
+            false => min_padding,
+        };
+
+        let padding_start = self.buf.len();
+        self.buf.extend(iter::repeat_n(0, padding_len)); // padding
+        if let Some(padding) = self.buf.get_mut(padding_start..) {
+            if self.secure_random.fill(padding).is_err() {
+                return Err(ProtoError::Unreachable("failed to get random padding").into());
+            }
         }
 
-        self.encrypted_buf
-            .resize(pending_length + packet.len() + sealer.tag_len(), 0);
-        let Some((_, body_tag)) = self.encrypted_buf.split_at_mut_checked(pending_length) else {
-            return Err(ProtoError::Unreachable("unable to split encrypted buffer").into());
+        if let Some(sealer) = &mut self.sealer {
+            self.buf.extend(iter::repeat_n(0, sealer.tag_len())); // tag
+        }
+
+        let Some(packet) = self.buf.get_mut(start..) else {
+            return Err(ProtoError::Unreachable("unable to reslice packet").into());
         };
 
-        let Some((body, tag)) = body_tag.split_at_mut_checked(packet.len()) else {
-            return Err(ProtoError::Unreachable("unable to split tag from body").into());
+        let Some((packet_length_dst, rest)) = packet.split_first_chunk_mut::<4>() else {
+            return Err(ProtoError::Unreachable("unable to split packet length").into());
         };
-        body.copy_from_slice(packet.encoded());
-        sealer.seal_in_place(sequence_number, body, tag)?;
 
+        // packet_length covers padding_length (1 byte), payload and padding
+        *packet_length_dst = ((1 + payload_len + padding_len) as u32).to_be_bytes();
+
+        let Some((padding_length_dst, padded_payload)) = rest.split_first_chunk_mut::<1>() else {
+            return Err(ProtoError::Unreachable("unable to split padding length").into());
+        };
+
+        padding_length_dst[0] = padding_len as u8;
+
+        if let Some(exchange_hash) = exchange_hash {
+            if let Some(payload) = padded_payload.get(..payload_len) {
+                exchange_hash.prefixed(payload);
+            }
+        }
+
+        if let Some(sealer) = &mut self.sealer {
+            let Some((body, tag)) = packet.split_at_mut_checked(5 + payload_len + padding_len)
+            else {
+                return Err(ProtoError::Unreachable("unable to split tag from packet").into());
+            };
+
+            sealer.seal_in_place(self.sequence_number, body, tag)?;
+        }
+
+        self.sequence_number = self.sequence_number.wrapping_add(1);
         Ok(())
     }
 
@@ -283,11 +330,10 @@ impl WriteState {
         cx: &mut Context<'_>,
         stream: &mut (impl AsyncWrite + Unpin),
     ) -> Poll<Result<(), Error>> {
-        self.written +=
-            ready!(Pin::new(stream).poll_write(cx, &self.encrypted_buf[self.written..]))?;
+        self.written += ready!(Pin::new(stream).poll_write(cx, &self.buf[self.written..]))?;
 
-        if self.written == self.encrypted_buf.len() {
-            self.encrypted_buf.clear();
+        if self.written == self.buf.len() {
+            self.buf.clear();
             self.written = 0;
         }
 
@@ -304,6 +350,11 @@ impl WriteState {
     pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
         payload.encode(&mut self.buf);
         &self.buf
+    }
+
+    /// Clear the outgoing buffer after writing its contents to the stream directly
+    pub(crate) fn clear(&mut self) {
+        self.buf.clear();
     }
 
     /// Reset the send sequence number to zero
@@ -339,95 +390,6 @@ impl Encoder<'_> {
             .map_err(|error| {
                 error!(%error, "failed to write queued packets to stream");
             })
-    }
-}
-
-/// An encoded outgoing packet
-///
-/// Includes packet length, padding length, payload and padding.
-#[must_use]
-struct EncodedPacket<'a> {
-    packet: &'a [u8],
-    payload: &'a [u8],
-}
-
-impl<'a> EncodedPacket<'a> {
-    fn new(
-        buf: &'a mut Vec<u8>,
-        payload: &impl Encode,
-        sealer: Option<&dyn SealingKey>,
-        secure_random: &dyn SecureRandom,
-    ) -> Result<Self, Error> {
-        let start = buf.len();
-        buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
-        buf.push(0); // padding_length
-
-        let payload_start = buf.len();
-        payload.encode(buf);
-        let payload_range = payload_start..buf.len();
-
-        // <https://www.rfc-editor.org/rfc/rfc4253#section-6>
-        //
-        // Note that the length of the concatenation of 'packet_length', 'padding_length',
-        // 'payload', and 'random padding' MUST be a multiple of the cipher block size or 8,
-        // whichever is larger. This constraint MUST be enforced, even when using stream ciphers.
-        //
-        // For AEAD ciphers (like aes128-gcm@openssh.com, RFC 5647) the 'packet_length' field is
-        // transmitted in cleartext and is excluded from the block-aligned region;
-        // `unencrypted_prefix` is 4 in that case and 0 otherwise.
-
-        let block_size = Ord::max(
-            match sealer {
-                Some(sealer) => sealer.block_len(),
-                None => 0,
-            },
-            8,
-        );
-
-        let unencrypted_prefix = match sealer {
-            Some(_) => 4,
-            None => 0,
-        };
-
-        let region = buf.len() - start - unencrypted_prefix;
-        // The minimum size of a packet is 16 bytes
-        let min_padding = Ord::max(region.next_multiple_of(block_size), 16) - region;
-        // Padding is at least 4 bytes
-        let padding_len = match min_padding < 4 {
-            true => min_padding + block_size,
-            false => min_padding,
-        };
-
-        if let Some(padding_length_dst) = buf.get_mut(start + 4) {
-            *padding_length_dst = padding_len as u8;
-        }
-
-        let padding_start = buf.len();
-        buf.extend(iter::repeat_n(0, padding_len)); // padding
-        if let Some(padding) = buf.get_mut(padding_start..) {
-            if secure_random.fill(padding).is_err() {
-                return Err(ProtoError::Unreachable("failed to get random padding").into());
-            }
-        }
-
-        let packet_len = (buf.len() - start - 4) as u32;
-        if let Some(packet_length_dst) = buf.get_mut(start..start + 4) {
-            packet_length_dst.copy_from_slice(&packet_len.to_be_bytes());
-        }
-
-        Ok(EncodedPacket {
-            packet: &buf[start..],
-            payload: &buf[payload_range],
-        })
-    }
-
-    /// The full encoded packet: `packet_length`, `padding_length`, payload and padding
-    fn encoded(&self) -> &[u8] {
-        self.packet
-    }
-
-    fn len(&self) -> usize {
-        self.packet.len()
     }
 }
 

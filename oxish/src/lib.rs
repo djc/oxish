@@ -492,6 +492,9 @@ impl VersionExchange {
             exchange.prefixed(v_s);
         }
 
+        // The ident was written to the stream directly, so drop it from the outgoing buffer
+        conn.write.clear();
+
         let last_length = buf.len() - rest;
         conn.read.set_last_length(last_length);
         Ok(KeyExchange::default())
