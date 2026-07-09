@@ -2,13 +2,9 @@ use core::fmt;
 use std::borrow::Cow;
 
 use proto::{
-    crypto::{CryptoError, Digest, HandshakeHash, KeyDerivation, KeySourceSide},
-    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
-    ProtoError, PublicKeyAlgorithm,
+    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType, ProtoError, PublicKeyAlgorithm, crypto::{CryptoError, CryptoProvider, Digest, HandshakeHash, KeyDerivation, KeySourceSide, SigningKey},
 };
 use tracing::debug;
-
-use crate::ConnectionContext;
 
 pub(crate) struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
@@ -22,14 +18,15 @@ impl EcdhKeyExchange {
         self,
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
-        cx: &ConnectionContext,
+        host_key: &dyn SigningKey,
+        provider: &dyn CryptoProvider,
     ) -> Result<(EcdhKeyExchangeReply, Digest, KeySourceSet), CryptoError> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
         TaggedPublicKey {
-            algorithm: cx.host_key.algorithm(),
-            key: Cow::Owned(cx.host_key.public_key().to_owned()),
+            algorithm: host_key.algorithm(),
+            key: Cow::Owned(host_key.public_key().to_owned()),
         }
         .encode(&mut host_key_buf);
         exchange.update(&host_key_buf);
@@ -38,7 +35,7 @@ impl EcdhKeyExchange {
 
         exchange.prefixed(ecdh_key_exchange_init.client_ephemeral_public_key);
 
-        let key_exchange = cx.provider.key_exchange(&self.key_exchange)?;
+        let key_exchange = provider.key_exchange(&self.key_exchange)?;
         let kx = key_exchange.start()?;
         let completed = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key)?;
 
@@ -50,15 +47,15 @@ impl EcdhKeyExchange {
         exchange.update(&shared_secret);
 
         let exchange_hash = exchange.finish();
-        let signature = cx.host_key.sign(exchange_hash.as_ref());
+        let signature = host_key.sign(exchange_hash.as_ref());
         let key_exchange_reply = EcdhKeyExchangeReply {
             server_public_host_key: TaggedPublicKey {
-                algorithm: cx.host_key.algorithm(),
-                key: Cow::Owned(cx.host_key.public_key().to_owned()),
+                algorithm: host_key.algorithm(),
+                key: Cow::Owned(host_key.public_key().to_owned()),
             },
             server_ephemeral_public_key: completed.public_key,
             exchange_hash_signature: TaggedSignature {
-                algorithm: cx.host_key.algorithm(),
+                algorithm: host_key.algorithm(),
                 signature,
             },
         };
@@ -66,7 +63,7 @@ impl EcdhKeyExchange {
         // The first exchange hash is used as session id.
         let session_id = self.session_id.unwrap_or(exchange_hash);
         let derivation = KeyDerivation {
-            hash: cx.provider.hash(&self.key_exchange)?,
+            hash: provider.hash(&self.key_exchange)?,
             shared_secret,
             exchange_hash,
             session_id,
@@ -184,10 +181,10 @@ impl KeyExchange {
     pub(crate) fn advance<'out>(
         self,
         peer_key_exchange_init: KeyExchangeInit<'_>,
-        cx: &ConnectionContext,
+        provider: &dyn CryptoProvider,
     ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ProtoError> {
         let mut cookie = [0; 16];
-        cx.provider.secure_random().fill(&mut cookie)?;
+        provider.secure_random().fill(&mut cookie)?;
         let key_exchange_init = KeyExchangeInit::new(cookie)?;
 
         let algorithms = Algorithms::choose(peer_key_exchange_init, &key_exchange_init)?;
