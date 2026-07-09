@@ -8,9 +8,12 @@ use crate::{
         CryptoError, CryptoProvider, Digest, HandshakeHash, KeyDerivation, KeySourceSide,
         SigningKey,
     },
-    named::{ExtensionId, KeyExchangeAlgorithmOrExtensionId},
-    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
-    ProtoError, PublicKeyAlgorithm,
+    named::{
+        CompressionAlgorithm, EncryptionAlgorithm, ExtensionId, IncomingNameList,
+        KeyExchangeAlgorithmOrExtensionId, Language, MacAlgorithm, OutgoingNameList,
+    },
+    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, MessageType, ProtoError,
+    PublicKeyAlgorithm,
 };
 
 pub struct EcdhKeyExchange {
@@ -207,6 +210,178 @@ impl KeyExchange {
                 key_exchange: algorithms.key_exchange,
             },
         ))
+    }
+}
+
+#[derive(Debug)]
+pub struct KeyExchangeInit<'a> {
+    cookie: [u8; 16],
+    pub(crate) key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'a>>,
+    pub(crate) server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
+    pub(crate) encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
+    pub(crate) encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
+    pub(crate) mac_algorithms_client_to_server: Vec<MacAlgorithm<'a>>,
+    pub(crate) mac_algorithms_server_to_client: Vec<MacAlgorithm<'a>>,
+    pub(crate) compression_algorithms_client_to_server: Vec<CompressionAlgorithm<'a>>,
+    pub(crate) compression_algorithms_server_to_client: Vec<CompressionAlgorithm<'a>>,
+    pub(crate) languages_client_to_server: Vec<Language<'a>>,
+    pub(crate) languages_server_to_client: Vec<Language<'a>>,
+    first_kex_packet_follows: bool,
+    extended: u32,
+}
+
+impl KeyExchangeInit<'static> {
+    pub fn new(
+        cookie: [u8; 16],
+        extensions: impl Iterator<Item = ExtensionId<'static>>,
+    ) -> Result<Self, ProtoError> {
+        let mut key_exchange_algorithms = vec![KeyExchangeAlgorithmOrExtensionId::KeyExchange(
+            KeyExchangeAlgorithm::Mlkem768X25519Sha256,
+        )];
+
+        key_exchange_algorithms
+            .extend(extensions.map(KeyExchangeAlgorithmOrExtensionId::Extension));
+
+        Ok(Self {
+            cookie,
+            key_exchange_algorithms,
+            server_host_key_algorithms: vec![PublicKeyAlgorithm::Ed25519],
+            encryption_algorithms_client_to_server: vec![EncryptionAlgorithm::Aes128Gcm],
+            encryption_algorithms_server_to_client: vec![EncryptionAlgorithm::Aes128Gcm],
+            mac_algorithms_client_to_server: vec![MacAlgorithm::None],
+            mac_algorithms_server_to_client: vec![MacAlgorithm::None],
+            compression_algorithms_client_to_server: vec![CompressionAlgorithm::None],
+            compression_algorithms_server_to_client: vec![CompressionAlgorithm::None],
+            languages_client_to_server: vec![],
+            languages_server_to_client: vec![],
+            first_kex_packet_follows: false,
+            extended: 0,
+        })
+    }
+}
+
+impl<'a> KeyExchangeInit<'a> {
+    pub fn has_extension(&self, extension: ExtensionId<'_>) -> bool {
+        self.key_exchange_algorithms
+            .iter()
+            .any(|alg| matches!(alg, KeyExchangeAlgorithmOrExtensionId::Extension(ext) if *ext == extension))
+    }
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::KeyExchangeInit {
+            return Err(ProtoError::InvalidPacket("unexpected message type"));
+        }
+
+        let Decoded {
+            value: cookie,
+            next,
+        } = <[u8; 16]>::decode(packet.payload)?;
+
+        let Decoded {
+            value: key_exchange_algorithms,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: server_host_key_algorithms,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: encryption_algorithms_client_to_server,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: encryption_algorithms_server_to_client,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: mac_algorithms_client_to_server,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: mac_algorithms_server_to_client,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: compression_algorithms_client_to_server,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: compression_algorithms_server_to_client,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: languages_client_to_server,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: languages_server_to_client,
+            next,
+        } = IncomingNameList::decode(next)?;
+
+        let Decoded {
+            value: first_kex_packet_follows,
+            next,
+        } = u8::decode(next)?;
+
+        let Decoded {
+            value: extended,
+            next,
+        } = u32::decode(next)?;
+
+        let value = Self {
+            cookie,
+            key_exchange_algorithms: key_exchange_algorithms.0,
+            server_host_key_algorithms: server_host_key_algorithms.0,
+            encryption_algorithms_client_to_server: encryption_algorithms_client_to_server.0,
+            encryption_algorithms_server_to_client: encryption_algorithms_server_to_client.0,
+            mac_algorithms_client_to_server: mac_algorithms_client_to_server.0,
+            mac_algorithms_server_to_client: mac_algorithms_server_to_client.0,
+            compression_algorithms_client_to_server: compression_algorithms_client_to_server.0,
+            compression_algorithms_server_to_client: compression_algorithms_server_to_client.0,
+            languages_client_to_server: languages_client_to_server.0,
+            languages_server_to_client: languages_server_to_client.0,
+            first_kex_packet_follows: first_kex_packet_follows != 0,
+            extended,
+        };
+
+        if !next.is_empty() {
+            debug!(bytes = ?next, "unexpected trailing bytes");
+            return Err(ProtoError::InvalidPacket("unexpected trailing bytes"));
+        }
+
+        Ok(value)
+    }
+}
+
+impl Encode for KeyExchangeInit<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::KeyExchangeInit.encode(buf);
+        buf.extend_from_slice(&self.cookie);
+        OutgoingNameList(&self.key_exchange_algorithms).encode(buf);
+        OutgoingNameList(&self.server_host_key_algorithms).encode(buf);
+        OutgoingNameList(&self.encryption_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(&self.encryption_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(&self.mac_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(&self.mac_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(&self.compression_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(&self.compression_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(&self.languages_client_to_server).encode(buf);
+        OutgoingNameList(&self.languages_server_to_client).encode(buf);
+        buf.push(if self.first_kex_packet_follows { 1 } else { 0 });
+        buf.extend_from_slice(&self.extended.to_be_bytes());
     }
 }
 
