@@ -2,11 +2,11 @@ use core::fmt;
 use std::borrow::Cow;
 
 use proto::{
-    crypto::{Digest, KeyDerivation, KeySourceSide, HandshakeHash},
+    crypto::{CryptoError, Digest, HandshakeHash, KeyDerivation, KeySourceSide},
     Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
     ProtoError, PublicKeyAlgorithm,
 };
-use tracing::{debug, error, warn};
+use tracing::debug;
 
 use crate::ConnectionContext;
 
@@ -23,7 +23,7 @@ impl EcdhKeyExchange {
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
         cx: &ConnectionContext,
-    ) -> Result<(EcdhKeyExchangeReply, Digest, KeySourceSet), ()> {
+    ) -> Result<(EcdhKeyExchangeReply, Digest, KeySourceSet), CryptoError> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
@@ -38,20 +38,9 @@ impl EcdhKeyExchange {
 
         exchange.prefixed(ecdh_key_exchange_init.client_ephemeral_public_key);
 
-        let Ok(key_exchange) = cx.provider.key_exchange(&self.key_exchange) else {
-            warn!(addr = %cx.addr, algorithm = ?self.key_exchange, "unsupported key exchange algorithm");
-            return Err(());
-        };
-
-        let Ok(kx) = key_exchange.start() else {
-            warn!(addr = %cx.addr, "failed to generate key exchange private key");
-            return Err(());
-        };
-
-        let Ok(completed) = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key) else {
-            warn!(addr = %cx.addr, "key exchange failed");
-            return Err(());
-        };
+        let key_exchange = cx.provider.key_exchange(&self.key_exchange)?;
+        let kx = key_exchange.start()?;
+        let completed = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key)?;
 
         // Write the server's reply public value (`Q_S` / `S_REPLY`) to the exchange hash
         exchange.prefixed(&completed.public_key);
@@ -74,15 +63,10 @@ impl EcdhKeyExchange {
             },
         };
 
-        let Ok(hash) = cx.provider.hash(&self.key_exchange) else {
-            warn!(addr = %cx.addr, algorithm = ?self.key_exchange, "unsupported hash algorithm");
-            return Err(());
-        };
-
         // The first exchange hash is used as session id.
         let session_id = self.session_id.unwrap_or(exchange_hash);
         let derivation = KeyDerivation {
-            hash,
+            hash: cx.provider.hash(&self.key_exchange)?,
             shared_secret,
             exchange_hash,
             session_id,
@@ -201,35 +185,14 @@ impl KeyExchange {
         self,
         peer_key_exchange_init: KeyExchangeInit<'_>,
         cx: &ConnectionContext,
-    ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ()> {
+    ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ProtoError> {
         let mut cookie = [0; 16];
-        if cx.provider.secure_random().fill(&mut cookie).is_err() {
-            error!("failed to generate key exchange cookie");
-            return Err(());
-        };
+        cx.provider.secure_random().fill(&mut cookie)?;
+        let key_exchange_init = KeyExchangeInit::new(cookie)?;
 
-        let key_exchange_init = match KeyExchangeInit::new(cookie) {
-            Ok(kex_init) => kex_init,
-            Err(error) => {
-                error!(addr = %cx.addr, %error, "failed to create key exchange init");
-                return Err(());
-            }
-        };
-
-        let algorithms = match Algorithms::choose(peer_key_exchange_init, &key_exchange_init) {
-            Ok(algorithms) => {
-                debug!(addr = %cx.addr, ?algorithms, "chosen algorithms");
-                algorithms
-            }
-            Err(error) => {
-                warn!(addr = %cx.addr, %error, "failed to choose algorithms");
-                return Err(());
-            }
-        };
-
+        let algorithms = Algorithms::choose(peer_key_exchange_init, &key_exchange_init)?;
         if algorithms.key_exchange != KeyExchangeAlgorithm::Mlkem768X25519Sha256 {
-            warn!(addr = %cx.addr, algorithm = ?algorithms.key_exchange, "unsupported key exchange algorithm");
-            return Err(());
+            return Err(CryptoError::UnknownAlgorithm.into());
         }
 
         Ok((
