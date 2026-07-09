@@ -122,6 +122,14 @@ pub enum KeyExchangeAlgorithm<'a> {
     Mlkem768X25519Sha256,
     /// ext-info-c (<https://www.rfc-editor.org/rfc/rfc8308>)
     ExtInfoC,
+    /// kex-strict-c-v00@openssh.com, the client's strict key exchange marker
+    ///
+    /// <https://github.com/openssh/openssh-portable/blob/master/PROTOCOL>
+    StrictKexClient,
+    /// kex-strict-s-v00@openssh.com, the server's strict key exchange marker
+    ///
+    /// <https://github.com/openssh/openssh-portable/blob/master/PROTOCOL>
+    StrictKexServer,
     Unknown(&'a str),
 }
 
@@ -130,6 +138,8 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
         match name {
             "mlkem768x25519-sha256" => Self::Mlkem768X25519Sha256,
             "ext-info-c" => Self::ExtInfoC,
+            "kex-strict-c-v00@openssh.com" => Self::StrictKexClient,
+            "kex-strict-s-v00@openssh.com" => Self::StrictKexServer,
             _ => Self::Unknown(name),
         }
     }
@@ -138,6 +148,8 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
         match self {
             Self::Mlkem768X25519Sha256 => "mlkem768x25519-sha256",
             Self::ExtInfoC => "ext-info-c",
+            Self::StrictKexClient => "kex-strict-c-v00@openssh.com",
+            Self::StrictKexServer => "kex-strict-s-v00@openssh.com",
             Self::Unknown(name) => name,
         }
     }

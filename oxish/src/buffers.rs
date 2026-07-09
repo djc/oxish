@@ -186,6 +186,13 @@ impl ReadState {
     pub(crate) fn set_last_length(&mut self, len: usize) {
         self.last_length = len;
     }
+
+    /// Reset the receive sequence number to zero
+    ///
+    /// As required by strict key exchange after receiving `SSH_MSG_NEWKEYS`.
+    pub(crate) fn reset_sequence_number(&mut self) {
+        self.sequence_number = 0;
+    }
 }
 
 impl Default for ReadState {
@@ -297,6 +304,13 @@ impl WriteState {
     pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
         payload.encode(&mut self.buf);
         &self.buf
+    }
+
+    /// Reset the send sequence number to zero
+    ///
+    /// As required by strict key exchange after sending `SSH_MSG_NEWKEYS`.
+    pub(crate) fn reset_sequence_number(&mut self) {
+        self.sequence_number = 0;
     }
 }
 
