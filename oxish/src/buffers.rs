@@ -250,7 +250,7 @@ impl WriteState {
             let packet =
                 EncodedPacket::new(&mut self.encrypted_buf, payload, None, self.secure_random)?;
             if let Some(exchange_hash) = exchange_hash {
-                exchange_hash.prefixed(packet.payload());
+                exchange_hash.prefixed(packet.payload);
             }
             return Ok(());
         };
@@ -260,7 +260,7 @@ impl WriteState {
         let packet =
             EncodedPacket::new(&mut self.buf, payload, Some(&**sealer), self.secure_random)?;
         if let Some(exchange_hash) = exchange_hash {
-            exchange_hash.prefixed(packet.payload());
+            exchange_hash.prefixed(packet.payload);
         }
 
         self.encrypted_buf
@@ -419,10 +419,6 @@ impl<'a> EncodedPacket<'a> {
             packet: &buf[start..],
             payload: &buf[payload_range],
         })
-    }
-
-    fn payload(&self) -> &[u8] {
-        self.payload
     }
 
     /// The full encoded packet: `packet_length`, `padding_length`, payload and padding
