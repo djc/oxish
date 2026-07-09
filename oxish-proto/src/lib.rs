@@ -21,9 +21,12 @@ pub use key_exchange::{
 mod named;
 use named::IncomingNameList;
 pub use named::{
-    ChannelType, CompressionAlgorithm, EncryptionAlgorithm, ExtensionName, KeyExchangeAlgorithm,
-    Language, MacAlgorithm, MethodName, Named, OutgoingNameList, PublicKeyAlgorithm, ServiceName,
+    ChannelType, CompressionAlgorithm, EncryptionAlgorithm, ExtensionId, ExtensionName,
+    KeyExchangeAlgorithm, Language, MacAlgorithm, MethodName, Named, OutgoingNameList,
+    PublicKeyAlgorithm, ServiceName,
 };
+
+use crate::named::KeyExchangeAlgorithmOrExtensionId;
 
 #[derive(Debug)]
 pub struct Identification<'a> {
@@ -90,7 +93,7 @@ impl Encode for Identification<'_> {
 #[derive(Debug)]
 pub struct KeyExchangeInit<'a> {
     cookie: [u8; 16],
-    pub key_exchange_algorithms: Vec<KeyExchangeAlgorithm<'a>>,
+    pub(crate) key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'a>>,
     pub(crate) server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
     pub(crate) encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
     pub(crate) encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
@@ -105,13 +108,20 @@ pub struct KeyExchangeInit<'a> {
 }
 
 impl KeyExchangeInit<'static> {
-    pub fn new(cookie: [u8; 16]) -> Result<Self, ProtoError> {
+    pub fn new(
+        cookie: [u8; 16],
+        extensions: impl Iterator<Item = ExtensionId<'static>>,
+    ) -> Result<Self, ProtoError> {
+        let mut key_exchange_algorithms = vec![KeyExchangeAlgorithmOrExtensionId::KeyExchange(
+            KeyExchangeAlgorithm::Mlkem768X25519Sha256,
+        )];
+
+        key_exchange_algorithms
+            .extend(extensions.map(KeyExchangeAlgorithmOrExtensionId::Extension));
+
         Ok(Self {
             cookie,
-            key_exchange_algorithms: vec![
-                KeyExchangeAlgorithm::Mlkem768X25519Sha256,
-                KeyExchangeAlgorithm::StrictKexServer,
-            ],
+            key_exchange_algorithms,
             server_host_key_algorithms: vec![PublicKeyAlgorithm::Ed25519],
             encryption_algorithms_client_to_server: vec![EncryptionAlgorithm::Aes128Gcm],
             encryption_algorithms_server_to_client: vec![EncryptionAlgorithm::Aes128Gcm],
@@ -124,6 +134,14 @@ impl KeyExchangeInit<'static> {
             first_kex_packet_follows: false,
             extended: 0,
         })
+    }
+}
+
+impl<'a> KeyExchangeInit<'a> {
+    pub fn has_extension(&self, extension: ExtensionId<'_>) -> bool {
+        self.key_exchange_algorithms
+            .iter()
+            .any(|alg| matches!(alg, KeyExchangeAlgorithmOrExtensionId::Extension(ext) if *ext == extension))
     }
 }
 

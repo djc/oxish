@@ -117,9 +117,57 @@ impl<'a> Named<'a> for ChannelType<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeyExchangeAlgorithmOrExtensionId<'a> {
+    KeyExchange(KeyExchangeAlgorithm<'a>),
+    Extension(ExtensionId<'a>),
+}
+
+impl<'a> Named<'a> for KeyExchangeAlgorithmOrExtensionId<'a> {
+    fn typed(name: &'a str) -> Self {
+        match KeyExchangeAlgorithm::typed(name) {
+            KeyExchangeAlgorithm::Unknown(_) => {}
+            key_exchange => return Self::KeyExchange(key_exchange),
+        };
+
+        match ExtensionId::typed(name) {
+            ExtensionId::Unknown(_) => Self::KeyExchange(KeyExchangeAlgorithm::Unknown(name)),
+            extension => Self::Extension(extension),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::KeyExchange(key_exchange) => key_exchange.name(),
+            Self::Extension(extension) => extension.name(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyExchangeAlgorithm<'a> {
     /// mlkem768x25519-sha256 (<https://datatracker.ietf.org/doc/draft-kampanakis-curdle-ssh-pq-ke/>)
     Mlkem768X25519Sha256,
+    Unknown(&'a str),
+}
+
+impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
+    fn typed(name: &'a str) -> Self {
+        match name {
+            "mlkem768x25519-sha256" => Self::Mlkem768X25519Sha256,
+            _ => Self::Unknown(name),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Mlkem768X25519Sha256 => "mlkem768x25519-sha256",
+            Self::Unknown(name) => name,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtensionId<'a> {
     /// ext-info-c (<https://www.rfc-editor.org/rfc/rfc8308>)
     ExtInfoC,
     /// kex-strict-c-v00@openssh.com, the client's strict key exchange marker
@@ -133,10 +181,9 @@ pub enum KeyExchangeAlgorithm<'a> {
     Unknown(&'a str),
 }
 
-impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
+impl<'a> Named<'a> for ExtensionId<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
-            "mlkem768x25519-sha256" => Self::Mlkem768X25519Sha256,
             "ext-info-c" => Self::ExtInfoC,
             "kex-strict-c-v00@openssh.com" => Self::StrictKexClient,
             "kex-strict-s-v00@openssh.com" => Self::StrictKexServer,
@@ -146,7 +193,6 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
 
     fn name(&self) -> &str {
         match self {
-            Self::Mlkem768X25519Sha256 => "mlkem768x25519-sha256",
             Self::ExtInfoC => "ext-info-c",
             Self::StrictKexClient => "kex-strict-c-v00@openssh.com",
             Self::StrictKexServer => "kex-strict-s-v00@openssh.com",

@@ -2,14 +2,14 @@ use core::{fmt, future, net::SocketAddr};
 use std::{borrow::Cow, io, str, sync::Arc};
 
 use ::proto::{
-    crypto::{CryptoProvider, HandshakeHash, SigningKey},
+    crypto::{CryptoError, CryptoProvider, HandshakeHash, SigningKey},
     Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, Encode,
-    EncryptionAlgorithm, ExtInfo, ExtensionName, Identification, IdentificationError, KeyExchange,
-    KeyExchangeAlgorithm, KeyExchangeInit, KeySourceSet, MessageType, Method, MethodName, NewKeys,
-    OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept, ServiceName, ServiceRequest,
-    SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest, PROTOCOL,
+    EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification, IdentificationError,
+    KeyExchange, KeyExchangeAlgorithm, KeyExchangeInit, KeySourceSet, MessageType, Method,
+    MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept,
+    ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
+    PROTOCOL,
 };
-use proto::crypto::CryptoError;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, warn};
@@ -102,22 +102,21 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
 
         debug!(key_exchange_init = %Pretty(&peer_key_exchange_init), "received key exchange init");
-        let want_extension_info = peer_key_exchange_init
-            .key_exchange_algorithms
-            .contains(&KeyExchangeAlgorithm::ExtInfoC);
+        let want_extension_info = peer_key_exchange_init.has_extension(ExtensionId::ExtInfoC);
+        let strict_key_exchange =
+            peer_key_exchange_init.has_extension(ExtensionId::StrictKexClient);
 
-        let strict_key_exchange = peer_key_exchange_init
-            .key_exchange_algorithms
-            .contains(&KeyExchangeAlgorithm::StrictKexClient);
-
-        let (key_exchange_init, state) =
-            match state.advance(peer_key_exchange_init, &*self.provider) {
-                Ok(result) => result,
-                Err(error) => {
-                    error!(%error, "failed to advance key exchange");
-                    return Err(());
-                }
-            };
+        let (key_exchange_init, state) = match state.advance(
+            peer_key_exchange_init,
+            [ExtensionId::StrictKexServer].into_iter(),
+            &*self.provider,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                error!(%error, "failed to advance key exchange");
+                return Err(());
+            }
+        };
 
         self.send_handshake(&key_exchange_init, Some(&mut exchange))
             .await?;
