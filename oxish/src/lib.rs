@@ -446,9 +446,9 @@ impl VersionExchange {
             }
         };
 
-        debug!(addr = %conn.addr, ?ident, "received identification");
+        debug!(?ident, "received identification");
         if ident.protocol != PROTOCOL {
-            warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
+            warn!(?ident, "unsupported protocol version");
             return Err(ProtoError::from(IdentificationError::UnsupportedVersion(
                 ident.protocol.to_owned(),
             ))
@@ -469,7 +469,7 @@ impl VersionExchange {
 
         let server_ident_bytes = conn.write.encoded(&ident);
         if let Err(error) = conn.stream.write_all(server_ident_bytes).await {
-            warn!(addr = %conn.addr, %error, "failed to send version exchange");
+            warn!(%error, "failed to send version exchange");
             return Err(error.into());
         }
 
