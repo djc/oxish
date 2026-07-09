@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                anyhow::bail!("host key file `{}` already exists", &args.host_key_file);
+                anyhow::bail!("host key file `{}` already exists", args.host_key_file);
             }
             Err(err) => return Err(err.into()),
         }

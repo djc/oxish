@@ -518,7 +518,7 @@ struct Pretty<T>(T);
 
 impl<T: fmt::Debug> fmt::Display for Pretty<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#?}", &self.0)
+        write!(f, "{:#?}", self.0)
     }
 }
 
