@@ -27,7 +27,10 @@ mod tests;
 /// A single SSH connection
 pub struct Connection<T> {
     stream: T,
-    context: ConnectionContext,
+    addr: SocketAddr,
+    host_key: Arc<dyn SigningKey>,
+    auth: Auth,
+    provider: &'static dyn CryptoProvider,
     read: ReadState,
     write: WriteState,
     channels: Channels,
@@ -43,12 +46,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     ) -> Self {
         Self {
             stream,
-            context: ConnectionContext {
-                addr,
-                host_key,
-                auth: Auth::System,
-                provider,
-            },
+            addr,
+            host_key,
+            auth: Auth::System,
+            provider,
             read: ReadState::default(),
             write: WriteState::new(provider.secure_random()),
             channels: Channels::default(),
@@ -60,17 +61,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// By default, we find the `authorized_keys` file from the user's `.ssh` directory.
     #[cfg(test)]
     pub(crate) fn for_user(mut self, user: User) -> Self {
-        self.context.auth = Auth::Fixed(user);
+        self.auth = Auth::Fixed(user);
         self
     }
 
     /// Drive the connection forward
-    #[instrument(name = "connection", skip(self), fields(addr = %self.context.addr))]
+    #[instrument(name = "connection", skip(self), fields(addr = %self.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
         // The exchange hash is fed data from the version exchange onward, before
         // the key exchange algorithm is negotiated; assume our only supported one.
         let Ok(hash) = self
-            .context
             .provider
             .hash(&KeyExchangeAlgorithm::Mlkem768X25519Sha256)
         else {
@@ -106,7 +106,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .key_exchange_algorithms
             .contains(&KeyExchangeAlgorithm::ExtInfoC);
         let (key_exchange_init, state) =
-            match state.advance(peer_key_exchange_init, &*self.context.provider) {
+            match state.advance(peer_key_exchange_init, &*self.provider) {
                 Ok(result) => result,
                 Err(error) => {
                     error!(%error, "failed to advance key exchange");
@@ -131,8 +131,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let result = state.advance(
             ecdh_key_exchange_init,
             exchange,
-            &*self.context.host_key,
-            &*self.context.provider,
+            &*self.host_key,
+            &*self.provider,
         );
         let (key_exchange_reply, session_id, keys) = match result {
             Ok(out) => out,
@@ -232,10 +232,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 continue;
             }
 
-            let user = match (&mut cached_user, &self.context.auth) {
+            let user = match (&mut cached_user, &self.auth) {
                 (Some(user), _) if user.name == user_auth_request.user_name => user,
-                (_, auth) => match auth.resolve(user_auth_request.user_name, self.context.provider)
-                {
+                (_, auth) => match auth.resolve(user_auth_request.user_name, self.provider) {
                     Some(user) => cached_user.insert(user),
                     None => {
                         self.send_auth_failed().await?;
@@ -252,7 +251,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 // Signature, authorized key => verify signature
                 (Some(sig), Some(key)) if sig.algorithm == key.algorithm => (sig, key.clone()),
                 // Signature, no authorized key => verify signature against fake key
-                (Some(sig), None) => (sig, AuthorizedKey::fake(self.context.provider)),
+                (Some(sig), None) => (sig, AuthorizedKey::fake(self.provider)),
                 // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
                 (Some(_), Some(_)) => {
                     warn!(
@@ -378,11 +377,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // The cipher is negotiated during key exchange; currently this hard codes
         // aes128-gcm@openssh.com, an AEAD that also provides integrity protection.
         let results = (
-            self.context
-                .provider
+            self.provider
                 .opening_key(client_to_server, &EncryptionAlgorithm::Aes128Gcm),
-            self.context
-                .provider
+            self.provider
                 .sealing_key(server_to_client, &EncryptionAlgorithm::Aes128Gcm),
         );
         match results {
@@ -430,13 +427,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 }
 
-struct ConnectionContext {
-    addr: SocketAddr,
-    host_key: Arc<dyn SigningKey>,
-    auth: Auth,
-    provider: &'static dyn CryptoProvider,
-}
-
 #[derive(Default)]
 struct VersionExchange(());
 
@@ -456,9 +446,9 @@ impl VersionExchange {
             }
         };
 
-        debug!(addr = %conn.context.addr, ?ident, "received identification");
+        debug!(addr = %conn.addr, ?ident, "received identification");
         if ident.protocol != PROTOCOL {
-            warn!(addr = %conn.context.addr, ?ident, "unsupported protocol version");
+            warn!(addr = %conn.addr, ?ident, "unsupported protocol version");
             return Err(ProtoError::from(IdentificationError::UnsupportedVersion(
                 ident.protocol.to_owned(),
             ))
@@ -479,7 +469,7 @@ impl VersionExchange {
 
         let server_ident_bytes = conn.write.encoded(&ident);
         if let Err(error) = conn.stream.write_all(server_ident_bytes).await {
-            warn!(addr = %conn.context.addr, %error, "failed to send version exchange");
+            warn!(addr = %conn.addr, %error, "failed to send version exchange");
             return Err(error.into());
         }
 
