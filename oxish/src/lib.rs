@@ -107,14 +107,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let want_extension_info = peer_key_exchange_init
             .key_exchange_algorithms
             .contains(&KeyExchangeAlgorithm::ExtInfoC);
-        let (key_exchange_init, state) = match state.advance(peer_key_exchange_init, &self.context)
-        {
-            Ok(result) => result,
-            Err(error) => {
-                error!(%error, "failed to advance key exchange");
-                return Err(());
-            }
-        };
+        let (key_exchange_init, state) =
+            match state.advance(peer_key_exchange_init, &*self.context.provider) {
+                Ok(result) => result,
+                Err(error) => {
+                    error!(%error, "failed to advance key exchange");
+                    return Err(());
+                }
+            };
 
         self.send_handshake(&key_exchange_init, Some(&mut exchange))
             .await?;
@@ -130,14 +130,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        let (key_exchange_reply, session_id, keys) =
-            match state.advance(ecdh_key_exchange_init, exchange, &self.context) {
-                Ok(result) => result,
-                Err(error) => {
-                    error!(%error, "failed to complete ecdh key exchange");
-                    return Err(());
-                }
-            };
+        let result = state.advance(
+            ecdh_key_exchange_init,
+            exchange,
+            &*self.context.host_key,
+            &*self.context.provider,
+        );
+        let (key_exchange_reply, session_id, keys) = match result {
+            Ok(out) => out,
+            Err(error) => {
+                error!(%error, "failed to complete ecdh key exchange");
+                return Err(());
+            }
+        };
 
         self.send(&key_exchange_reply).await?;
 
