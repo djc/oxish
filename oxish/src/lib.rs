@@ -105,6 +105,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let want_extension_info = peer_key_exchange_init
             .key_exchange_algorithms
             .contains(&KeyExchangeAlgorithm::ExtInfoC);
+
+        let strict_key_exchange = peer_key_exchange_init
+            .key_exchange_algorithms
+            .contains(&KeyExchangeAlgorithm::StrictKexClient);
+
         let (key_exchange_init, state) =
             match state.advance(peer_key_exchange_init, &*self.provider) {
                 Ok(result) => result,
@@ -146,7 +151,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Exchange new keys packets and install new keys
 
-        self.update_keys(keys).await?;
+        self.update_keys(keys, strict_key_exchange).await?;
 
         if want_extension_info {
             let ext_info = ExtInfo {
@@ -361,14 +366,24 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
     }
 
-    async fn update_keys(&mut self, keys: KeySourceSet) -> Result<(), ()> {
+    async fn update_keys(&mut self, keys: KeySourceSet, strict: bool) -> Result<(), ()> {
         let packet = self.read.packet(&mut self.stream).await?;
         if let Err(error) = NewKeys::try_from(packet) {
             error!(%error, "failed to read new keys packet");
             return Err(());
         }
 
+        // Under strict key exchange the sequence numbers are reset to zero once
+        // NEWKEYS crosses in each direction, so the first encrypted packet after
+        // NEWKEYS uses sequence number zero.
+        if strict {
+            self.read.reset_sequence_number();
+        }
+
         self.send(&NewKeys).await?;
+        if strict {
+            self.write.reset_sequence_number();
+        }
         let KeySourceSet {
             client_to_server,
             server_to_client,

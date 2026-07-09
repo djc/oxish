@@ -108,7 +108,10 @@ impl KeyExchangeInit<'static> {
     pub fn new(cookie: [u8; 16]) -> Result<Self, ProtoError> {
         Ok(Self {
             cookie,
-            key_exchange_algorithms: vec![KeyExchangeAlgorithm::Mlkem768X25519Sha256],
+            key_exchange_algorithms: vec![
+                KeyExchangeAlgorithm::Mlkem768X25519Sha256,
+                KeyExchangeAlgorithm::StrictKexServer,
+            ],
             server_host_key_algorithms: vec![PublicKeyAlgorithm::Ed25519],
             encryption_algorithms_client_to_server: vec![EncryptionAlgorithm::Aes128Gcm],
             encryption_algorithms_server_to_client: vec![EncryptionAlgorithm::Aes128Gcm],
