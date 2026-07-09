@@ -90,97 +90,6 @@ impl EcdhKeyExchange {
     }
 }
 
-#[derive(Debug)]
-pub struct EcdhKeyExchangeInit<'a> {
-    /// Also known as `Q_C` (<https://www.rfc-editor.org/rfc/rfc5656#section-4>)
-    client_ephemeral_public_key: &'a [u8],
-}
-
-impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
-    type Error = ProtoError;
-
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::KeyExchangeEcdhInit {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
-        }
-
-        let Decoded {
-            value: client_ephemeral_public_key,
-            next,
-        } = <&[u8]>::decode(packet.payload)?;
-
-        if !next.is_empty() {
-            debug!(bytes = ?next, "unexpected trailing bytes");
-            return Err(ProtoError::InvalidPacket("unexpected trailing bytes"));
-        }
-
-        Ok(Self {
-            client_ephemeral_public_key,
-        })
-    }
-}
-
-#[derive(Debug)]
-pub struct EcdhKeyExchangeReply {
-    server_public_host_key: TaggedPublicKey<'static>,
-    server_ephemeral_public_key: Vec<u8>,
-    exchange_hash_signature: TaggedSignature<'static>,
-}
-
-impl Encode for EcdhKeyExchangeReply {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        MessageType::KeyExchangeEcdhReply.encode(buf);
-        self.server_public_host_key.encode(buf);
-        self.server_ephemeral_public_key.encode(buf);
-        self.exchange_hash_signature.encode(buf);
-    }
-}
-
-#[derive(Debug)]
-struct TaggedPublicKey<'a> {
-    algorithm: PublicKeyAlgorithm<'a>,
-    key: Cow<'a, [u8]>,
-}
-
-impl Encode for TaggedPublicKey<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        let start = buf.len();
-        buf.extend([0; 4]);
-        self.algorithm.encode(buf);
-        self.key.encode(buf);
-        let len = (buf.len() - start - 4) as u32;
-        if let Some(dst) = buf.get_mut(start..start + 4) {
-            dst.copy_from_slice(&len.to_be_bytes());
-        }
-    }
-}
-
-struct TaggedSignature<'a> {
-    algorithm: PublicKeyAlgorithm<'a>,
-    signature: Vec<u8>,
-}
-
-impl Encode for TaggedSignature<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        let start = buf.len();
-        buf.extend([0; 4]);
-        self.algorithm.encode(buf);
-        self.signature.as_slice().encode(buf);
-        let len = (buf.len() - start - 4) as u32;
-        if let Some(dst) = buf.get_mut(start..start + 4) {
-            dst.copy_from_slice(&len.to_be_bytes());
-        }
-    }
-}
-
-impl fmt::Debug for TaggedSignature<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TaggedSignature")
-            .field("algorithm", &self.algorithm)
-            .finish_non_exhaustive()
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct KeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
@@ -382,6 +291,97 @@ impl Encode for KeyExchangeInit<'_> {
         OutgoingNameList(&self.languages_server_to_client).encode(buf);
         buf.push(if self.first_kex_packet_follows { 1 } else { 0 });
         buf.extend_from_slice(&self.extended.to_be_bytes());
+    }
+}
+
+#[derive(Debug)]
+pub struct EcdhKeyExchangeInit<'a> {
+    /// Also known as `Q_C` (<https://www.rfc-editor.org/rfc/rfc5656#section-4>)
+    client_ephemeral_public_key: &'a [u8],
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::KeyExchangeEcdhInit {
+            return Err(ProtoError::InvalidPacket("unexpected message type"));
+        }
+
+        let Decoded {
+            value: client_ephemeral_public_key,
+            next,
+        } = <&[u8]>::decode(packet.payload)?;
+
+        if !next.is_empty() {
+            debug!(bytes = ?next, "unexpected trailing bytes");
+            return Err(ProtoError::InvalidPacket("unexpected trailing bytes"));
+        }
+
+        Ok(Self {
+            client_ephemeral_public_key,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct EcdhKeyExchangeReply {
+    server_public_host_key: TaggedPublicKey<'static>,
+    server_ephemeral_public_key: Vec<u8>,
+    exchange_hash_signature: TaggedSignature<'static>,
+}
+
+impl Encode for EcdhKeyExchangeReply {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::KeyExchangeEcdhReply.encode(buf);
+        self.server_public_host_key.encode(buf);
+        self.server_ephemeral_public_key.encode(buf);
+        self.exchange_hash_signature.encode(buf);
+    }
+}
+
+#[derive(Debug)]
+struct TaggedPublicKey<'a> {
+    algorithm: PublicKeyAlgorithm<'a>,
+    key: Cow<'a, [u8]>,
+}
+
+impl Encode for TaggedPublicKey<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let start = buf.len();
+        buf.extend([0; 4]);
+        self.algorithm.encode(buf);
+        self.key.encode(buf);
+        let len = (buf.len() - start - 4) as u32;
+        if let Some(dst) = buf.get_mut(start..start + 4) {
+            dst.copy_from_slice(&len.to_be_bytes());
+        }
+    }
+}
+
+struct TaggedSignature<'a> {
+    algorithm: PublicKeyAlgorithm<'a>,
+    signature: Vec<u8>,
+}
+
+impl Encode for TaggedSignature<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let start = buf.len();
+        buf.extend([0; 4]);
+        self.algorithm.encode(buf);
+        self.signature.as_slice().encode(buf);
+        let len = (buf.len() - start - 4) as u32;
+        if let Some(dst) = buf.get_mut(start..start + 4) {
+            dst.copy_from_slice(&len.to_be_bytes());
+        }
+    }
+}
+
+impl fmt::Debug for TaggedSignature<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaggedSignature")
+            .field("algorithm", &self.algorithm)
+            .finish_non_exhaustive()
     }
 }
 
