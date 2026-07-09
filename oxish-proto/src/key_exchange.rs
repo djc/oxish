@@ -8,6 +8,7 @@ use crate::{
         CryptoError, CryptoProvider, Digest, HandshakeHash, KeyDerivation, KeySourceSide,
         SigningKey,
     },
+    named::{ExtensionId, KeyExchangeAlgorithmOrExtensionId},
     Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
     ProtoError, PublicKeyAlgorithm,
 };
@@ -187,11 +188,12 @@ impl KeyExchange {
     pub fn advance<'out>(
         self,
         peer_key_exchange_init: KeyExchangeInit<'_>,
+        extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
     ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ProtoError> {
         let mut cookie = [0; 16];
         provider.secure_random().fill(&mut cookie)?;
-        let key_exchange_init = KeyExchangeInit::new(cookie)?;
+        let key_exchange_init = KeyExchangeInit::new(cookie, extensions)?;
 
         let algorithms = Algorithms::choose(peer_key_exchange_init, &key_exchange_init)?;
         if algorithms.key_exchange != KeyExchangeAlgorithm::Mlkem768X25519Sha256 {
@@ -225,13 +227,17 @@ impl Algorithms {
                 server
                     .key_exchange_algorithms
                     .iter()
-                    .find(|&&server_alg| server_alg == client)
+                    .find_map(|&server_alg| match (client, server_alg) {
+                        (
+                            KeyExchangeAlgorithmOrExtensionId::KeyExchange(client_alg),
+                            KeyExchangeAlgorithmOrExtensionId::KeyExchange(server_alg),
+                        ) if client_alg == server_alg => Some(server_alg),
+                        _ => None,
+                    })
             })
             .ok_or(ProtoError::NoCommonAlgorithm("key exchange"))?;
 
-        Ok(Self {
-            key_exchange: *key_exchange,
-        })
+        Ok(Self { key_exchange })
     }
 }
 
