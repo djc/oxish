@@ -1,12 +1,18 @@
 use core::fmt;
 use std::borrow::Cow;
 
-use proto::{
-    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType, ProtoError, PublicKeyAlgorithm, crypto::{CryptoError, CryptoProvider, Digest, HandshakeHash, KeyDerivation, KeySourceSide, SigningKey},
-};
 use tracing::debug;
 
-pub(crate) struct EcdhKeyExchange {
+use crate::{
+    crypto::{
+        CryptoError, CryptoProvider, Digest, HandshakeHash, KeyDerivation, KeySourceSide,
+        SigningKey,
+    },
+    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, KeyExchangeInit, MessageType,
+    ProtoError, PublicKeyAlgorithm,
+};
+
+pub struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
     session_id: Option<Digest>,
     /// The negotiated key exchange algorithm, which also determines the hash.
@@ -14,7 +20,7 @@ pub(crate) struct EcdhKeyExchange {
 }
 
 impl EcdhKeyExchange {
-    pub(crate) fn advance(
+    pub fn advance(
         self,
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         mut exchange: HandshakeHash,
@@ -81,7 +87,7 @@ impl EcdhKeyExchange {
 }
 
 #[derive(Debug)]
-pub(crate) struct EcdhKeyExchangeInit<'a> {
+pub struct EcdhKeyExchangeInit<'a> {
     /// Also known as `Q_C` (<https://www.rfc-editor.org/rfc/rfc5656#section-4>)
     client_ephemeral_public_key: &'a [u8],
 }
@@ -111,7 +117,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct EcdhKeyExchangeReply {
+pub struct EcdhKeyExchangeReply {
     server_public_host_key: TaggedPublicKey<'static>,
     server_ephemeral_public_key: Vec<u8>,
     exchange_hash_signature: TaggedSignature<'static>,
@@ -172,13 +178,13 @@ impl fmt::Debug for TaggedSignature<'_> {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct KeyExchange {
+pub struct KeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
     session_id: Option<Digest>,
 }
 
 impl KeyExchange {
-    pub(crate) fn advance<'out>(
+    pub fn advance<'out>(
         self,
         peer_key_exchange_init: KeyExchangeInit<'_>,
         provider: &dyn CryptoProvider,
@@ -232,7 +238,7 @@ impl Algorithms {
 /// The raw hashes from which we will derive the crypto keys.
 ///
 /// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
-pub(crate) struct KeySourceSet {
-    pub(crate) client_to_server: KeySourceSide,
-    pub(crate) server_to_client: KeySourceSide,
+pub struct KeySourceSet {
+    pub client_to_server: KeySourceSide,
+    pub server_to_client: KeySourceSide,
 }
