@@ -1,14 +1,14 @@
 use core::{fmt, future, net::SocketAddr};
 use std::{borrow::Cow, io, str, sync::Arc};
 
-use ::proto::{
+use proto::{
     crypto::{CryptoError, CryptoProvider, HandshakeHash, SigningKey},
-    Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, Encode,
-    EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification, IdentificationError,
-    KeyExchange, KeyExchangeAlgorithm, KeyExchangeInit, KeySourceSet, MessageType, Method,
-    MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept,
-    ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
-    PROTOCOL,
+    Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchange, EcdhKeyExchangeInit,
+    Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
+    IdentificationError, KeyExchange, KeyExchangeAlgorithm, KeyExchangeInit, KeySourceSet,
+    MessageType, Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
+    ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
+    UserAuthRequest, PROTOCOL,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -106,7 +106,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let strict_key_exchange =
             peer_key_exchange_init.has_extension(ExtensionId::StrictKexClient);
 
-        let (key_exchange_init, state) = match state.advance(
+        let (algorithms, key_exchange_init) = match state.advance(
             peer_key_exchange_init,
             [ExtensionId::StrictKexServer].into_iter(),
             &*self.provider,
@@ -116,6 +116,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 error!(%error, "failed to advance key exchange");
                 return Err(());
             }
+        };
+
+        let state = EcdhKeyExchange {
+            session_id: None,
+            key_exchange: algorithms.key_exchange,
         };
 
         self.send_handshake(&key_exchange_init, Some(&mut exchange))

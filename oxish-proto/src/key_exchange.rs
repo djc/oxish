@@ -18,9 +18,9 @@ use crate::{
 
 pub struct EcdhKeyExchange {
     /// The current session id or `None` if this is the initial key exchange.
-    session_id: Option<Digest>,
+    pub session_id: Option<Digest>,
     /// The negotiated key exchange algorithm, which also determines the hash.
-    key_exchange: KeyExchangeAlgorithm<'static>,
+    pub key_exchange: KeyExchangeAlgorithm<'static>,
 }
 
 impl EcdhKeyExchange {
@@ -91,10 +91,7 @@ impl EcdhKeyExchange {
 }
 
 #[derive(Debug, Default)]
-pub struct KeyExchange {
-    /// The current session id or `None` if this is the initial key exchange.
-    session_id: Option<Digest>,
-}
+pub struct KeyExchange(());
 
 impl KeyExchange {
     pub fn advance<'out>(
@@ -102,22 +99,13 @@ impl KeyExchange {
         peer_key_exchange_init: KeyExchangeInit<'_>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
-    ) -> Result<(KeyExchangeInit<'out>, EcdhKeyExchange), ProtoError> {
+    ) -> Result<(Algorithms, KeyExchangeInit<'out>), ProtoError> {
         let mut cookie = [0; 16];
         provider.secure_random().fill(&mut cookie)?;
         let key_exchange_init = KeyExchangeInit::new(cookie, extensions)?;
-
-        let algorithms = Algorithms::choose(peer_key_exchange_init, &key_exchange_init)?;
-        if algorithms.key_exchange != KeyExchangeAlgorithm::Mlkem768X25519Sha256 {
-            return Err(CryptoError::UnknownAlgorithm.into());
-        }
-
         Ok((
+            Algorithms::choose(peer_key_exchange_init, &key_exchange_init)?,
             key_exchange_init,
-            EcdhKeyExchange {
-                session_id: self.session_id,
-                key_exchange: algorithms.key_exchange,
-            },
         ))
     }
 }
@@ -386,8 +374,8 @@ impl fmt::Debug for TaggedSignature<'_> {
 }
 
 #[derive(Debug)]
-struct Algorithms {
-    key_exchange: KeyExchangeAlgorithm<'static>,
+pub struct Algorithms {
+    pub key_exchange: KeyExchangeAlgorithm<'static>,
 }
 
 impl Algorithms {
