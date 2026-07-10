@@ -1,7 +1,10 @@
 use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
-use crate::named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm};
+use crate::{
+    named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm},
+    MacAlgorithm,
+};
 
 /// A bundle of cryptographic algorithm implementations
 pub trait CryptoProvider: Send + Sync {
@@ -53,8 +56,18 @@ pub trait CryptoProvider: Send + Sync {
     /// Returns `Err` if the algorithm is not supported.
     fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, CryptoError>;
 
+    /// Algorithms supported by this provider
+    fn supported_algorithms(&self) -> SupportedAlgorithms;
+
     /// A source of cryptographically secure random bytes
     fn secure_random(&self) -> &'static dyn SecureRandom;
+}
+
+pub struct SupportedAlgorithms {
+    pub key_exchange: &'static [KeyExchangeAlgorithm<'static>],
+    pub public_key: &'static [PublicKeyAlgorithm<'static>],
+    pub encryption: &'static [EncryptionAlgorithm<'static>],
+    pub mac: &'static [MacAlgorithm<'static>],
 }
 
 /// An in-progress decryption, produced by [`CryptoProvider::opening_key()`]
