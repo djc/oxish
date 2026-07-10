@@ -92,14 +92,14 @@ impl CryptoProvider for Provider {
         algorithm: &KeyExchangeAlgorithm<'_>,
     ) -> Result<&'static dyn KeyExchange, CryptoError> {
         match algorithm {
-            KeyExchangeAlgorithm::Mlkem768X25519Sha256 => Ok(&Mlkem768X25519Kx),
+            KeyExchangeAlgorithm::MlKem768X25519Sha256 => Ok(&Mlkem768X25519Kx),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, CryptoError> {
         match algorithm {
-            KeyExchangeAlgorithm::Mlkem768X25519Sha256 => Ok(&Sha256),
+            KeyExchangeAlgorithm::MlKem768X25519Sha256 => Ok(&Sha256),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
