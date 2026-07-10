@@ -133,7 +133,7 @@ impl KeyExchangeInit<'static> {
         extensions: impl Iterator<Item = ExtensionId<'static>>,
     ) -> Result<Self, ProtoError> {
         let mut key_exchange_algorithms = vec![KeyExchangeAlgorithmOrExtensionId::KeyExchange(
-            KeyExchangeAlgorithm::Mlkem768X25519Sha256,
+            KeyExchangeAlgorithm::MlKem768X25519Sha256,
         )];
 
         key_exchange_algorithms

@@ -146,21 +146,21 @@ impl<'a> Named<'a> for KeyExchangeAlgorithmOrExtensionId<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyExchangeAlgorithm<'a> {
     /// mlkem768x25519-sha256 (<https://datatracker.ietf.org/doc/draft-kampanakis-curdle-ssh-pq-ke/>)
-    Mlkem768X25519Sha256,
+    MlKem768X25519Sha256,
     Unknown(&'a str),
 }
 
 impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
-            "mlkem768x25519-sha256" => Self::Mlkem768X25519Sha256,
+            "mlkem768x25519-sha256" => Self::MlKem768X25519Sha256,
             _ => Self::Unknown(name),
         }
     }
 
     fn name(&self) -> &str {
         match self {
-            Self::Mlkem768X25519Sha256 => "mlkem768x25519-sha256",
+            Self::MlKem768X25519Sha256 => "mlkem768x25519-sha256",
             Self::Unknown(name) => name,
         }
     }
