@@ -2,13 +2,13 @@ use core::{fmt, future, net::SocketAddr};
 use std::{borrow::Cow, io, str, sync::Arc};
 
 use proto::{
-    crypto::{CryptoError, CryptoProvider, HandshakeHash, SigningKey},
+    crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
     Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchange, EcdhKeyExchangeInit,
     Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
-    IdentificationError, KeyExchange, KeyExchangeAlgorithm, KeyExchangeInit, KeySourceSet,
-    MessageType, Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm,
-    ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
-    UserAuthRequest, PROTOCOL,
+    IdentificationError, KeyExchange, KeyExchangeInit, KeySourceSet, MessageType, Method,
+    MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept,
+    ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
+    PROTOCOL,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -68,16 +68,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
-        // The exchange hash is fed data from the version exchange onward, before
-        // the key exchange algorithm is negotiated; assume our only supported one.
-        let Ok(hash) = self
-            .provider
-            .hash(&KeyExchangeAlgorithm::Mlkem768X25519Sha256)
-        else {
-            error!("unsupported hash algorithm");
-            return Err(());
-        };
-        let mut exchange = HandshakeHash::new(hash);
+        let mut exchange = HandshakeBuffer::default();
         let state = VersionExchange::default();
         let state = match state.advance(&mut exchange, &mut self).await {
             Ok(state) => state,
@@ -123,6 +114,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             key_exchange: algorithms.key_exchange,
         };
 
+        let hash = match self.provider.hash(&algorithms.key_exchange) {
+            Ok(hash) => hash,
+            Err(error) => {
+                error!(%error, algorithm = ?algorithms.key_exchange, "failed to find hash implementation for key exchange algorithm");
+                return Err(());
+            }
+        };
+
+        let mut exchange = exchange.hash(hash);
         self.send_handshake(&key_exchange_init, Some(&mut exchange))
             .await?;
 
@@ -452,7 +452,7 @@ struct VersionExchange(());
 impl VersionExchange {
     async fn advance(
         &self,
-        exchange: &mut HandshakeHash,
+        exchange: &mut HandshakeBuffer,
         conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> Result<KeyExchange, Error> {
         // TODO: enforce timeout if this is taking too long

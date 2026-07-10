@@ -202,10 +202,6 @@ impl From<KeyInput> for u8 {
 pub struct HandshakeHash(Box<dyn HashContext>);
 
 impl HandshakeHash {
-    pub fn new(hash: &dyn Hash) -> Self {
-        Self(hash.start())
-    }
-
     pub fn prefixed(&mut self, data: &[u8]) {
         self.0.update(&(data.len() as u32).to_be_bytes());
         self.0.update(data);
@@ -217,6 +213,27 @@ impl HandshakeHash {
 
     pub fn finish(self) -> Digest {
         self.0.finish()
+    }
+}
+
+#[derive(Default)]
+pub struct HandshakeBuffer(Vec<u8>);
+
+impl HandshakeBuffer {
+    pub fn hash(self, algorithm: &dyn Hash) -> HandshakeHash {
+        let Self(bytes) = self;
+        let mut context = algorithm.start();
+        context.update(&bytes);
+        HandshakeHash(context)
+    }
+
+    pub fn prefixed(&mut self, data: &[u8]) {
+        self.0.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        self.0.extend_from_slice(data);
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.0.extend_from_slice(data);
     }
 }
 
