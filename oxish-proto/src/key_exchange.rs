@@ -103,11 +103,35 @@ impl KeyExchange {
     ) -> Result<(NegotiatedAlgorithms, KeyExchangeInit<'out>), ProtoError> {
         let mut cookie = [0; 16];
         provider.secure_random().fill(&mut cookie)?;
-        let key_exchange_init =
-            KeyExchangeInit::new(cookie, server_host_key_algorithms, extensions, provider)?;
+
+        let supported = provider.supported_algorithms();
+        let mut key_exchange_algorithms = supported
+            .key_exchange
+            .iter()
+            .map(|&alg| KeyExchangeAlgorithmOrExtensionId::KeyExchange(alg))
+            .collect::<Vec<_>>();
+        key_exchange_algorithms
+            .extend(extensions.map(KeyExchangeAlgorithmOrExtensionId::Extension));
+
+        let init = KeyExchangeInit {
+            cookie,
+            key_exchange_algorithms,
+            server_host_key_algorithms,
+            encryption_algorithms_client_to_server: supported.encryption.to_owned(),
+            encryption_algorithms_server_to_client: supported.encryption.to_owned(),
+            mac_algorithms_client_to_server: supported.mac.to_owned(),
+            mac_algorithms_server_to_client: supported.mac.to_owned(),
+            compression_algorithms_client_to_server: vec![CompressionAlgorithm::None],
+            compression_algorithms_server_to_client: vec![CompressionAlgorithm::None],
+            languages_client_to_server: vec![],
+            languages_server_to_client: vec![],
+            first_kex_packet_follows: false,
+            extended: 0,
+        };
+
         Ok((
-            NegotiatedAlgorithms::choose(peer_key_exchange_init, &key_exchange_init)?,
-            key_exchange_init,
+            NegotiatedAlgorithms::choose(peer_key_exchange_init, &init)?,
+            init,
         ))
     }
 }
@@ -127,40 +151,6 @@ pub struct KeyExchangeInit<'a> {
     pub(crate) languages_server_to_client: Vec<Language<'a>>,
     first_kex_packet_follows: bool,
     extended: u32,
-}
-
-impl KeyExchangeInit<'static> {
-    pub fn new(
-        cookie: [u8; 16],
-        server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
-        extensions: impl Iterator<Item = ExtensionId<'static>>,
-        provider: &dyn CryptoProvider,
-    ) -> Result<Self, ProtoError> {
-        let supported = provider.supported_algorithms();
-        let mut key_exchange_algorithms = supported
-            .key_exchange
-            .iter()
-            .map(|&alg| KeyExchangeAlgorithmOrExtensionId::KeyExchange(alg))
-            .collect::<Vec<_>>();
-        key_exchange_algorithms
-            .extend(extensions.map(KeyExchangeAlgorithmOrExtensionId::Extension));
-
-        Ok(Self {
-            cookie,
-            key_exchange_algorithms,
-            server_host_key_algorithms,
-            encryption_algorithms_client_to_server: supported.encryption.to_owned(),
-            encryption_algorithms_server_to_client: supported.encryption.to_owned(),
-            mac_algorithms_client_to_server: supported.mac.to_owned(),
-            mac_algorithms_server_to_client: supported.mac.to_owned(),
-            compression_algorithms_client_to_server: vec![CompressionAlgorithm::None],
-            compression_algorithms_server_to_client: vec![CompressionAlgorithm::None],
-            languages_client_to_server: vec![],
-            languages_server_to_client: vec![],
-            first_kex_packet_follows: false,
-            extended: 0,
-        })
-    }
 }
 
 impl<'a> KeyExchangeInit<'a> {
