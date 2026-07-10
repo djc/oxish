@@ -16,8 +16,8 @@ pub mod crypto;
 use crypto::CryptoError;
 mod key_exchange;
 pub use key_exchange::{
-    Algorithms, EcdhKeyExchange, EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchange,
-    KeyExchangeInit, KeySourceSet,
+    EcdhKeyExchange, EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchange, KeyExchangeInit,
+    KeySourceSet, NegotiatedAlgorithms,
 };
 mod named;
 pub use named::{

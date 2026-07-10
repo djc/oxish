@@ -99,12 +99,12 @@ impl KeyExchange {
         peer_key_exchange_init: KeyExchangeInit<'_>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
-    ) -> Result<(Algorithms, KeyExchangeInit<'out>), ProtoError> {
+    ) -> Result<(NegotiatedAlgorithms, KeyExchangeInit<'out>), ProtoError> {
         let mut cookie = [0; 16];
         provider.secure_random().fill(&mut cookie)?;
         let key_exchange_init = KeyExchangeInit::new(cookie, extensions)?;
         Ok((
-            Algorithms::choose(peer_key_exchange_init, &key_exchange_init)?,
+            NegotiatedAlgorithms::choose(peer_key_exchange_init, &key_exchange_init)?,
             key_exchange_init,
         ))
     }
@@ -374,11 +374,11 @@ impl fmt::Debug for TaggedSignature<'_> {
 }
 
 #[derive(Debug)]
-pub struct Algorithms {
+pub struct NegotiatedAlgorithms {
     pub key_exchange: KeyExchangeAlgorithm<'static>,
 }
 
-impl Algorithms {
+impl NegotiatedAlgorithms {
     fn choose(
         client: KeyExchangeInit<'_>,
         server: &KeyExchangeInit<'static>,
