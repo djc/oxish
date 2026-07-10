@@ -99,6 +99,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let (algorithms, key_exchange_init) = match state.advance(
             peer_key_exchange_init,
+            vec![self.host_key.algorithm()],
             [ExtensionId::StrictKexServer].into_iter(),
             &*self.provider,
         ) {

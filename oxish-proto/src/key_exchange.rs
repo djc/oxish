@@ -97,12 +97,14 @@ impl KeyExchange {
     pub fn advance<'out>(
         self,
         peer_key_exchange_init: KeyExchangeInit<'_>,
+        server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
     ) -> Result<(NegotiatedAlgorithms, KeyExchangeInit<'out>), ProtoError> {
         let mut cookie = [0; 16];
         provider.secure_random().fill(&mut cookie)?;
-        let key_exchange_init = KeyExchangeInit::new(cookie, extensions)?;
+        let key_exchange_init =
+            KeyExchangeInit::new(cookie, server_host_key_algorithms, extensions, provider)?;
         Ok((
             NegotiatedAlgorithms::choose(peer_key_exchange_init, &key_exchange_init)?,
             key_exchange_init,
@@ -130,23 +132,27 @@ pub struct KeyExchangeInit<'a> {
 impl KeyExchangeInit<'static> {
     pub fn new(
         cookie: [u8; 16],
+        server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
+        provider: &dyn CryptoProvider,
     ) -> Result<Self, ProtoError> {
-        let mut key_exchange_algorithms = vec![KeyExchangeAlgorithmOrExtensionId::KeyExchange(
-            KeyExchangeAlgorithm::MlKem768X25519Sha256,
-        )];
-
+        let supported = provider.supported_algorithms();
+        let mut key_exchange_algorithms = supported
+            .key_exchange
+            .iter()
+            .map(|&alg| KeyExchangeAlgorithmOrExtensionId::KeyExchange(alg))
+            .collect::<Vec<_>>();
         key_exchange_algorithms
             .extend(extensions.map(KeyExchangeAlgorithmOrExtensionId::Extension));
 
         Ok(Self {
             cookie,
             key_exchange_algorithms,
-            server_host_key_algorithms: vec![PublicKeyAlgorithm::Ed25519],
-            encryption_algorithms_client_to_server: vec![EncryptionAlgorithm::Aes128Gcm],
-            encryption_algorithms_server_to_client: vec![EncryptionAlgorithm::Aes128Gcm],
-            mac_algorithms_client_to_server: vec![MacAlgorithm::None],
-            mac_algorithms_server_to_client: vec![MacAlgorithm::None],
+            server_host_key_algorithms,
+            encryption_algorithms_client_to_server: supported.encryption.to_owned(),
+            encryption_algorithms_server_to_client: supported.encryption.to_owned(),
+            mac_algorithms_client_to_server: supported.mac.to_owned(),
+            mac_algorithms_server_to_client: supported.mac.to_owned(),
             compression_algorithms_client_to_server: vec![CompressionAlgorithm::None],
             compression_algorithms_server_to_client: vec![CompressionAlgorithm::None],
             languages_client_to_server: vec![],

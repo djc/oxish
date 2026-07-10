@@ -10,11 +10,11 @@ use ::aws_lc_rs::{
 };
 use aws_lc_rs::kem::EncapsulationKey;
 use proto::{
-    EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm,
+    EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm,
     crypto::{
         ActiveKeyExchange, AgreedKey, CryptoError, CryptoProvider, Digest, Hash, HashContext,
         KeyExchange, KeySourceSide, OpeningKey, SealingKey, SecureRandom, SharedSecret, SigningKey,
-        VerifyingKey,
+        SupportedAlgorithms, VerifyingKey,
     },
 };
 
@@ -101,6 +101,15 @@ impl CryptoProvider for Provider {
         match algorithm {
             KeyExchangeAlgorithm::MlKem768X25519Sha256 => Ok(&Sha256),
             _ => Err(CryptoError::UnknownAlgorithm),
+        }
+    }
+
+    fn supported_algorithms(&self) -> SupportedAlgorithms {
+        SupportedAlgorithms {
+            key_exchange: &[KeyExchangeAlgorithm::MlKem768X25519Sha256],
+            public_key: &[PublicKeyAlgorithm::EcdsaSha2Nistp256],
+            encryption: &[EncryptionAlgorithm::Aes128Gcm],
+            mac: &[MacAlgorithm::None],
         }
     }
 
