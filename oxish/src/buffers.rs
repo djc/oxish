@@ -51,6 +51,11 @@ impl ReadState {
                 }
             };
 
+            if packet_length.inner > 64 * 1024 {
+                error!(packet_length = packet_length.inner, "packet too large");
+                return Err(());
+            }
+
             match self.decode_packet(sequence_number, packet_length) {
                 Ok(packet) => return Ok(packet),
                 Err(error) => {
