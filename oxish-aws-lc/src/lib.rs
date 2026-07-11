@@ -188,10 +188,10 @@ impl GcmState {
     fn new(source: KeySourceSide) -> Result<Self, CryptoError> {
         Ok(Self {
             key: LessSafeKey::new(
-                UnboundKey::new(&AES_128_GCM, &source.encryption_key.derive::<16>())
+                UnboundKey::new(&AES_128_GCM, &source.encryption_key.derive::<16>()?)
                     .map_err(|_| CryptoError::InvalidLength)?,
             ),
-            nonce: source.initial_iv.derive::<NONCE_LEN>(),
+            nonce: source.initial_iv.derive::<NONCE_LEN>()?,
         })
     }
 

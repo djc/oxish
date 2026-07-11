@@ -167,7 +167,7 @@ pub struct KeySource {
 }
 
 impl KeySource {
-    pub fn derive<const N: usize>(self) -> [u8; N] {
+    pub fn derive<const N: usize>(self) -> Result<[u8; N], CryptoError> {
         let block_len = self.block_len;
         let mut key = [0; N];
 
@@ -177,20 +177,43 @@ impl KeySource {
         context.update(self.session_id.as_ref());
         let block = context.finish();
         let bytes = block.as_ref();
-        let mut have = Ord::min(bytes.len(), N);
-        key[..have].copy_from_slice(&block.as_ref()[..have]);
+
+        let take = Ord::min(bytes.len(), N);
+        let Some((next, _)) = key.split_at_mut_checked(take) else {
+            return Err(CryptoError::InvalidLength);
+        };
+
+        let Some((block, _)) = bytes.split_at_checked(take) else {
+            return Err(CryptoError::InvalidLength);
+        };
+
+        next.copy_from_slice(block);
+        let mut filled = take;
 
         // K2 = HASH(K || H || K1), K3 = HASH(K || H || K1 || K2), ...
-        while have < N {
+        while filled < N {
+            let Some((done, rest)) = key.split_at_mut_checked(filled) else {
+                return Err(CryptoError::InvalidLength);
+            };
+
             let mut context = self.base.fork();
-            context.update(&key[..have]);
-            let block = context.finish();
-            let take = block_len.min(N - have);
-            key[have..have + take].copy_from_slice(&block.as_ref()[..take]);
-            have += take;
+            context.update(done);
+            let digest = context.finish();
+            let take = Ord::min(block_len, rest.len());
+
+            let Some((next, _)) = rest.split_at_mut_checked(take) else {
+                return Err(CryptoError::InvalidLength);
+            };
+
+            let Some((block, _)) = digest.as_ref().split_at_checked(take) else {
+                return Err(CryptoError::InvalidLength);
+            };
+
+            next.copy_from_slice(block);
+            filled += take;
         }
 
-        key
+        Ok(key)
     }
 }
 
@@ -527,19 +550,23 @@ mod tests {
 
             let iv_c = derivation
                 .key(KeyInput::InitialIvClientToServer)
-                .derive::<8>();
+                .derive::<8>()
+                .unwrap();
             assert_eq!(iv_c.as_slice(), vector.iv_client);
             let iv_s = derivation
                 .key(KeyInput::InitialIvServerToClient)
-                .derive::<8>();
+                .derive::<8>()
+                .unwrap();
             assert_eq!(iv_s.as_slice(), vector.iv_server);
             let enc_c = derivation
                 .key(KeyInput::EncryptionKeyClientToServer)
-                .derive::<24>();
+                .derive::<24>()
+                .unwrap();
             assert_eq!(enc_c.as_slice(), vector.enc_client);
             let enc_s = derivation
                 .key(KeyInput::EncryptionKeyServerToClient)
-                .derive::<24>();
+                .derive::<24>()
+                .unwrap();
             assert_eq!(enc_s.as_slice(), vector.enc_server);
         }
     }

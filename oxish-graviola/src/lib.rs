@@ -75,7 +75,7 @@ impl CryptoProvider for Provider {
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn OpeningKey>, CryptoError> {
         match algorithm {
-            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmOpener(GcmState::new(source)))),
+            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmOpener(GcmState::new(source)?))),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -86,7 +86,7 @@ impl CryptoProvider for Provider {
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn SealingKey>, CryptoError> {
         match algorithm {
-            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmSealer(GcmState::new(source)))),
+            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmSealer(GcmState::new(source)?))),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -189,11 +189,11 @@ struct GcmState {
 }
 
 impl GcmState {
-    fn new(source: KeySourceSide) -> Self {
-        Self {
-            key: AesGcm::new(&source.encryption_key.derive::<16>()),
-            nonce: source.initial_iv.derive::<NONCE_LEN>(),
-        }
+    fn new(source: KeySourceSide) -> Result<Self, CryptoError> {
+        Ok(Self {
+            key: AesGcm::new(&source.encryption_key.derive::<16>()?),
+            nonce: source.initial_iv.derive::<NONCE_LEN>()?,
+        })
     }
 
     /// Return the nonce for the next packet and advance the invocation counter
