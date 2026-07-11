@@ -34,6 +34,7 @@ unused_qualifications = "warn"
 [workspace.lints.clippy]
 alloc_instead_of_core = "warn"
 cloned_instead_of_copied = "warn"
+indexing_slicing = "warn"
 manual_let_else = "warn"
 or_fun_call = "warn"
 std_instead_of_core = "warn"

@@ -415,11 +415,7 @@ fn mpint_to_fixed(mpint: &[u8], out: &mut [u8]) -> Option<()> {
         _ => mpint,
     };
 
-    if data.len() > out.len() {
-        return None;
-    }
-
-    let offset = out.len() - data.len();
-    out[offset..].copy_from_slice(data);
+    let offset = out.len().checked_sub(data.len())?;
+    out.get_mut(offset..)?.copy_from_slice(data);
     Some(())
 }

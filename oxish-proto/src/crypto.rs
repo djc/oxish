@@ -304,9 +304,12 @@ pub struct Digest {
 impl Digest {
     /// Build a `Digest` from a slice of no more than [`Self::MAX_LEN`] bytes
     pub fn new(bytes: &[u8]) -> Self {
-        debug_assert!(bytes.len() <= Self::MAX_LEN);
         let mut buf = [0; Self::MAX_LEN];
-        buf[..bytes.len()].copy_from_slice(bytes);
+        match buf.get_mut(..bytes.len()) {
+            Some(dst) => dst.copy_from_slice(bytes),
+            None => unreachable!("Digest::new() called with too many bytes"),
+        }
+
         Self {
             buf,
             used: bytes.len(),
@@ -319,7 +322,10 @@ impl Digest {
 
 impl AsRef<[u8]> for Digest {
     fn as_ref(&self) -> &[u8] {
-        &self.buf[..self.used]
+        match self.buf.get(..self.used) {
+            Some(slice) => slice,
+            None => unreachable!("Digest::as_ref() used with invalid length"),
+        }
     }
 }
 

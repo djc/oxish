@@ -11,9 +11,9 @@ use std::{
 };
 
 use proto::{
-    ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
-    ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, ChannelType,
-    Encode, IncomingPacket, MessageType, ProtoError, PtyReq,
+    crypto::CryptoError, ChannelClose, ChannelData, ChannelEof, ChannelOpen,
+    ChannelOpenConfirmation, ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess,
+    ChannelRequestType, ChannelType, Encode, IncomingPacket, MessageType, ProtoError, PtyReq,
 };
 use tracing::{debug, warn};
 
@@ -221,9 +221,13 @@ impl<'a> Future for TerminalsFuture<'a> {
                     });
                 }
                 Poll::Ready(Ok(n)) => {
+                    let Some(chunk) = buf.get(..n) else {
+                        return Poll::Ready(Err(CryptoError::InvalidLength.into()));
+                    };
+
                     return Poll::Ready(Ok(Some(OutgoingChannelMessage::Data(ChannelData {
                         recipient_channel: channel.remote_id,
-                        data: Cow::Owned(buf[..n].to_vec()),
+                        data: Cow::Owned(chunk.to_vec()),
                     }))));
                 }
                 Poll::Pending => continue,

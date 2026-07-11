@@ -6,7 +6,7 @@ use core::{
 use std::io;
 
 use proto::{
-    crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
+    crypto::{CryptoError, HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
@@ -136,10 +136,15 @@ impl ReadState {
         sequence_number: u32,
         packet_length: PacketLength,
     ) -> Result<IncomingPacket<'a>, Error> {
+        let payload = self
+            .buf
+            .get(4..4 + packet_length.inner as usize)
+            .ok_or(CryptoError::InvalidLength)?;
+
         let Decoded {
             value: padding_length,
             next,
-        } = PaddingLength::decode(&self.buf[4..4 + packet_length.inner as usize])?;
+        } = PaddingLength::decode(payload)?;
 
         let payload_len = (packet_length.inner - 1 - padding_length.inner as u32) as usize;
         let Some(payload) = next.get(..payload_len) else {
@@ -335,8 +340,11 @@ impl WriteState {
         cx: &mut Context<'_>,
         stream: &mut (impl AsyncWrite + Unpin),
     ) -> Poll<Result<(), Error>> {
-        self.written += ready!(Pin::new(stream).poll_write(cx, &self.buf[self.written..]))?;
+        let Some(buf) = self.buf.get(self.written..) else {
+            return Poll::Ready(Err(Error::from(CryptoError::InvalidLength)));
+        };
 
+        self.written += ready!(Pin::new(stream).poll_write(cx, buf))?;
         if self.written == self.buf.len() {
             self.buf.clear();
             self.written = 0;
