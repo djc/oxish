@@ -17,7 +17,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 mod authentication;
 use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
-use buffers::{Encoder, ReadState, WriteState};
+use buffers::{ReadState, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 
@@ -483,6 +483,41 @@ pub(crate) async fn receive<'a>(
                 return Err(());
             }
         }
+    }
+}
+
+pub(crate) struct Encoder<'a> {
+    write: &'a mut WriteState,
+    pub(crate) buffered: bool,
+}
+
+impl Encoder<'_> {
+    pub(crate) fn new(write: &mut WriteState) -> Encoder<'_> {
+        Encoder {
+            write,
+            buffered: false,
+        }
+    }
+
+    pub(crate) fn enqueue(&mut self, payload: &impl Encode) -> Result<(), Error> {
+        self.buffered = true;
+        self.write
+            .handle_packet(payload, None)
+            .inspect_err(|error| {
+                error!(%error, ?payload, "failed to encode packet");
+            })
+    }
+
+    pub(crate) async fn flush(self, stream: &mut (impl AsyncWrite + Unpin)) -> Result<(), ()> {
+        if !self.buffered {
+            return Ok(());
+        }
+
+        future::poll_fn(|cx| self.write.poll_write_to(cx, stream))
+            .await
+            .map_err(|error| {
+                error!(%error, "failed to write queued packets to stream");
+            })
     }
 }
 
