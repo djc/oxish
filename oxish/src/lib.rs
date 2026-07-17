@@ -11,9 +11,9 @@ use proto::{
     Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchange, EcdhKeyExchangeInit,
     Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
     IdentificationError, IncomingPacket, KeyExchange, KeyExchangeInit, KeySourceSet, MessageType,
-    Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept,
-    ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
-    PROTOCOL,
+    Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ReadState,
+    ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
+    UserAuthRequest, WriteState, PROTOCOL,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -21,8 +21,6 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 mod authentication;
 use authentication::{Auth, AuthorizedKey, User};
-mod buffers;
-use buffers::{ReadState, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 

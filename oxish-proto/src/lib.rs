@@ -16,6 +16,8 @@ pub use channels::{
 };
 pub mod crypto;
 use crypto::CryptoError;
+mod io;
+pub use io::{ReadState, WriteState};
 mod key_exchange;
 pub use key_exchange::{
     EcdhKeyExchange, EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchange, KeyExchangeInit,

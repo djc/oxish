@@ -1,15 +1,15 @@
 use core::iter;
 
-use proto::{
+use crate::{
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
     ProtoError,
 };
 
 /// The reader and decryption state for an SSH connection
-pub(crate) struct ReadState {
+pub struct ReadState {
     /// Buffer for incoming data from the transport stream
-    pub(crate) buf: Vec<u8>,
+    pub buf: Vec<u8>,
     /// Full length of the last decoded packet, including packet length and tag
     ///
     /// Set after decoding and decrypting a packet successfully in `poll_packet()`; reduced at
@@ -17,12 +17,12 @@ pub(crate) struct ReadState {
     last_length: usize,
 
     sequence_number: u32,
-    pub(crate) opener: Option<Box<dyn OpeningKey>>,
+    pub opener: Option<Box<dyn OpeningKey>>,
 }
 
 impl ReadState {
     // This and decode_packet are split because of a borrowck limitation
-    pub(crate) fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, ProtoError> {
+    pub fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, ProtoError> {
         // Compact the internal buffer
         if self.last_length > 0 {
             self.buf.copy_within(self.last_length.., 0);
@@ -82,7 +82,7 @@ impl ReadState {
         Ok(Completion::Complete((sequence_number, packet_length)))
     }
 
-    pub(crate) fn decode_packet<'a>(
+    pub fn decode_packet<'a>(
         &'a self,
         sequence_number: u32,
         packet_length: PacketLength,
@@ -124,14 +124,14 @@ impl ReadState {
         })
     }
 
-    pub(crate) fn set_last_length(&mut self, len: usize) {
+    pub fn set_last_length(&mut self, len: usize) {
         self.last_length = len;
     }
 
     /// Reset the receive sequence number to zero
     ///
     /// As required by strict key exchange after receiving `SSH_MSG_NEWKEYS`.
-    pub(crate) fn reset_sequence_number(&mut self) {
+    pub fn reset_sequence_number(&mut self) {
         self.sequence_number = 0;
     }
 }
@@ -147,7 +147,7 @@ impl Default for ReadState {
     }
 }
 
-pub(crate) struct WriteState {
+pub struct WriteState {
     /// Buffer for encoded but unencrypted packets
     buf: Vec<u8>,
 
@@ -156,14 +156,14 @@ pub(crate) struct WriteState {
     written: usize,
 
     sequence_number: u32,
-    pub(crate) sealer: Option<Box<dyn SealingKey>>,
+    pub sealer: Option<Box<dyn SealingKey>>,
 
     /// Source of random bytes for packet padding
     secure_random: &'static dyn SecureRandom,
 }
 
 impl WriteState {
-    pub(crate) fn new(secure_random: &'static dyn SecureRandom) -> Self {
+    pub fn new(secure_random: &'static dyn SecureRandom) -> Self {
         Self {
             buf: Vec::with_capacity(16_384),
             written: 0,
@@ -173,7 +173,7 @@ impl WriteState {
         }
     }
 
-    pub(crate) fn handle_packet(
+    pub fn handle_packet(
         &mut self,
         payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,
@@ -266,12 +266,12 @@ impl WriteState {
         Ok(())
     }
 
-    pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
+    pub fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
         payload.encode(&mut self.buf);
         &self.buf
     }
 
-    pub(crate) fn written(&mut self, bytes: usize) {
+    pub fn written(&mut self, bytes: usize) {
         self.written += bytes;
         if self.written == self.buf.len() {
             self.buf.clear();
@@ -280,18 +280,18 @@ impl WriteState {
     }
 
     /// Clear the outgoing buffer after writing its contents to the stream directly
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.buf.clear();
     }
 
     /// Reset the send sequence number to zero
     ///
     /// As required by strict key exchange after sending `SSH_MSG_NEWKEYS`.
-    pub(crate) fn reset_sequence_number(&mut self) {
+    pub fn reset_sequence_number(&mut self) {
         self.sequence_number = 0;
     }
 
-    pub(crate) fn buffered(&self) -> &[u8] {
+    pub fn buffered(&self) -> &[u8] {
         &self.buf[self.written..]
     }
 }
