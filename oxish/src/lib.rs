@@ -17,9 +17,10 @@ use tracing::{debug, error, info, instrument, trace, warn};
 mod authentication;
 use authentication::{Auth, AuthorizedKey, User};
 mod buffers;
-use buffers::{ReadState, WriteState};
+use buffers::{Encoder, ReadState, WriteState};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
+
 mod terminal;
 #[cfg(test)]
 mod tests;
@@ -331,7 +332,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     };
 
                     debug!(message = %Pretty(&channel_message), "handling channel message");
-                    let mut encoder = self.write.encoder();
+                    let mut encoder = Encoder::new(&mut self.write);
                     let result = match channel_message {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
                         IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),

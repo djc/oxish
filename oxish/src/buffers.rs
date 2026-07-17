@@ -289,13 +289,6 @@ impl WriteState {
         Poll::Ready(Ok(()))
     }
 
-    pub(crate) fn encoder(&mut self) -> Encoder<'_> {
-        Encoder {
-            write: self,
-            buffered: false,
-        }
-    }
-
     pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
         payload.encode(&mut self.buf);
         &self.buf
@@ -320,6 +313,13 @@ pub(crate) struct Encoder<'a> {
 }
 
 impl Encoder<'_> {
+    pub(crate) fn new(write: &mut WriteState) -> Encoder<'_> {
+        Encoder {
+            write,
+            buffered: false,
+        }
+    }
+
     pub(crate) fn enqueue(&mut self, payload: &impl Encode) -> Result<(), Error> {
         self.buffered = true;
         self.write
