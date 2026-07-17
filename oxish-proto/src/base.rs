@@ -151,9 +151,7 @@ impl From<MessageType> for u8 {
 }
 
 #[derive(Debug)]
-pub struct PacketLength {
-    pub inner: u32,
-}
+pub struct PacketLength(pub u32);
 
 impl Decode<'_> for PacketLength {
     fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
@@ -163,16 +161,14 @@ impl Decode<'_> for PacketLength {
         }
 
         Ok(Decoded {
-            value: Self { inner: value },
+            value: Self(value),
             next,
         })
     }
 }
 
 #[derive(Debug)]
-pub struct PaddingLength {
-    pub inner: u8,
-}
+pub struct PaddingLength(pub u8);
 
 impl Decode<'_> for PaddingLength {
     fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
@@ -182,7 +178,7 @@ impl Decode<'_> for PaddingLength {
         }
 
         Ok(Decoded {
-            value: Self { inner: value },
+            value: Self(value),
             next,
         })
     }
