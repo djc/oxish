@@ -462,8 +462,7 @@ pub(crate) async fn receive<'a>(
             Ok(Completion::Complete((sequence_number, packet_length))) => {
                 (sequence_number, packet_length)
             }
-            Ok(Completion::Incomplete(_amount))
-            | Err(Error::Proto(ProtoError::Incomplete(_amount))) => {
+            Ok(Completion::Incomplete(_amount)) | Err(ProtoError::Incomplete(_amount)) => {
                 if let Err(error) = buffer(stream, state).await {
                     error!(%error, "failed to buffer from stream");
                     return Err(());
@@ -506,11 +505,10 @@ impl Encoder<'_> {
 
     pub(crate) fn enqueue(&mut self, payload: &impl Encode) -> Result<(), Error> {
         self.buffered = true;
-        self.write
-            .handle_packet(payload, None)
-            .inspect_err(|error| {
-                error!(%error, ?payload, "failed to encode packet");
-            })
+        self.write.handle_packet(payload, None).map_err(|error| {
+            error!(%error, ?payload, "failed to encode packet");
+            Error::from(error)
+        })
     }
 
     pub(crate) async fn flush(self, stream: &mut (impl AsyncWrite + Unpin)) -> Result<(), ()> {
