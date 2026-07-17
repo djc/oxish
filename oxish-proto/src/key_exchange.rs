@@ -90,17 +90,30 @@ impl EcdhKeyExchange {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct KeyExchange(());
+#[derive(Debug)]
+pub struct KeyExchangeInit<'a> {
+    cookie: [u8; 16],
+    pub(crate) key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'a>>,
+    pub(crate) server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
+    pub(crate) encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
+    pub(crate) encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
+    pub(crate) mac_algorithms_client_to_server: Vec<MacAlgorithm<'a>>,
+    pub(crate) mac_algorithms_server_to_client: Vec<MacAlgorithm<'a>>,
+    pub(crate) compression_algorithms_client_to_server: Vec<CompressionAlgorithm<'a>>,
+    pub(crate) compression_algorithms_server_to_client: Vec<CompressionAlgorithm<'a>>,
+    pub(crate) languages_client_to_server: Vec<Language<'a>>,
+    pub(crate) languages_server_to_client: Vec<Language<'a>>,
+    first_kex_packet_follows: bool,
+    extended: u32,
+}
 
-impl KeyExchange {
-    pub fn advance<'out>(
-        self,
+impl KeyExchangeInit<'static> {
+    pub fn new(
         peer_key_exchange_init: KeyExchangeInit<'_>,
         server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
-    ) -> Result<(NegotiatedAlgorithms, KeyExchangeInit<'out>), ProtoError> {
+    ) -> Result<(NegotiatedAlgorithms, Self), ProtoError> {
         let mut cookie = [0; 16];
         provider.secure_random().fill(&mut cookie)?;
 
@@ -134,23 +147,6 @@ impl KeyExchange {
             init,
         ))
     }
-}
-
-#[derive(Debug)]
-pub struct KeyExchangeInit<'a> {
-    cookie: [u8; 16],
-    pub(crate) key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'a>>,
-    pub(crate) server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
-    pub(crate) encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
-    pub(crate) encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
-    pub(crate) mac_algorithms_client_to_server: Vec<MacAlgorithm<'a>>,
-    pub(crate) mac_algorithms_server_to_client: Vec<MacAlgorithm<'a>>,
-    pub(crate) compression_algorithms_client_to_server: Vec<CompressionAlgorithm<'a>>,
-    pub(crate) compression_algorithms_server_to_client: Vec<CompressionAlgorithm<'a>>,
-    pub(crate) languages_client_to_server: Vec<Language<'a>>,
-    pub(crate) languages_server_to_client: Vec<Language<'a>>,
-    first_kex_packet_follows: bool,
-    extended: u32,
 }
 
 impl<'a> KeyExchangeInit<'a> {
