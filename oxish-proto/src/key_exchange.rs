@@ -110,7 +110,7 @@ impl KeyExchangeInit<'static> {
         server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
-    ) -> Result<(NegotiatedAlgorithms, Self), ProtoError> {
+    ) -> Result<(Negotiated, Self), ProtoError> {
         let mut cookie = [0; 16];
         provider.secure_random().fill(&mut cookie)?;
 
@@ -139,10 +139,7 @@ impl KeyExchangeInit<'static> {
             extended: 0,
         };
 
-        Ok((
-            NegotiatedAlgorithms::choose(peer_key_exchange_init, &init)?,
-            init,
-        ))
+        Ok((Negotiated::choose(peer_key_exchange_init, &init)?, init))
     }
 }
 
@@ -363,11 +360,13 @@ impl fmt::Debug for TaggedSignature<'_> {
 }
 
 #[derive(Debug)]
-pub struct NegotiatedAlgorithms {
+pub struct Negotiated {
     pub key_exchange: KeyExchangeAlgorithm<'static>,
+    pub want_extension_info: bool,
+    pub strict_key_exchange: bool,
 }
 
-impl NegotiatedAlgorithms {
+impl Negotiated {
     fn choose(
         client: KeyExchangeInit<'_>,
         server: &KeyExchangeInit<'static>,
@@ -389,7 +388,11 @@ impl NegotiatedAlgorithms {
             })
             .ok_or(ProtoError::NoCommonAlgorithm("key exchange"))?;
 
-        Ok(Self { key_exchange })
+        Ok(Self {
+            key_exchange,
+            want_extension_info: client.has_extension(ExtensionId::ExtInfoC),
+            strict_key_exchange: client.has_extension(ExtensionId::StrictKexClient),
+        })
     }
 }
 

@@ -94,11 +94,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
 
         debug!(key_exchange_init = %Pretty(&peer_key_exchange_init), "received key exchange init");
-        let want_extension_info = peer_key_exchange_init.has_extension(ExtensionId::ExtInfoC);
-        let strict_key_exchange =
-            peer_key_exchange_init.has_extension(ExtensionId::StrictKexClient);
-
-        let (algorithms, key_exchange_init) = match KeyExchangeInit::new(
+        let (negotiated, key_exchange_init) = match KeyExchangeInit::new(
             peer_key_exchange_init,
             vec![self.host_key.algorithm()],
             [ExtensionId::StrictKexServer].into_iter(),
@@ -112,13 +108,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
 
         let state = EcdhKeyExchange {
-            algorithm: algorithms.key_exchange,
+            algorithm: negotiated.key_exchange,
         };
 
-        let hash = match self.provider.hash(&algorithms.key_exchange) {
+        let hash = match self.provider.hash(&negotiated.key_exchange) {
             Ok(hash) => hash,
             Err(error) => {
-                error!(%error, algorithm = ?algorithms.key_exchange, "failed to find hash implementation for key exchange algorithm");
+                error!(%error, algorithm = ?negotiated.key_exchange, "failed to find hash implementation for key exchange algorithm");
                 return Err(());
             }
         };
@@ -156,9 +152,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Exchange new keys packets and install new keys
 
-        self.update_keys(keys, strict_key_exchange).await?;
-
-        if want_extension_info {
+        self.update_keys(keys, negotiated.strict_key_exchange)
+            .await?;
+        if negotiated.want_extension_info {
             let ext_info = ExtInfo {
                 extensions: vec![(
                     ExtensionName::ServerSigAlgs,
