@@ -30,13 +30,10 @@ mod tests;
 
 /// A single SSH connection
 pub struct Connection<T> {
-    stream: T,
-    addr: SocketAddr,
+    io: IoStream<T>,
     host_key: Arc<dyn SigningKey>,
     auth: Auth,
     provider: &'static dyn CryptoProvider,
-    read: ReadState,
-    write: WriteState,
     channels: Channels,
 }
 
@@ -49,13 +46,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         provider: &'static dyn CryptoProvider,
     ) -> Self {
         Self {
-            stream,
-            addr,
+            io: IoStream {
+                stream,
+                addr,
+                read: ReadState::default(),
+                write: WriteState::new(provider.secure_random()),
+            },
             host_key,
             auth: Auth::System,
             provider,
-            read: ReadState::default(),
-            write: WriteState::new(provider.secure_random()),
             channels: Channels::default(),
         }
     }
@@ -70,11 +69,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 
     /// Drive the connection forward
-    #[instrument(name = "connection", skip(self), fields(addr = %self.addr))]
+    #[instrument(name = "connection", skip(self), fields(addr = %self.io.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
         let mut exchange = HandshakeBuffer::default();
         let state = VersionExchange::default();
-        let state = match state.advance(&mut exchange, &mut self).await {
+        let state = match state.advance(&mut exchange, &mut self.io).await {
             Ok(state) => state,
             Err(error) => {
                 error!(%error, "failed to complete version exchange");
@@ -84,7 +83,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Receive and send key exchange init packets
 
-        let packet = receive(&mut self.stream, &mut self.read).await?;
+        let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
         exchange.update(&[u8::from(packet.message_type)]);
         exchange.update(packet.payload);
@@ -133,7 +132,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Perform ECDH key exchange
 
-        let packet = receive(&mut self.stream, &mut self.read).await?;
+        let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
         let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
@@ -176,7 +175,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Handle authentication
 
-        let packet = receive(&mut self.stream, &mut self.read).await?;
+        let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
         let service_request = match ServiceRequest::try_from(packet) {
             Ok(req) => req,
             Err(error) => {
@@ -207,7 +206,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let mut cached_user = None::<User>;
         let _user = loop {
-            let packet = receive(&mut self.stream, &mut self.read).await?;
+            let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
             let user_auth_request = match UserAuthRequest::try_from(packet) {
                 Ok(req) => req,
                 Err(error) => {
@@ -316,7 +315,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Main loop for handling channel messages
         loop {
             tokio::select! {
-                result = receive(&mut self.stream, &mut self.read) => {
+                result = receive(&mut self.io.stream, &mut self.io.read) => {
                     let packet = result?;
                     if packet.message_type == MessageType::Disconnect {
                         match Disconnect::try_from(packet) {
@@ -335,7 +334,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     };
 
                     debug!(message = %Pretty(&channel_message), "handling channel message");
-                    let mut encoder = Encoder::new(&mut self.write);
+                    let mut encoder = Encoder::new(&mut self.io.write);
                     let result = match channel_message {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
                         IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),
@@ -356,7 +355,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                         return Err(());
                     }
 
-                    encoder.flush(&mut self.stream).await?;
+                    encoder.flush(&mut self.io.stream).await?;
                 }
                 result = TerminalsFuture::new(self.channels.channels_mut()) => {
                     match result {
@@ -376,22 +375,21 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 
     async fn update_keys(&mut self, keys: KeySourceSet, strict: bool) -> Result<(), ()> {
-        let packet = receive(&mut self.stream, &mut self.read).await?;
+        let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
         if let Err(error) = NewKeys::try_from(packet) {
             error!(%error, "failed to read new keys packet");
             return Err(());
         }
 
-        // Under strict key exchange the sequence numbers are reset to zero once
-        // NEWKEYS crosses in each direction, so the first encrypted packet after
-        // NEWKEYS uses sequence number zero.
+        // Under strict key exchange the sequence numbers are reset to zero once NEWKEYS crosses in
+        // each direction, so the first encrypted packet after NEWKEYS uses sequence number zero.
         if strict {
-            self.read.reset_sequence_number();
+            self.io.read.reset_sequence_number();
         }
 
         self.send(&NewKeys).await?;
         if strict {
-            self.write.reset_sequence_number();
+            self.io.write.reset_sequence_number();
         }
         let KeySourceSet {
             client_to_server,
@@ -408,8 +406,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         );
         match results {
             (Ok(opener), Ok(sealer)) => {
-                self.read.opener = Some(opener);
-                self.write.sealer = Some(sealer);
+                self.io.read.opener = Some(opener);
+                self.io.write.sealer = Some(sealer);
                 Ok(())
             }
             (Err(error), _) | (_, Err(error)) => {
@@ -436,12 +434,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,
     ) -> Result<(), ()> {
-        if let Err(error) = self.write.handle_packet(payload, exchange_hash) {
+        if let Err(error) = self.io.write.handle_packet(payload, exchange_hash) {
             error!(%error, ?payload, "failed to encode packet");
             return Err(());
         }
 
-        let future = future::poll_fn(|cx| send(&mut self.stream, &mut self.write, cx));
+        let future = future::poll_fn(|cx| send(&mut self.io.stream, &mut self.io.write, cx));
         if let Err(error) = future.await {
             error!(%error, ?payload, "failed to write packet to stream");
             return Err(());
@@ -449,6 +447,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         Ok(())
     }
+}
+
+struct IoStream<T> {
+    stream: T,
+    addr: SocketAddr,
+    read: ReadState,
+    write: WriteState,
 }
 
 pub(crate) async fn receive<'a>(
@@ -543,11 +548,11 @@ impl VersionExchange {
     async fn advance(
         &self,
         exchange: &mut HandshakeBuffer,
-        conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
+        core: &mut IoStream<impl AsyncRead + AsyncWrite + Unpin>,
     ) -> Result<KeyExchange, Error> {
         // TODO: enforce timeout if this is taking too long
         let (buf, Decoded { value: ident, next }) = loop {
-            let bytes = buffer(&mut conn.stream, &mut conn.read).await?;
+            let bytes = buffer(&mut core.stream, &mut core.read).await?;
             match Identification::decode(bytes) {
                 Ok(Completion::Complete(decoded)) => break (bytes, decoded),
                 Ok(Completion::Incomplete(_length)) => continue,
@@ -576,8 +581,8 @@ impl VersionExchange {
             comments: "",
         };
 
-        let server_ident_bytes = conn.write.encoded(&ident);
-        if let Err(error) = conn.stream.write_all(server_ident_bytes).await {
+        let server_ident_bytes = core.write.encoded(&ident);
+        if let Err(error) = core.stream.write_all(server_ident_bytes).await {
             warn!(%error, "failed to send version exchange");
             return Err(error.into());
         }
@@ -588,10 +593,10 @@ impl VersionExchange {
         }
 
         // The ident was written to the stream directly, so drop it from the outgoing buffer
-        conn.write.clear();
+        core.write.clear();
 
         let last_length = buf.len() - rest;
-        conn.read.set_last_length(last_length);
+        core.read.set_last_length(last_length);
         Ok(KeyExchange::default())
     }
 }
