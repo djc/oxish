@@ -71,8 +71,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.io.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
-        let state = VersionExchange::default();
-        let mut exchange = match state.advance(&mut self.io).await {
+        let mut exchange = match self.io.identify().await {
             Ok(exchange) => exchange,
             Err(error) => {
                 error!(%error, "failed to complete version exchange");
@@ -455,6 +454,60 @@ struct IoStream<T> {
     write: WriteState,
 }
 
+impl<T: AsyncRead + AsyncWrite + Unpin> IoStream<T> {
+    async fn identify(&mut self) -> Result<HandshakeBuffer, Error> {
+        // TODO: enforce timeout if this is taking too long
+        let (buf, Decoded { value: ident, next }) = loop {
+            let bytes = buffer(&mut self.stream, &mut self.read).await?;
+            match Identification::decode(bytes) {
+                Ok(Completion::Complete(decoded)) => break (bytes, decoded),
+                Ok(Completion::Incomplete(_length)) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        };
+
+        debug!(?ident, "received identification");
+        if ident.protocol != PROTOCOL {
+            warn!(?ident, "unsupported protocol version");
+            return Err(ProtoError::from(IdentificationError::UnsupportedVersion(
+                ident.protocol.to_owned(),
+            ))
+            .into());
+        }
+
+        let mut exchange = HandshakeBuffer::default();
+        let rest = next.len();
+        let v_c_len = buf.len() - rest - 2;
+        if let Some(v_c) = buf.get(..v_c_len) {
+            exchange.prefixed(v_c);
+        }
+
+        let ident = Identification {
+            protocol: PROTOCOL,
+            software: SOFTWARE,
+            comments: "",
+        };
+
+        let server_ident_bytes = self.write.encoded(&ident);
+        if let Err(error) = self.stream.write_all(server_ident_bytes).await {
+            warn!(%error, "failed to send version exchange");
+            return Err(error.into());
+        }
+
+        let v_s_len = server_ident_bytes.len() - 2;
+        if let Some(v_s) = server_ident_bytes.get(..v_s_len) {
+            exchange.prefixed(v_s);
+        }
+
+        // The ident was written to the stream directly, so drop it from the outgoing buffer
+        self.write.clear();
+
+        let last_length = buf.len() - rest;
+        self.read.set_last_length(last_length);
+        Ok(exchange)
+    }
+}
+
 pub(crate) async fn receive<'a>(
     stream: &mut (impl AsyncRead + Unpin),
     state: &'a mut ReadState,
@@ -538,66 +591,6 @@ pub(crate) fn send(
     }
 
     Pin::new(stream).poll_flush(cx).map_err(Error::from)
-}
-
-#[derive(Default)]
-struct VersionExchange(());
-
-impl VersionExchange {
-    async fn advance(
-        &self,
-        core: &mut IoStream<impl AsyncRead + AsyncWrite + Unpin>,
-    ) -> Result<HandshakeBuffer, Error> {
-        // TODO: enforce timeout if this is taking too long
-        let (buf, Decoded { value: ident, next }) = loop {
-            let bytes = buffer(&mut core.stream, &mut core.read).await?;
-            match Identification::decode(bytes) {
-                Ok(Completion::Complete(decoded)) => break (bytes, decoded),
-                Ok(Completion::Incomplete(_length)) => continue,
-                Err(error) => return Err(error.into()),
-            }
-        };
-
-        debug!(?ident, "received identification");
-        if ident.protocol != PROTOCOL {
-            warn!(?ident, "unsupported protocol version");
-            return Err(ProtoError::from(IdentificationError::UnsupportedVersion(
-                ident.protocol.to_owned(),
-            ))
-            .into());
-        }
-
-        let mut exchange = HandshakeBuffer::default();
-        let rest = next.len();
-        let v_c_len = buf.len() - rest - 2;
-        if let Some(v_c) = buf.get(..v_c_len) {
-            exchange.prefixed(v_c);
-        }
-
-        let ident = Identification {
-            protocol: PROTOCOL,
-            software: SOFTWARE,
-            comments: "",
-        };
-
-        let server_ident_bytes = core.write.encoded(&ident);
-        if let Err(error) = core.stream.write_all(server_ident_bytes).await {
-            warn!(%error, "failed to send version exchange");
-            return Err(error.into());
-        }
-
-        let v_s_len = server_ident_bytes.len() - 2;
-        if let Some(v_s) = server_ident_bytes.get(..v_s_len) {
-            exchange.prefixed(v_s);
-        }
-
-        // The ident was written to the stream directly, so drop it from the outgoing buffer
-        core.write.clear();
-
-        let last_length = buf.len() - rest;
-        core.read.set_last_length(last_length);
-        Ok(exchange)
-    }
 }
 
 pub(crate) async fn buffer<'a>(
