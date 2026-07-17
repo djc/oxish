@@ -208,37 +208,19 @@ impl Encode for u32 {
 
 impl<'a, const N: usize> Decode<'a> for [u8; N] {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
-        let Some(inner) = bytes.get(..N) else {
-            return Err(ProtoError::Incomplete(Some(N - bytes.len())));
-        };
-
-        let Some(next) = bytes.get(N..) else {
-            return Err(ProtoError::Unreachable(
-                "unable to extract rest after fixed-length slice",
-            ));
-        };
-
-        let Ok(value) = <[u8; N]>::try_from(inner) else {
-            return Err(ProtoError::Unreachable(
-                "fixed-length slice converts to array",
-            ));
-        };
-
-        Ok(Decoded { value, next })
+        match bytes.split_first_chunk::<N>() {
+            Some((&value, next)) => Ok(Decoded { value, next }),
+            None => Err(ProtoError::Incomplete(Some(N - bytes.len()))),
+        }
     }
 }
 
 impl<'a> Decode<'a> for u8 {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
-        let Some(&inner) = bytes.first() else {
-            return Err(ProtoError::Incomplete(Some(1)));
-        };
-
-        let Some(next) = bytes.get(1..) else {
-            return Err(ProtoError::Unreachable("unable to extract rest after u8"));
-        };
-
-        Ok(Decoded { value: inner, next })
+        match bytes.split_first() {
+            Some((&value, next)) => Ok(Decoded { value, next }),
+            None => Err(ProtoError::Incomplete(Some(1))),
+        }
     }
 }
 
