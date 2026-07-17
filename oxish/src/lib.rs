@@ -11,8 +11,8 @@ use proto::{
     PROTOCOL,
 };
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tracing::{debug, error, info, instrument, warn};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 mod authentication;
 use authentication::{Auth, AuthorizedKey, User};
@@ -458,7 +458,7 @@ pub(crate) async fn receive<'a>(
             }
             Ok(Completion::Incomplete(_amount))
             | Err(Error::Proto(ProtoError::Incomplete(_amount))) => {
-                if let Err(error) = state.buffer(stream).await {
+                if let Err(error) = buffer(stream, state).await {
                     error!(%error, "failed to buffer from stream");
                     return Err(());
                 }
@@ -496,7 +496,7 @@ impl VersionExchange {
     ) -> Result<KeyExchange, Error> {
         // TODO: enforce timeout if this is taking too long
         let (buf, Decoded { value: ident, next }) = loop {
-            let bytes = conn.read.buffer(&mut conn.stream).await?;
+            let bytes = buffer(&mut conn.stream, &mut conn.read).await?;
             match Identification::decode(bytes) {
                 Ok(Completion::Complete(decoded)) => break (bytes, decoded),
                 Ok(Completion::Incomplete(_length)) => continue,
@@ -542,6 +542,21 @@ impl VersionExchange {
         let last_length = buf.len() - rest;
         conn.read.set_last_length(last_length);
         Ok(KeyExchange::default())
+    }
+}
+
+pub(crate) async fn buffer<'a>(
+    stream: &mut (impl AsyncRead + Unpin),
+    state: &'a mut ReadState,
+) -> Result<&'a [u8], Error> {
+    let read = stream.read_buf(&mut state.buf).await?;
+    trace!(read, "read from stream");
+    match read {
+        0 => Err(Error::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "EOF",
+        ))),
+        _ => Ok(&state.buf),
     }
 }
 
