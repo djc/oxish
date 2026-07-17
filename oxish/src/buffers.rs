@@ -1,15 +1,10 @@
-use core::{
-    iter,
-    pin::Pin,
-    task::{ready, Context, Poll},
-};
+use core::iter;
 
 use proto::{
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
     ProtoError,
 };
-use tokio::io::AsyncWrite;
 
 use crate::Error;
 
@@ -273,21 +268,12 @@ impl WriteState {
         Ok(())
     }
 
-    pub(crate) fn poll_write_to(
-        &mut self,
-        cx: &mut Context<'_>,
-        stream: &mut (impl AsyncWrite + Unpin),
-    ) -> Poll<Result<(), Error>> {
-        self.written(ready!(Pin::new(stream).poll_write(cx, self.buffered()))?);
-        Poll::Ready(Ok(()))
-    }
-
     pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
         payload.encode(&mut self.buf);
         &self.buf
     }
 
-    fn written(&mut self, bytes: usize) {
+    pub(crate) fn written(&mut self, bytes: usize) {
         self.written += bytes;
         if self.written == self.buf.len() {
             self.buf.clear();
@@ -307,7 +293,7 @@ impl WriteState {
         self.sequence_number = 0;
     }
 
-    fn buffered(&self) -> &[u8] {
+    pub(crate) fn buffered(&self) -> &[u8] {
         &self.buf[self.written..]
     }
 }
