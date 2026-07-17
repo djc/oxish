@@ -53,8 +53,8 @@ impl ReadState {
                 }
             };
 
-            if packet_length.inner > 64 * 1024 {
-                error!(packet_length = packet_length.inner, "packet too large");
+            if packet_length.0 > 64 * 1024 {
+                error!(packet_length = packet_length.0, "packet too large");
                 return Err(());
             }
 
@@ -91,7 +91,7 @@ impl ReadState {
             assert!(next.is_empty());
 
             let tag_len = opener.tag_len();
-            let end = 4 + packet_length.inner as usize;
+            let end = 4 + packet_length.0 as usize;
             let Some((length_data, rest)) = self.buf.split_at_mut_checked(end) else {
                 return Ok(Completion::Incomplete(Some(end + tag_len - self.buf.len())));
             };
@@ -112,9 +112,9 @@ impl ReadState {
                 next,
             } = PacketLength::decode(&self.buf)?;
 
-            if next.len() < packet_length.inner as usize {
+            if next.len() < packet_length.0 as usize {
                 return Ok(Completion::Incomplete(Some(
-                    packet_length.inner as usize - next.len(),
+                    packet_length.0 as usize - next.len(),
                 )));
             }
 
@@ -125,7 +125,7 @@ impl ReadState {
         // this async function is cancel-safe
         let sequence_number = self.sequence_number;
         self.sequence_number = self.sequence_number.wrapping_add(1);
-        self.last_length = 4 + packet_length.inner as usize + tag_len;
+        self.last_length = 4 + packet_length.0 as usize + tag_len;
         Ok(Completion::Complete((sequence_number, packet_length)))
     }
 
@@ -137,9 +137,9 @@ impl ReadState {
         let Decoded {
             value: padding_length,
             next,
-        } = PaddingLength::decode(&self.buf[4..4 + packet_length.inner as usize])?;
+        } = PaddingLength::decode(&self.buf[4..4 + packet_length.0 as usize])?;
 
-        let payload_len = (packet_length.inner - 1 - padding_length.inner as u32) as usize;
+        let payload_len = (packet_length.0 - 1 - padding_length.0 as u32) as usize;
         let Some(payload) = next.get(..payload_len) else {
             return Err(ProtoError::Incomplete(Some(payload_len - next.len())).into());
         };
@@ -158,9 +158,9 @@ impl ReadState {
             );
         };
 
-        let Some(_) = next.get(..padding_length.inner as usize) else {
+        let Some(_) = next.get(..padding_length.0 as usize) else {
             return Err(
-                ProtoError::Incomplete(Some(padding_length.inner as usize - next.len())).into(),
+                ProtoError::Incomplete(Some(padding_length.0 as usize - next.len())).into(),
             );
         };
 
