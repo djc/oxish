@@ -501,6 +501,10 @@ pub enum ProtoError {
     Crypto(#[from] CryptoError),
     #[error("failed to parse identification: {0}")]
     Identification(#[from] IdentificationError),
+    /// The input was too short to decode a complete message
+    ///
+    /// The payload, if known, is the number of additional bytes needed beyond
+    /// the end of the current input (i.e. `required - available`).
     #[error("incomplete message: {0:?}")]
     Incomplete(Option<usize>),
     #[error("invalid packet: {0}")]

@@ -226,6 +226,10 @@ impl<'a> Decode<'a> for u8 {
 
 pub enum Completion<T> {
     Complete(T),
+    /// Not enough input was available to produce a value
+    ///
+    /// The payload, if known, is the number of additional bytes needed beyond
+    /// the end of the current input (as in `required - available`).
     Incomplete(Option<usize>),
 }
 
