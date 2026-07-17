@@ -17,10 +17,8 @@ use crate::{
 };
 
 pub struct EcdhKeyExchange {
-    /// The current session id or `None` if this is the initial key exchange.
-    pub session_id: Option<Digest>,
     /// The negotiated key exchange algorithm, which also determines the hash.
-    pub key_exchange: KeyExchangeAlgorithm<'static>,
+    pub algorithm: KeyExchangeAlgorithm<'static>,
 }
 
 impl EcdhKeyExchange {
@@ -45,7 +43,7 @@ impl EcdhKeyExchange {
 
         exchange.prefixed(ecdh_key_exchange_init.client_ephemeral_public_key);
 
-        let key_exchange = provider.key_exchange(&self.key_exchange)?;
+        let key_exchange = provider.key_exchange(&self.algorithm)?;
         let kx = key_exchange.start()?;
         let completed = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key)?;
 
@@ -71,17 +69,16 @@ impl EcdhKeyExchange {
         };
 
         // The first exchange hash is used as session id.
-        let session_id = self.session_id.unwrap_or(exchange_hash);
         let derivation = KeyDerivation {
-            hash: provider.hash(&self.key_exchange)?,
+            hash: provider.hash(&self.algorithm)?,
             shared_secret,
             exchange_hash,
-            session_id,
+            session_id: exchange_hash,
         };
 
         Ok((
             key_exchange_reply,
-            session_id,
+            exchange_hash,
             KeySourceSet {
                 client_to_server: KeySourceSide::client_to_server(&derivation),
                 server_to_client: KeySourceSide::server_to_client(&derivation),
