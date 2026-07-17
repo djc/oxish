@@ -1,4 +1,4 @@
-use core::str;
+use core::{fmt, str};
 use std::borrow::Cow;
 
 use thiserror::Error;
@@ -531,6 +531,14 @@ pub enum IdentificationError {
     TooLong,
     #[error("Unsupported protocol version")]
     UnsupportedVersion(String),
+}
+
+pub struct Pretty<T>(pub T);
+
+impl<T: fmt::Debug> fmt::Display for Pretty<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#?}", self.0)
+    }
 }
 
 pub const PROTOCOL: &str = "2.0";
