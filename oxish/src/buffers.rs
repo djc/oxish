@@ -3,22 +3,21 @@ use core::{
     pin::Pin,
     task::{ready, Context, Poll},
 };
-use std::io;
 
 use proto::{
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
     ProtoError,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tracing::{error, trace};
+use tokio::io::AsyncWrite;
+use tracing::error;
 
 use crate::Error;
 
 /// The reader and decryption state for an SSH connection
 pub(crate) struct ReadState {
     /// Buffer for incoming data from the transport stream
-    buf: Vec<u8>,
+    pub(crate) buf: Vec<u8>,
     /// Full length of the last decoded packet, including packet length and tag
     ///
     /// Set after decoding and decrypting a packet successfully in `poll_packet()`; reduced at
@@ -131,21 +130,6 @@ impl ReadState {
             message_type,
             payload,
         })
-    }
-
-    pub(crate) async fn buffer<'a>(
-        &'a mut self,
-        stream: &mut (impl AsyncRead + Unpin),
-    ) -> Result<&'a [u8], Error> {
-        let read = stream.read_buf(&mut self.buf).await?;
-        trace!(read, "read from stream");
-        match read {
-            0 => Err(Error::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "EOF",
-            ))),
-            _ => Ok(&self.buf),
-        }
     }
 
     pub(crate) fn set_last_length(&mut self, len: usize) {
