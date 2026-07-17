@@ -38,7 +38,8 @@ impl ReadState {
                 Ok(Completion::Complete((sequence_number, packet_length))) => {
                     (sequence_number, packet_length)
                 }
-                Ok(Completion::Incomplete(_amount)) => {
+                Ok(Completion::Incomplete(_amount))
+                | Err(Error::Proto(ProtoError::Incomplete(_amount))) => {
                     if let Err(error) = self.buffer(stream).await {
                         error!(%error, "failed to buffer from stream");
                         return Err(());
@@ -78,7 +79,7 @@ impl ReadState {
         let (packet_length, tag_len) = if let Some(opener) = &mut self.opener {
             // The packet length is transmitted in cleartext (authenticated as AAD).
             let Some((length, _)) = self.buf.split_first_chunk() else {
-                return Ok(Completion::Incomplete(Some(4)));
+                return Ok(Completion::Incomplete(Some(4 - self.buf.len())));
             };
 
             let length_bytes = opener.decrypt_packet_length(self.sequence_number, *length);
@@ -91,11 +92,11 @@ impl ReadState {
             let tag_len = opener.tag_len();
             let end = 4 + packet_length.inner as usize;
             let Some((length_data, rest)) = self.buf.split_at_mut_checked(end) else {
-                return Ok(Completion::Incomplete(Some(end + tag_len)));
+                return Ok(Completion::Incomplete(Some(end + tag_len - self.buf.len())));
             };
 
             let Some(tag) = rest.get(..tag_len) else {
-                return Ok(Completion::Incomplete(Some(end + tag_len)));
+                return Ok(Completion::Incomplete(Some(tag_len - rest.len())));
             };
 
             // Verify and decrypt the packet in place in `buf`. `open_in_place` authenticates
@@ -108,17 +109,11 @@ impl ReadState {
             let Decoded {
                 value: packet_length,
                 next,
-            } = match PacketLength::decode(&self.buf) {
-                Ok(decoded) => decoded,
-                Err(ProtoError::Incomplete(Some(amount))) => {
-                    return Ok(Completion::Incomplete(Some(amount)));
-                }
-                Err(error) => return Err(error.into()),
-            };
+            } = PacketLength::decode(&self.buf)?;
 
             if next.len() < packet_length.inner as usize {
                 return Ok(Completion::Incomplete(Some(
-                    4 + packet_length.inner as usize,
+                    packet_length.inner as usize - next.len(),
                 )));
             }
 
