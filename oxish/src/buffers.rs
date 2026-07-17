@@ -7,7 +7,8 @@ use std::io;
 
 use proto::{
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
-    Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError,
+    Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
+    ProtoError,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::{error, trace};
@@ -392,43 +393,5 @@ impl Encoder<'_> {
             .map_err(|error| {
                 error!(%error, "failed to write queued packets to stream");
             })
-    }
-}
-
-#[derive(Debug)]
-struct PacketLength {
-    inner: u32,
-}
-
-impl Decode<'_> for PacketLength {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
-        let Decoded { value, next } = u32::decode(bytes)?;
-        if value > 256 * 1024 {
-            return Err(ProtoError::InvalidPacket("packet too large"));
-        }
-
-        Ok(Decoded {
-            value: Self { inner: value },
-            next,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct PaddingLength {
-    inner: u8,
-}
-
-impl Decode<'_> for PaddingLength {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
-        let Decoded { value, next } = u8::decode(bytes)?;
-        if value < 4 {
-            return Err(ProtoError::InvalidPacket("padding too short"));
-        }
-
-        Ok(Decoded {
-            value: Self { inner: value },
-            next,
-        })
     }
 }
