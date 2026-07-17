@@ -278,19 +278,21 @@ impl WriteState {
         cx: &mut Context<'_>,
         stream: &mut (impl AsyncWrite + Unpin),
     ) -> Poll<Result<(), Error>> {
-        self.written += ready!(Pin::new(stream).poll_write(cx, &self.buf[self.written..]))?;
-
-        if self.written == self.buf.len() {
-            self.buf.clear();
-            self.written = 0;
-        }
-
+        self.written(ready!(Pin::new(stream).poll_write(cx, self.buffered()))?);
         Poll::Ready(Ok(()))
     }
 
     pub(crate) fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
         payload.encode(&mut self.buf);
         &self.buf
+    }
+
+    fn written(&mut self, bytes: usize) {
+        self.written += bytes;
+        if self.written == self.buf.len() {
+            self.buf.clear();
+            self.written = 0;
+        }
     }
 
     /// Clear the outgoing buffer after writing its contents to the stream directly
@@ -303,5 +305,9 @@ impl WriteState {
     /// As required by strict key exchange after sending `SSH_MSG_NEWKEYS`.
     pub(crate) fn reset_sequence_number(&mut self) {
         self.sequence_number = 0;
+    }
+
+    fn buffered(&self) -> &[u8] {
+        &self.buf[self.written..]
     }
 }
