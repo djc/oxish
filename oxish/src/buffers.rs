@@ -6,8 +6,6 @@ use proto::{
     ProtoError,
 };
 
-use crate::Error;
-
 /// The reader and decryption state for an SSH connection
 pub(crate) struct ReadState {
     /// Buffer for incoming data from the transport stream
@@ -24,7 +22,7 @@ pub(crate) struct ReadState {
 
 impl ReadState {
     // This and decode_packet are split because of a borrowck limitation
-    pub(crate) fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, Error> {
+    pub(crate) fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, ProtoError> {
         // Compact the internal buffer
         if self.last_length > 0 {
             self.buf.copy_within(self.last_length.., 0);
@@ -88,7 +86,7 @@ impl ReadState {
         &'a self,
         sequence_number: u32,
         packet_length: PacketLength,
-    ) -> Result<IncomingPacket<'a>, Error> {
+    ) -> Result<IncomingPacket<'a>, ProtoError> {
         let Decoded {
             value: padding_length,
             next,
@@ -96,7 +94,7 @@ impl ReadState {
 
         let payload_len = (packet_length.0 - 1 - padding_length.0 as u32) as usize;
         let Some(payload) = next.get(..payload_len) else {
-            return Err(ProtoError::Incomplete(Some(payload_len - next.len())).into());
+            return Err(ProtoError::Incomplete(Some(payload_len - next.len())));
         };
 
         let Decoded {
@@ -108,15 +106,15 @@ impl ReadState {
         })?;
 
         let Some(next) = next.get(payload_len..) else {
-            return Err(
-                ProtoError::Unreachable("unable to extract rest after fixed-length slice").into(),
-            );
+            return Err(ProtoError::Unreachable(
+                "unable to extract rest after fixed-length slice",
+            ));
         };
 
         let Some(_) = next.get(..padding_length.0 as usize) else {
-            return Err(
-                ProtoError::Incomplete(Some(padding_length.0 as usize - next.len())).into(),
-            );
+            return Err(ProtoError::Incomplete(Some(
+                padding_length.0 as usize - next.len(),
+            )));
         };
 
         Ok(IncomingPacket {
@@ -179,7 +177,7 @@ impl WriteState {
         &mut self,
         payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ProtoError> {
         let start = self.buf.len();
         self.buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
         self.buf.push(0); // padding_length
@@ -224,7 +222,7 @@ impl WriteState {
         self.buf.extend(iter::repeat_n(0, padding_len)); // padding
         if let Some(padding) = self.buf.get_mut(padding_start..) {
             if self.secure_random.fill(padding).is_err() {
-                return Err(ProtoError::Unreachable("failed to get random padding").into());
+                return Err(ProtoError::Unreachable("failed to get random padding"));
             }
         }
 
@@ -233,18 +231,18 @@ impl WriteState {
         }
 
         let Some(packet) = self.buf.get_mut(start..) else {
-            return Err(ProtoError::Unreachable("unable to reslice packet").into());
+            return Err(ProtoError::Unreachable("unable to reslice packet"));
         };
 
         let Some((packet_length_dst, rest)) = packet.split_first_chunk_mut::<4>() else {
-            return Err(ProtoError::Unreachable("unable to split packet length").into());
+            return Err(ProtoError::Unreachable("unable to split packet length"));
         };
 
         // packet_length covers padding_length (1 byte), payload and padding
         *packet_length_dst = ((1 + payload_len + padding_len) as u32).to_be_bytes();
 
         let Some((padding_length_dst, padded_payload)) = rest.split_first_chunk_mut::<1>() else {
-            return Err(ProtoError::Unreachable("unable to split padding length").into());
+            return Err(ProtoError::Unreachable("unable to split padding length"));
         };
 
         padding_length_dst[0] = padding_len as u8;
@@ -258,7 +256,7 @@ impl WriteState {
         if let Some(sealer) = &mut self.sealer {
             let Some((body, tag)) = packet.split_at_mut_checked(5 + payload_len + padding_len)
             else {
-                return Err(ProtoError::Unreachable("unable to split tag from packet").into());
+                return Err(ProtoError::Unreachable("unable to split tag from packet"));
             };
 
             sealer.seal_in_place(self.sequence_number, body, tag)?;
