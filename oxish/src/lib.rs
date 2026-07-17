@@ -1,5 +1,5 @@
 use core::{
-    fmt, future,
+    future,
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
@@ -11,7 +11,7 @@ use proto::{
     Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchange, EcdhKeyExchangeInit,
     Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
     IdentificationError, IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, Method,
-    MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ReadState,
+    MethodName, NewKeys, OutgoingNameList, Pretty, ProtoError, PublicKeyAlgorithm, ReadState,
     ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
     UserAuthRequest, WriteState, PROTOCOL,
 };
@@ -620,14 +620,6 @@ enum Error {
 impl From<CryptoError> for Error {
     fn from(error: CryptoError) -> Self {
         Self::Proto(ProtoError::Crypto(error))
-    }
-}
-
-struct Pretty<T>(T);
-
-impl<T: fmt::Debug> fmt::Display for Pretty<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#?}", self.0)
     }
 }
 
