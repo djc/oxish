@@ -1,5 +1,5 @@
 use core::{
-    future, iter,
+    iter,
     pin::Pin,
     task::{ready, Context, Poll},
 };
@@ -10,7 +10,6 @@ use proto::{
     ProtoError,
 };
 use tokio::io::AsyncWrite;
-use tracing::error;
 
 use crate::Error;
 
@@ -304,40 +303,5 @@ impl WriteState {
     /// As required by strict key exchange after sending `SSH_MSG_NEWKEYS`.
     pub(crate) fn reset_sequence_number(&mut self) {
         self.sequence_number = 0;
-    }
-}
-
-pub(crate) struct Encoder<'a> {
-    write: &'a mut WriteState,
-    pub(crate) buffered: bool,
-}
-
-impl Encoder<'_> {
-    pub(crate) fn new(write: &mut WriteState) -> Encoder<'_> {
-        Encoder {
-            write,
-            buffered: false,
-        }
-    }
-
-    pub(crate) fn enqueue(&mut self, payload: &impl Encode) -> Result<(), Error> {
-        self.buffered = true;
-        self.write
-            .handle_packet(payload, None)
-            .inspect_err(|error| {
-                error!(%error, ?payload, "failed to encode packet");
-            })
-    }
-
-    pub(crate) async fn flush(self, stream: &mut (impl AsyncWrite + Unpin)) -> Result<(), ()> {
-        if !self.buffered {
-            return Ok(());
-        }
-
-        future::poll_fn(|cx| self.write.poll_write_to(cx, stream))
-            .await
-            .map_err(|error| {
-                error!(%error, "failed to write queued packets to stream");
-            })
     }
 }
