@@ -5,8 +5,8 @@ use proto::{
     crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
     Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchange, EcdhKeyExchangeInit,
     Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
-    IdentificationError, KeyExchange, KeyExchangeInit, KeySourceSet, MessageType, Method,
-    MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept,
+    IdentificationError, IncomingPacket, KeyExchange, KeyExchangeInit, KeySourceSet, MessageType,
+    Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept,
     ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
     PROTOCOL,
 };
@@ -80,7 +80,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Receive and send key exchange init packets
 
-        let packet = self.read.packet(&mut self.stream).await?;
+        let packet = receive(&mut self.stream, &mut self.read).await?;
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
         exchange.update(&[u8::from(packet.message_type)]);
         exchange.update(packet.payload);
@@ -129,7 +129,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Perform ECDH key exchange
 
-        let packet = self.read.packet(&mut self.stream).await?;
+        let packet = receive(&mut self.stream, &mut self.read).await?;
         let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
             Ok(key_exchange_init) => key_exchange_init,
             Err(error) => {
@@ -172,7 +172,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Handle authentication
 
-        let packet = self.read.packet(&mut self.stream).await?;
+        let packet = receive(&mut self.stream, &mut self.read).await?;
         let service_request = match ServiceRequest::try_from(packet) {
             Ok(req) => req,
             Err(error) => {
@@ -203,7 +203,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let mut cached_user = None::<User>;
         let _user = loop {
-            let packet = self.read.packet(&mut self.stream).await?;
+            let packet = receive(&mut self.stream, &mut self.read).await?;
             let user_auth_request = match UserAuthRequest::try_from(packet) {
                 Ok(req) => req,
                 Err(error) => {
@@ -312,7 +312,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Main loop for handling channel messages
         loop {
             tokio::select! {
-                result = self.read.packet(&mut self.stream) => {
+                result = receive(&mut self.stream, &mut self.read) => {
                     let packet = result?;
                     if packet.message_type == MessageType::Disconnect {
                         match Disconnect::try_from(packet) {
@@ -372,7 +372,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 
     async fn update_keys(&mut self, keys: KeySourceSet, strict: bool) -> Result<(), ()> {
-        let packet = self.read.packet(&mut self.stream).await?;
+        let packet = receive(&mut self.stream, &mut self.read).await?;
         if let Err(error) = NewKeys::try_from(packet) {
             error!(%error, "failed to read new keys packet");
             return Err(());
@@ -444,6 +444,44 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         Ok(())
+    }
+}
+
+pub(crate) async fn receive<'a>(
+    stream: &mut (impl AsyncRead + Unpin),
+    state: &'a mut ReadState,
+) -> Result<IncomingPacket<'a>, ()> {
+    loop {
+        let (sequence_number, packet_length) = match state.poll_packet() {
+            Ok(Completion::Complete((sequence_number, packet_length))) => {
+                (sequence_number, packet_length)
+            }
+            Ok(Completion::Incomplete(_amount))
+            | Err(Error::Proto(ProtoError::Incomplete(_amount))) => {
+                if let Err(error) = state.buffer(stream).await {
+                    error!(%error, "failed to buffer from stream");
+                    return Err(());
+                }
+                continue;
+            }
+            Err(error) => {
+                error!(%error, "failed to decrypt packet");
+                return Err(());
+            }
+        };
+
+        if packet_length.0 > 64 * 1024 {
+            error!(packet_length = packet_length.0, "packet too large");
+            return Err(());
+        }
+
+        match state.decode_packet(sequence_number, packet_length) {
+            Ok(packet) => return Ok(packet),
+            Err(error) => {
+                error!(%error, "failed to decode packet");
+                return Err(());
+            }
+        }
     }
 }
 

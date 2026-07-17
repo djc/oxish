@@ -30,46 +30,8 @@ pub(crate) struct ReadState {
 }
 
 impl ReadState {
-    pub(crate) async fn packet<'a>(
-        &'a mut self,
-        stream: &mut (impl AsyncRead + Unpin),
-    ) -> Result<IncomingPacket<'a>, ()> {
-        loop {
-            let (sequence_number, packet_length) = match self.poll_packet() {
-                Ok(Completion::Complete((sequence_number, packet_length))) => {
-                    (sequence_number, packet_length)
-                }
-                Ok(Completion::Incomplete(_amount))
-                | Err(Error::Proto(ProtoError::Incomplete(_amount))) => {
-                    if let Err(error) = self.buffer(stream).await {
-                        error!(%error, "failed to buffer from stream");
-                        return Err(());
-                    }
-                    continue;
-                }
-                Err(error) => {
-                    error!(%error, "failed to decrypt packet");
-                    return Err(());
-                }
-            };
-
-            if packet_length.0 > 64 * 1024 {
-                error!(packet_length = packet_length.0, "packet too large");
-                return Err(());
-            }
-
-            match self.decode_packet(sequence_number, packet_length) {
-                Ok(packet) => return Ok(packet),
-                Err(error) => {
-                    error!(%error, "failed to decode packet");
-                    return Err(());
-                }
-            }
-        }
-    }
-
     // This and decode_packet are split because of a borrowck limitation
-    fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, Error> {
+    pub(crate) fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, Error> {
         // Compact the internal buffer
         if self.last_length > 0 {
             self.buf.copy_within(self.last_length.., 0);
@@ -129,7 +91,7 @@ impl ReadState {
         Ok(Completion::Complete((sequence_number, packet_length)))
     }
 
-    fn decode_packet<'a>(
+    pub(crate) fn decode_packet<'a>(
         &'a self,
         sequence_number: u32,
         packet_length: PacketLength,
