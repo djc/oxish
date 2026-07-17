@@ -88,12 +88,23 @@ impl ReadState {
         sequence_number: u32,
         packet_length: PacketLength,
     ) -> Result<IncomingPacket<'a>, ProtoError> {
+        let Some((_, next)) = self.buf.split_first_chunk::<4>() else {
+            return Err(ProtoError::Incomplete(Some(4 - self.buf.len())));
+        };
+
         let Decoded {
             value: padding_length,
             next,
-        } = PaddingLength::decode(&self.buf[4..4 + packet_length.0 as usize])?;
+        } = PaddingLength::decode(next)?;
 
-        let payload_len = (packet_length.0 - 1 - padding_length.0 as u32) as usize;
+        let payload_len = packet_length
+            .0
+            .checked_sub(1) // padding length
+            .and_then(|len| len.checked_sub(padding_length.0 as u32)) // padding
+            .ok_or(ProtoError::InvalidPacket(
+                "padding length exceeds packet length",
+            ))? as usize;
+
         let Some(payload) = next.get(..payload_len) else {
             return Err(ProtoError::Incomplete(Some(payload_len - next.len())));
         };
