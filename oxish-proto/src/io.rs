@@ -1,4 +1,5 @@
 use core::iter;
+use std::io;
 
 use crate::{
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
@@ -271,12 +272,22 @@ impl WriteState {
         &self.buf
     }
 
-    pub fn written(&mut self, bytes: usize) {
-        self.written += bytes;
+    pub fn written(&mut self, result: Result<usize, io::Error>) -> Result<(), io::Error> {
+        let written = result?;
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "failed to write buffered data",
+            ));
+        }
+
+        self.written += written;
         if self.written == self.buf.len() {
             self.buf.clear();
             self.written = 0;
         }
+
+        Ok(())
     }
 
     /// Clear the outgoing buffer after writing its contents to the stream directly
