@@ -218,11 +218,6 @@ impl GcmState {
 /// The `mlkem768x25519-sha256` PQ-hybrid key exchange
 struct Mlkem768X25519Kx;
 
-impl Mlkem768X25519KeyExchange {
-    /// Length of an ML-KEM-768 encapsulation key
-    const MLKEM768_ENCAPS_KEY_LEN: usize = 1184;
-}
-
 impl KeyExchange for Mlkem768X25519Kx {
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, CryptoError> {
         Ok(Box::new(Mlkem768X25519KeyExchange))
@@ -234,15 +229,10 @@ struct Mlkem768X25519KeyExchange;
 impl ActiveKeyExchange for Mlkem768X25519KeyExchange {
     fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<AgreedKey, CryptoError> {
         // `C_INIT` = ML-KEM-768 encapsulation key || X25519 public key
-        let Some((encaps_key, peer_x25519)) =
-            peer_public_key.split_at_checked(Self::MLKEM768_ENCAPS_KEY_LEN)
-        else {
+        let Some((encaps_key, peer_x25519)) = peer_public_key.split_first_chunk() else {
             return Err(CryptoError::InvalidLength);
         };
 
-        let Ok(encaps_key) = <&[u8; Self::MLKEM768_ENCAPS_KEY_LEN]>::try_from(encaps_key) else {
-            return Err(CryptoError::InvalidLength);
-        };
         let encaps_key = mlkem768::EncapKey::from_bytes(encaps_key)
             .map_err(|_| CryptoError::KeyAgreementFailed)?;
         let (pq_secret, ciphertext) = encaps_key

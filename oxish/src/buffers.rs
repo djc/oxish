@@ -105,19 +105,21 @@ impl ReadState {
 
             (packet_length, tag_len)
         } else {
-            let Some((length, _)) = self.buf.split_at_checked(4) else {
-                return Ok(Completion::Incomplete(Some(4)));
-            };
-
             let Decoded {
                 value: packet_length,
                 next,
-            } = PacketLength::decode(length)?;
-            assert!(next.is_empty());
+            } = match PacketLength::decode(&self.buf) {
+                Ok(decoded) => decoded,
+                Err(ProtoError::Incomplete(Some(amount))) => {
+                    return Ok(Completion::Incomplete(Some(amount)));
+                }
+                Err(error) => return Err(error.into()),
+            };
 
-            let needed = 4 + packet_length.inner as usize;
-            if self.buf.len() < needed {
-                return Ok(Completion::Incomplete(Some(needed)));
+            if next.len() < packet_length.inner as usize {
+                return Ok(Completion::Incomplete(Some(
+                    4 + packet_length.inner as usize,
+                )));
             }
 
             (packet_length, 0)
