@@ -71,11 +71,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.io.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
-        let mut exchange = HandshakeBuffer::default();
         let state = VersionExchange::default();
-        if let Err(error) = state.advance(&mut exchange, &mut self.io).await {
-            error!(%error, "failed to complete version exchange");
-            return Err(());
+        let mut exchange = match state.advance(&mut self.io).await {
+            Ok(exchange) => exchange,
+            Err(error) => {
+                error!(%error, "failed to complete version exchange");
+                return Err(());
+            }
         };
 
         // Receive and send key exchange init packets
@@ -544,9 +546,8 @@ struct VersionExchange(());
 impl VersionExchange {
     async fn advance(
         &self,
-        exchange: &mut HandshakeBuffer,
         core: &mut IoStream<impl AsyncRead + AsyncWrite + Unpin>,
-    ) -> Result<(), Error> {
+    ) -> Result<HandshakeBuffer, Error> {
         // TODO: enforce timeout if this is taking too long
         let (buf, Decoded { value: ident, next }) = loop {
             let bytes = buffer(&mut core.stream, &mut core.read).await?;
@@ -566,6 +567,7 @@ impl VersionExchange {
             .into());
         }
 
+        let mut exchange = HandshakeBuffer::default();
         let rest = next.len();
         let v_c_len = buf.len() - rest - 2;
         if let Some(v_c) = buf.get(..v_c_len) {
@@ -594,7 +596,7 @@ impl VersionExchange {
 
         let last_length = buf.len() - rest;
         core.read.set_last_length(last_length);
-        Ok(())
+        Ok(exchange)
     }
 }
 
