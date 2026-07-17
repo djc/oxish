@@ -10,8 +10,8 @@ use proto::{
     crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
     Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchange, EcdhKeyExchangeInit,
     Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
-    IdentificationError, IncomingPacket, KeyExchange, KeyExchangeInit, KeySourceSet, MessageType,
-    Method, MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ReadState,
+    IdentificationError, IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, Method,
+    MethodName, NewKeys, OutgoingNameList, ProtoError, PublicKeyAlgorithm, ReadState,
     ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
     UserAuthRequest, WriteState, PROTOCOL,
 };
@@ -73,12 +73,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     pub async fn run(mut self) -> Result<(), ()> {
         let mut exchange = HandshakeBuffer::default();
         let state = VersionExchange::default();
-        let state = match state.advance(&mut exchange, &mut self.io).await {
-            Ok(state) => state,
-            Err(error) => {
-                error!(%error, "failed to complete version exchange");
-                return Err(());
-            }
+        if let Err(error) = state.advance(&mut exchange, &mut self.io).await {
+            error!(%error, "failed to complete version exchange");
+            return Err(());
         };
 
         // Receive and send key exchange init packets
@@ -100,7 +97,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let strict_key_exchange =
             peer_key_exchange_init.has_extension(ExtensionId::StrictKexClient);
 
-        let (algorithms, key_exchange_init) = match state.advance(
+        let (algorithms, key_exchange_init) = match KeyExchangeInit::new(
             peer_key_exchange_init,
             vec![self.host_key.algorithm()],
             [ExtensionId::StrictKexServer].into_iter(),
@@ -549,7 +546,7 @@ impl VersionExchange {
         &self,
         exchange: &mut HandshakeBuffer,
         core: &mut IoStream<impl AsyncRead + AsyncWrite + Unpin>,
-    ) -> Result<KeyExchange, Error> {
+    ) -> Result<(), Error> {
         // TODO: enforce timeout if this is taking too long
         let (buf, Decoded { value: ident, next }) = loop {
             let bytes = buffer(&mut core.stream, &mut core.read).await?;
@@ -597,7 +594,7 @@ impl VersionExchange {
 
         let last_length = buf.len() - rest;
         core.read.set_last_length(last_length);
-        Ok(KeyExchange::default())
+        Ok(())
     }
 }
 
