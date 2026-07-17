@@ -527,8 +527,13 @@ pub(crate) fn send(
     state: &mut WriteState,
     cx: &mut Context<'_>,
 ) -> Poll<Result<(), Error>> {
-    state.written(ready!(Pin::new(stream).poll_write(cx, state.buffered()))?);
-    Poll::Ready(Ok(()))
+    while !state.buffered().is_empty() {
+        state.written(ready!(
+            Pin::new(&mut *stream).poll_write(cx, state.buffered())
+        ))?;
+    }
+
+    Pin::new(stream).poll_flush(cx).map_err(Error::from)
 }
 
 #[derive(Default)]
