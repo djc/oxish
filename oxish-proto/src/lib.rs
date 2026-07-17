@@ -499,7 +499,7 @@ impl TryFrom<u32> for DisconnectReason {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq)]
 pub enum ProtoError {
     #[error("crypto error: {0}")]
     Crypto(#[from] CryptoError),
@@ -519,7 +519,7 @@ pub enum ProtoError {
     Unreachable(&'static str),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq)]
 pub enum IdentificationError {
     #[error("Invalid UTF-8")]
     InvalidUtf8,

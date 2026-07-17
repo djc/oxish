@@ -360,7 +360,7 @@ impl From<Vec<u8>> for SharedSecret {
 }
 
 /// An error returned by a cryptographic operation
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CryptoError {
     DecryptionFailed,
     EncryptionFailed,
