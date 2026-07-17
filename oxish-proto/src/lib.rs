@@ -20,8 +20,7 @@ mod io;
 pub use io::{ReadState, WriteState};
 mod key_exchange;
 pub use key_exchange::{
-    EcdhKeyExchange, EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchangeInit, KeySourceSet,
-    Negotiated,
+    EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchangeInit, KeySourceSet, Negotiated,
 };
 mod named;
 pub use named::{

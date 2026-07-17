@@ -16,77 +16,6 @@ use crate::{
     PublicKeyAlgorithm,
 };
 
-pub struct EcdhKeyExchange {
-    /// The negotiated key exchange algorithm, which also determines the hash.
-    pub algorithm: KeyExchangeAlgorithm<'static>,
-}
-
-impl EcdhKeyExchange {
-    pub fn advance(
-        self,
-        ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
-        mut exchange: HandshakeHash,
-        host_key: &dyn SigningKey,
-        provider: &dyn CryptoProvider,
-    ) -> Result<(EcdhKeyExchangeReply, Digest, KeySourceSet), CryptoError> {
-        // Write the server's public host key (`K_S`) to the exchange hash
-
-        let mut host_key_buf = Vec::with_capacity(128);
-        TaggedPublicKey {
-            algorithm: host_key.algorithm(),
-            key: Cow::Owned(host_key.public_key().to_owned()),
-        }
-        .encode(&mut host_key_buf);
-        exchange.update(&host_key_buf);
-
-        // Write the client's ephemeral public key (`Q_C`) to the exchange hash
-
-        exchange.prefixed(ecdh_key_exchange_init.client_ephemeral_public_key);
-
-        let key_exchange = provider.key_exchange(&self.algorithm)?;
-        let kx = key_exchange.start()?;
-        let completed = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key)?;
-
-        // Write the server's reply public value (`Q_S` / `S_REPLY`) to the exchange hash
-        exchange.prefixed(&completed.public_key);
-        let secret_bytes = completed.shared_secret.secret_bytes();
-        let mut shared_secret = Vec::with_capacity(secret_bytes.len() + 4);
-        secret_bytes.encode(&mut shared_secret);
-        exchange.update(&shared_secret);
-
-        let exchange_hash = exchange.finish();
-        let signature = host_key.sign(exchange_hash.as_ref());
-        let key_exchange_reply = EcdhKeyExchangeReply {
-            server_public_host_key: TaggedPublicKey {
-                algorithm: host_key.algorithm(),
-                key: Cow::Owned(host_key.public_key().to_owned()),
-            },
-            server_ephemeral_public_key: completed.public_key,
-            exchange_hash_signature: TaggedSignature {
-                algorithm: host_key.algorithm(),
-                signature,
-            },
-        };
-
-        // The first exchange hash is used as session id.
-        let derivation = KeyDerivation {
-            hash: provider.hash(&self.algorithm)?,
-            shared_secret,
-            exchange_hash,
-            session_id: exchange_hash,
-        };
-
-        Ok((
-            key_exchange_reply,
-            exchange_hash,
-            KeySourceSet {
-                client_to_server: KeySourceSide::client_to_server(&derivation),
-                server_to_client: KeySourceSide::server_to_client(&derivation),
-            },
-        ))
-    }
-}
-
 #[derive(Debug)]
 pub struct KeyExchangeInit<'a> {
     cookie: [u8; 16],
@@ -303,6 +232,72 @@ pub struct EcdhKeyExchangeReply {
     server_public_host_key: TaggedPublicKey<'static>,
     server_ephemeral_public_key: Vec<u8>,
     exchange_hash_signature: TaggedSignature<'static>,
+}
+
+impl EcdhKeyExchangeReply {
+    pub fn new(
+        ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
+        negotiated: &Negotiated,
+        mut exchange: HandshakeHash,
+        host_key: &dyn SigningKey,
+        provider: &dyn CryptoProvider,
+    ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
+        // Write the server's public host key (`K_S`) to the exchange hash
+
+        let mut host_key_buf = Vec::with_capacity(128);
+        TaggedPublicKey {
+            algorithm: host_key.algorithm(),
+            key: Cow::Owned(host_key.public_key().to_owned()),
+        }
+        .encode(&mut host_key_buf);
+        exchange.update(&host_key_buf);
+
+        // Write the client's ephemeral public key (`Q_C`) to the exchange hash
+
+        exchange.prefixed(ecdh_key_exchange_init.client_ephemeral_public_key);
+
+        let key_exchange = provider.key_exchange(&negotiated.key_exchange)?;
+        let kx = key_exchange.start()?;
+        let completed = kx.complete(ecdh_key_exchange_init.client_ephemeral_public_key)?;
+
+        // Write the server's reply public value (`Q_S` / `S_REPLY`) to the exchange hash
+        exchange.prefixed(&completed.public_key);
+        let secret_bytes = completed.shared_secret.secret_bytes();
+        let mut shared_secret = Vec::with_capacity(secret_bytes.len() + 4);
+        secret_bytes.encode(&mut shared_secret);
+        exchange.update(&shared_secret);
+
+        let exchange_hash = exchange.finish();
+        let signature = host_key.sign(exchange_hash.as_ref());
+        let key_exchange_reply = Self {
+            server_public_host_key: TaggedPublicKey {
+                algorithm: host_key.algorithm(),
+                key: Cow::Owned(host_key.public_key().to_owned()),
+            },
+            server_ephemeral_public_key: completed.public_key,
+            exchange_hash_signature: TaggedSignature {
+                algorithm: host_key.algorithm(),
+                signature,
+            },
+        };
+
+        // The first exchange hash is used as session id.
+        let derivation = KeyDerivation {
+            hash: provider.hash(&negotiated.key_exchange)?,
+            shared_secret,
+            exchange_hash,
+            session_id: exchange_hash,
+        };
+
+        Ok((
+            key_exchange_reply,
+            exchange_hash,
+            KeySourceSet {
+                client_to_server: KeySourceSide::client_to_server(&derivation),
+                server_to_client: KeySourceSide::server_to_client(&derivation),
+            },
+        ))
+    }
 }
 
 impl Encode for EcdhKeyExchangeReply {
