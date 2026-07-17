@@ -5,7 +5,9 @@ use thiserror::Error;
 use tracing::{debug, warn};
 
 mod base;
-pub use base::{Completion, Decode, Decoded, Encode, IncomingPacket, MessageType};
+pub use base::{
+    Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
+};
 mod channels;
 pub use channels::{
     ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,

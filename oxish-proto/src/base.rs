@@ -150,6 +150,44 @@ impl From<MessageType> for u8 {
     }
 }
 
+#[derive(Debug)]
+pub struct PacketLength {
+    pub inner: u32,
+}
+
+impl Decode<'_> for PacketLength {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded { value, next } = u32::decode(bytes)?;
+        if value > 256 * 1024 {
+            return Err(ProtoError::InvalidPacket("packet too large"));
+        }
+
+        Ok(Decoded {
+            value: Self { inner: value },
+            next,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct PaddingLength {
+    pub inner: u8,
+}
+
+impl Decode<'_> for PaddingLength {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded { value, next } = u8::decode(bytes)?;
+        if value < 4 {
+            return Err(ProtoError::InvalidPacket("padding too short"));
+        }
+
+        Ok(Decoded {
+            value: Self { inner: value },
+            next,
+        })
+    }
+}
+
 impl<'a> Decode<'a> for &'a [u8] {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let len = u32::decode(bytes)?;
