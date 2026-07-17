@@ -1,5 +1,10 @@
-use core::{fmt, future, net::SocketAddr};
-use std::{borrow::Cow, io, str, sync::Arc};
+use core::{
+    fmt, future,
+    net::SocketAddr,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use std::{borrow::Cow, io, str, sync::Arc, task::ready};
 
 use proto::{
     crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
@@ -438,7 +443,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             return Err(());
         }
 
-        let future = future::poll_fn(|cx| self.write.poll_write_to(cx, &mut self.stream));
+        let future = future::poll_fn(|cx| send(&mut self.stream, &mut self.write, cx));
         if let Err(error) = future.await {
             error!(%error, ?payload, "failed to write packet to stream");
             return Err(());
@@ -513,12 +518,21 @@ impl Encoder<'_> {
             return Ok(());
         }
 
-        future::poll_fn(|cx| self.write.poll_write_to(cx, stream))
+        future::poll_fn(|cx| send(stream, self.write, cx))
             .await
             .map_err(|error| {
                 error!(%error, "failed to write queued packets to stream");
             })
     }
+}
+
+pub(crate) fn send(
+    stream: &mut (impl AsyncWrite + Unpin),
+    state: &mut WriteState,
+    cx: &mut Context<'_>,
+) -> Poll<Result<(), Error>> {
+    state.written(ready!(Pin::new(stream).poll_write(cx, state.buffered()))?);
+    Poll::Ready(Ok(()))
 }
 
 #[derive(Default)]
