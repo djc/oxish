@@ -8,7 +8,7 @@ use std::{borrow::Cow, io, str, sync::Arc, task::ready};
 
 use proto::{
     crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
-    Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchange, EcdhKeyExchangeInit,
+    Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, EcdhKeyExchangeReply,
     Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
     IdentificationError, IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, Method,
     MethodName, NewKeys, OutgoingNameList, Pretty, ProtoError, PublicKeyAlgorithm, ReadState,
@@ -107,10 +107,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        let state = EcdhKeyExchange {
-            algorithm: negotiated.key_exchange,
-        };
-
         let hash = match self.provider.hash(&negotiated.key_exchange) {
             Ok(hash) => hash,
             Err(error) => {
@@ -134,12 +130,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        let result = state.advance(
+        let result = EcdhKeyExchangeReply::new(
             ecdh_key_exchange_init,
+            &negotiated,
             exchange,
             &*self.host_key,
             &*self.provider,
         );
+
         let (key_exchange_reply, session_id, keys) = match result {
             Ok(out) => out,
             Err(error) => {
