@@ -112,8 +112,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
 
         let state = EcdhKeyExchange {
-            session_id: None,
-            key_exchange: algorithms.key_exchange,
+            algorithm: algorithms.key_exchange,
         };
 
         let hash = match self.provider.hash(&algorithms.key_exchange) {
