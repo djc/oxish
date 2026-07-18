@@ -32,14 +32,14 @@ pub trait CryptoProvider: Send + Sync {
     /// Build a decryption state from `key` and `iv`
     fn opening_key(
         &self,
-        source: KeySourceSide,
+        source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn OpeningKey>, CryptoError>;
 
     /// Build an encryption state from `key` and `iv`
     fn sealing_key(
         &self,
-        source: KeySourceSide,
+        source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn SealingKey>, CryptoError>;
 
@@ -167,7 +167,7 @@ pub struct KeySource {
 }
 
 impl KeySource {
-    pub fn derive<const N: usize>(self) -> [u8; N] {
+    pub fn derive<const N: usize>(&self) -> [u8; N] {
         let block_len = self.block_len;
         let mut key = [0; N];
 
@@ -194,6 +194,7 @@ impl KeySource {
     }
 }
 
+#[derive(Clone, Copy)]
 enum KeyInput {
     InitialIvClientToServer,
     InitialIvServerToClient,

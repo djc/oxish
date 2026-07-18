@@ -95,7 +95,7 @@ impl CryptoProvider for Provider {
 
     fn opening_key(
         &self,
-        source: KeySourceSide,
+        source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn OpeningKey>, CryptoError> {
         match algorithm {
@@ -106,7 +106,7 @@ impl CryptoProvider for Provider {
 
     fn sealing_key(
         &self,
-        source: KeySourceSide,
+        source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn SealingKey>, CryptoError> {
         match algorithm {
@@ -216,7 +216,7 @@ struct GcmState {
 }
 
 impl GcmState {
-    fn new(source: KeySourceSide) -> Self {
+    fn new(source: &KeySourceSide) -> Self {
         Self {
             key: AesGcm::new(&source.encryption_key.derive::<16>()),
             nonce: source.initial_iv.derive::<NONCE_LEN>(),

@@ -88,22 +88,26 @@ impl CryptoProvider for Provider {
 
     fn opening_key(
         &self,
-        source: KeySourceSide,
+        source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn OpeningKey>, CryptoError> {
         match algorithm {
-            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmOpener(GcmState::new(source)?))),
+            EncryptionAlgorithm::Aes128Gcm => {
+                Ok(Box::new(Aes128GcmOpener(GcmState::new(source)?)))
+            }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn sealing_key(
         &self,
-        source: KeySourceSide,
+        source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn SealingKey>, CryptoError> {
         match algorithm {
-            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmSealer(GcmState::new(source)?))),
+            EncryptionAlgorithm::Aes128Gcm => {
+                Ok(Box::new(Aes128GcmSealer(GcmState::new(source)?)))
+            }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -209,7 +213,7 @@ struct GcmState {
 }
 
 impl GcmState {
-    fn new(source: KeySourceSide) -> Result<Self, CryptoError> {
+    fn new(source: &KeySourceSide) -> Result<Self, CryptoError> {
         Ok(Self {
             key: LessSafeKey::new(
                 UnboundKey::new(&AES_128_GCM, &source.encryption_key.derive::<16>())
