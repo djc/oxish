@@ -5,14 +5,14 @@ use tracing::debug;
 
 use crate::{
     crypto::{
-        CryptoError, CryptoProvider, Digest, HandshakeHash, KeyDerivation, KeySourceSide,
-        SigningKey,
+        CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyDerivation,
+        KeySourceSide, SigningKey,
     },
     named::{
         CompressionAlgorithm, EncryptionAlgorithm, ExtensionId, IncomingNameList,
         KeyExchangeAlgorithmOrExtensionId, Language, MacAlgorithm, OutgoingNameList,
     },
-    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, MessageType, ProtoError,
+    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, MessageType, Pretty, ProtoError,
     PublicKeyAlgorithm,
 };
 
@@ -31,6 +31,31 @@ pub struct KeyExchangeInit<'a> {
     pub(crate) languages_server_to_client: Vec<Language<'a>>,
     first_kex_packet_follows: bool,
     extended: u32,
+}
+
+impl<'a> KeyExchangeInit<'a> {
+    pub fn peer(
+        packet: IncomingPacket<'a>,
+        mut exchange: HandshakeBuffer,
+        server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<(KeyExchangeInit<'static>, HandshakeHash, Negotiated), ProtoError> {
+        exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
+        exchange.update(&[u8::from(packet.message_type)]);
+        exchange.update(packet.payload);
+        let peer_key_exchange_init = KeyExchangeInit::try_from(packet)?;
+
+        debug!(key_exchange_init = %Pretty(&peer_key_exchange_init), "received key exchange init");
+        let (negotiated, key_exchange_init) = KeyExchangeInit::new(
+            peer_key_exchange_init,
+            server_host_key_algorithms,
+            [ExtensionId::StrictKexServer].into_iter(),
+            provider,
+        )?;
+
+        let hash = provider.hash(&negotiated.key_exchange)?;
+        Ok((key_exchange_init, exchange.hash(hash), negotiated))
+    }
 }
 
 impl KeyExchangeInit<'static> {

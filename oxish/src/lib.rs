@@ -9,11 +9,11 @@ use std::{borrow::Cow, io, str, sync::Arc, task::ready};
 use proto::{
     crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
     Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, EcdhKeyExchangeReply,
-    Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
-    IdentificationError, IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, Method,
-    MethodName, NewKeys, OutgoingNameList, Pretty, ProtoError, PublicKeyAlgorithm, ReadState,
-    ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
-    UserAuthRequest, WriteState, PROTOCOL,
+    Encode, EncryptionAlgorithm, ExtInfo, ExtensionName, Identification, IdentificationError,
+    IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, Method, MethodName, NewKeys,
+    OutgoingNameList, Pretty, ProtoError, PublicKeyAlgorithm, ReadState, ServiceAccept,
+    ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
+    WriteState, PROTOCOL,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -71,7 +71,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.io.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
-        let mut exchange = match self.io.identify().await {
+        let exchange = match self.io.identify().await {
             Ok(exchange) => exchange,
             Err(error) => {
                 error!(%error, "failed to complete version exchange");
@@ -82,40 +82,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Receive and send key exchange init packets
 
         let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
-        exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
-        exchange.update(&[u8::from(packet.message_type)]);
-        exchange.update(packet.payload);
-        let peer_key_exchange_init = match KeyExchangeInit::try_from(packet) {
-            Ok(key_exchange_init) => key_exchange_init,
+        let (key_exchange_init, mut exchange, negotiated) = match KeyExchangeInit::peer(
+            packet,
+            exchange,
+            vec![self.host_key.algorithm()],
+            self.provider,
+        ) {
+            Ok(result) => result,
             Err(error) => {
                 error!(%error, "failed to read key exchange init");
                 return Err(());
             }
         };
 
-        debug!(key_exchange_init = %Pretty(&peer_key_exchange_init), "received key exchange init");
-        let (negotiated, key_exchange_init) = match KeyExchangeInit::new(
-            peer_key_exchange_init,
-            vec![self.host_key.algorithm()],
-            [ExtensionId::StrictKexServer].into_iter(),
-            &*self.provider,
-        ) {
-            Ok(result) => result,
-            Err(error) => {
-                error!(%error, "failed to advance key exchange");
-                return Err(());
-            }
-        };
-
-        let hash = match self.provider.hash(&negotiated.key_exchange) {
-            Ok(hash) => hash,
-            Err(error) => {
-                error!(%error, algorithm = ?negotiated.key_exchange, "failed to find hash implementation for key exchange algorithm");
-                return Err(());
-            }
-        };
-
-        let mut exchange = exchange.hash(hash);
         self.send_handshake(&key_exchange_init, Some(&mut exchange))
             .await?;
 
