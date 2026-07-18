@@ -3,6 +3,7 @@ use core::{
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 use std::{io, str, task::ready};
 
@@ -15,7 +16,10 @@ use proto::{
     crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
 };
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    time::timeout,
+};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 mod authentication;
@@ -132,8 +136,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             write: WriteState::new(provider.secure_random()),
         };
 
-        let session_id = new.exchange_keys(host_key, provider).await?;
-        Ok((new, session_id))
+        let future = new.exchange_keys(host_key, provider);
+        match timeout(Duration::from_secs(30), future).await {
+            Ok(Ok(session_id)) => Ok((new, session_id)),
+            Ok(Err(())) => Err(()),
+            Err(_) => {
+                error!("key exchange timed out");
+                Err(())
+            }
+        }
     }
 
     /// Perform the SSH handshake and key exchange, returning the session ID
@@ -264,7 +275,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 
     async fn identify(&mut self) -> Result<HandshakeBuffer, Error> {
-        // TODO: enforce timeout if this is taking too long
         let (buf, Decoded { value: ident, next }) = loop {
             let bytes = buffer(&mut self.stream, &mut self.read).await?;
             match Identification::decode(bytes) {
