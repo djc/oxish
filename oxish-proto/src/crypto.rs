@@ -167,6 +167,20 @@ impl KeySourceSide {
     }
 }
 
+impl fmt::Debug for KeySourceSide {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            algorithm,
+            initial_iv: _,
+            encryption_key: _,
+        } = self;
+
+        f.debug_struct("KeySourceSide")
+            .field("algorithm", algorithm)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct KeyLengths {
     pub key_len: usize,
     pub iv_len: usize,

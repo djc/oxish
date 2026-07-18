@@ -1,13 +1,15 @@
 use core::net::{Ipv4Addr, SocketAddr};
 use std::{
+    env,
     fs::{self, File},
     io::{self, Write},
+    path::PathBuf,
     sync::Arc,
 };
 
 use clap::Parser;
 use listenfd::ListenFd;
-use oxish::{Auth, Connection, DEFAULT_PROVIDER, Session};
+use oxish::{Auth, Connection, DEFAULT_PROVIDER, SessionState};
 use proto::{Named, PublicKeyAlgorithm};
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -44,6 +46,21 @@ async fn main() -> anyhow::Result<()> {
         Arc::new([host_key])
     };
 
+    let session_bin = match args.session_bin {
+        Some(path) => path,
+        None => {
+            let exe = env::current_exe()?;
+            let Some(dir) = exe.parent() else {
+                anyhow::bail!("cannot determine directory of current executable");
+            };
+            dir.join("oxish-session")
+        }
+    };
+
+    if !session_bin.is_file() {
+        anyhow::bail!("session binary `{}` not found", session_bin.display());
+    }
+
     let listener = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
         (Some(listener), None) => {
             listener.set_nonblocking(true)?;
@@ -68,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         };
 
         let host_keys = host_keys.clone();
+        let session_bin = session_bin.clone();
         tokio::spawn(async move {
             debug!(%addr, "accepted connection");
             if let Err(err) = stream.set_nodelay(true) {
@@ -75,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let future = Connection::accept(stream, addr, &*host_keys, provider);
-            let Ok((mut conn, session_id)) = future.await else {
+            let Ok((mut conn, session_id, keys)) = future.await else {
                 return Err(());
             };
 
@@ -86,7 +104,23 @@ async fn main() -> anyhow::Result<()> {
                 return Err(());
             };
 
-            Session::new(conn).run().await
+            let (state, stream) = SessionState::from_connection(conn, keys).map_err(|_| ())?;
+            let mut child = match state.spawn(stream, &session_bin).await {
+                Ok(child) => child,
+                Err(error) => {
+                    warn!(%addr, %error, "failed to hand off connection to session process");
+                    return Err(());
+                }
+            };
+
+            tokio::spawn(async move {
+                match child.wait().await {
+                    Ok(status) => info!(%addr, %status, "session process exited"),
+                    Err(error) => warn!(%addr, %error, "failed to wait for session process"),
+                }
+            });
+
+            Ok(())
         });
     }
 }
@@ -101,6 +135,9 @@ struct Args {
     generate_host_key: bool,
     #[clap(long, value_parser = host_key_type, default_value = "ssh-ed25519")]
     host_key_type: PublicKeyAlgorithm<'static>,
+    /// Path to the `oxish-session` binary (defaults to a sibling of this executable)
+    #[clap(long)]
+    session_bin: Option<PathBuf>,
 }
 
 fn host_key_type(name: &str) -> Result<PublicKeyAlgorithm<'static>, String> {
