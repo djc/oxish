@@ -34,7 +34,6 @@ pub trait CryptoProvider: Send + Sync {
         &self,
         counter: u64,
         source: &KeySourceSide,
-        algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn OpeningKey>, CryptoError>;
 
     /// Build an encryption state from key `source` material and initial `counter`
@@ -42,7 +41,6 @@ pub trait CryptoProvider: Send + Sync {
         &self,
         counter: u64,
         source: &KeySourceSide,
-        algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn SealingKey>, CryptoError>;
 
     /// The key exchange group
@@ -124,20 +122,29 @@ pub trait SealingKey: Send + Sync {
 }
 
 pub struct KeySourceSide {
+    pub algorithm: EncryptionAlgorithm<'static>,
     pub initial_iv: KeySource,
     pub encryption_key: KeySource,
 }
 
 impl KeySourceSide {
-    pub fn client_to_server(derivation: &KeyDerivation) -> Self {
+    pub fn client_to_server(
+        derivation: &KeyDerivation,
+        algorithm: EncryptionAlgorithm<'static>,
+    ) -> Self {
         Self {
+            algorithm,
             initial_iv: derivation.key(KeyInput::InitialIvClientToServer),
             encryption_key: derivation.key(KeyInput::EncryptionKeyClientToServer),
         }
     }
 
-    pub fn server_to_client(derivation: &KeyDerivation) -> Self {
+    pub fn server_to_client(
+        derivation: &KeyDerivation,
+        algorithm: EncryptionAlgorithm<'static>,
+    ) -> Self {
         Self {
+            algorithm,
             initial_iv: derivation.key(KeyInput::InitialIvServerToClient),
             encryption_key: derivation.key(KeyInput::EncryptionKeyServerToClient),
         }

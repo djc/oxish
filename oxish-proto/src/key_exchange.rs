@@ -305,8 +305,14 @@ impl EcdhKeyExchangeReply {
             key_exchange_reply,
             exchange_hash,
             KeySourceSet {
-                client_to_server: KeySourceSide::client_to_server(&derivation),
-                server_to_client: KeySourceSide::server_to_client(&derivation),
+                client_to_server: KeySourceSide::client_to_server(
+                    &derivation,
+                    negotiated.encryption_client_to_server,
+                ),
+                server_to_client: KeySourceSide::server_to_client(
+                    &derivation,
+                    negotiated.encryption_server_to_client,
+                ),
             },
         ))
     }
@@ -416,6 +422,8 @@ impl fmt::Debug for TaggedSignature<'_> {
 #[derive(Debug)]
 pub struct Negotiated {
     pub key_exchange: KeyExchangeAlgorithm<'static>,
+    pub encryption_client_to_server: EncryptionAlgorithm<'static>,
+    pub encryption_server_to_client: EncryptionAlgorithm<'static>,
     pub want_extension_info: bool,
     pub strict_key_exchange: bool,
 }
@@ -442,8 +450,42 @@ impl Negotiated {
             })
             .ok_or(ProtoError::NoCommonAlgorithm("key exchange"))?;
 
+        let encryption_client_to_server = client
+            .encryption_algorithms_client_to_server
+            .iter()
+            .find_map(|&client| {
+                server
+                    .encryption_algorithms_client_to_server
+                    .iter()
+                    .find_map(|&server| match (client, server) {
+                        (client, server) if client == server => Some(server),
+                        _ => None,
+                    })
+            })
+            .ok_or(ProtoError::NoCommonAlgorithm(
+                "encryption (client to server)",
+            ))?;
+
+        let encryption_server_to_client = client
+            .encryption_algorithms_server_to_client
+            .iter()
+            .find_map(|&client| {
+                server
+                    .encryption_algorithms_server_to_client
+                    .iter()
+                    .find_map(|&server| match (client, server) {
+                        (client, server) if client == server => Some(server),
+                        _ => None,
+                    })
+            })
+            .ok_or(ProtoError::NoCommonAlgorithm(
+                "encryption (server to client)",
+            ))?;
+
         Ok(Self {
             key_exchange,
+            encryption_client_to_server,
+            encryption_server_to_client,
             want_extension_info: client.has_extension(ExtensionId::ExtInfoC),
             strict_key_exchange: client.has_extension(ExtensionId::StrictKexClient),
         })

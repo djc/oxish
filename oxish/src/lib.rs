@@ -9,8 +9,8 @@ use std::{io, str, task::ready};
 
 use proto::{
     Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, Encoder,
-    EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification, IdentificationError,
-    Ignore, IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, MethodName, NewKeys,
+    ExtInfo, ExtensionId, ExtensionName, Identification, IdentificationError, Ignore,
+    IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, MethodName, NewKeys,
     OutgoingNameList, PROTOCOL, Pretty, ProtoError, PublicKeyAlgorithm, ReadState, UserAuthFailure,
     WriteState,
     crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
@@ -272,8 +272,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // The cipher is negotiated during key exchange; currently this hard codes
         // aes128-gcm@openssh.com, an AEAD that also provides integrity protection.
         let results = (
-            provider.opening_key(0, &client_to_server, &EncryptionAlgorithm::Aes128Gcm),
-            provider.sealing_key(0, &server_to_client, &EncryptionAlgorithm::Aes128Gcm),
+            provider.opening_key(0, &client_to_server),
+            provider.sealing_key(0, &server_to_client),
         );
         match results {
             (Ok(opener), Ok(sealer)) => {
