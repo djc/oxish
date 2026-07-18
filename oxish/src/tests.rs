@@ -57,8 +57,8 @@ async fn handshake(provider: &'static dyn CryptoProvider) {
         let (stream, peer) = listener.accept().await.unwrap();
         stream.set_nodelay(true).ok();
 
-        let mut conn = Connection::new(stream, peer, provider);
-        let Ok(session_id) = conn.exchange_keys(&*host_key, provider).await else {
+        let future = Connection::accept(stream, peer, &*host_key, provider);
+        let Ok((mut conn, session_id)) = future.await else {
             return Err(());
         };
 
