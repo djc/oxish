@@ -307,11 +307,11 @@ impl EcdhKeyExchangeReply {
             KeySourceSet {
                 client_to_server: KeySourceSide::client_to_server(
                     &derivation,
-                    negotiated.encryption_client_to_server,
+                    negotiated.encryption_client_to_server.clone(),
                 )?,
                 server_to_client: KeySourceSide::server_to_client(
                     &derivation,
-                    negotiated.encryption_server_to_client,
+                    negotiated.encryption_server_to_client.clone(),
                 )?,
             },
         ))
@@ -453,12 +453,12 @@ impl Negotiated {
         let encryption_client_to_server = client
             .encryption_algorithms_client_to_server
             .iter()
-            .find_map(|&client| {
+            .find_map(|client| {
                 server
                     .encryption_algorithms_client_to_server
                     .iter()
-                    .find_map(|&server| match (client, server) {
-                        (client, server) if client == server => Some(server),
+                    .find_map(|server| match (client, server) {
+                        (client, server) if client == server => Some(server.clone()),
                         _ => None,
                     })
             })
@@ -469,12 +469,12 @@ impl Negotiated {
         let encryption_server_to_client = client
             .encryption_algorithms_server_to_client
             .iter()
-            .find_map(|&client| {
+            .find_map(|client| {
                 server
                     .encryption_algorithms_server_to_client
                     .iter()
-                    .find_map(|&server| match (client, server) {
-                        (client, server) if client == server => Some(server),
+                    .find_map(|server| match (client, server) {
+                        (client, server) if client == server => Some(server.clone()),
                         _ => None,
                     })
             })

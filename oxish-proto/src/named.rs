@@ -241,14 +241,21 @@ impl<'a> Named<'a> for PublicKeyAlgorithm<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EncryptionAlgorithm<'a> {
     /// aes128-gcm@openssh.com (<https://www.rfc-editor.org/rfc/rfc5647>)
     Aes128Gcm,
-    Unknown(&'a str),
+    Unknown(Cow<'a, str>),
 }
 
 impl EncryptionAlgorithm<'_> {
+    pub fn to_owned(&self) -> EncryptionAlgorithm<'static> {
+        match self {
+            Self::Aes128Gcm => EncryptionAlgorithm::Aes128Gcm,
+            Self::Unknown(name) => EncryptionAlgorithm::Unknown(Cow::Owned(name.to_string())),
+        }
+    }
+
     pub fn lengths(&self) -> Option<KeyLengths> {
         match self {
             Self::Aes128Gcm => Some(KeyLengths {
@@ -264,7 +271,7 @@ impl<'a> Named<'a> for EncryptionAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
             "aes128-gcm@openssh.com" => Self::Aes128Gcm,
-            _ => Self::Unknown(name),
+            _ => Self::Unknown(Cow::Borrowed(name)),
         }
     }
 
