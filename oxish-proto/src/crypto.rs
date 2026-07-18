@@ -92,6 +92,9 @@ pub trait OpeningKey: Send + Sync {
     /// `encrypted` unchanged; ciphers that encrypt the length override this.
     fn decrypt_packet_length(&mut self, seq: u32, encrypted: [u8; 4]) -> [u8; 4];
 
+    /// Number of times the key has been used to open a packet
+    fn counter(&self) -> u64;
+
     /// The length in bytes of the authentication tag
     fn tag_len(&self) -> usize;
 }
@@ -109,6 +112,9 @@ pub trait SealingKey: Send + Sync {
         data: &mut [u8],
         tag: &mut [u8],
     ) -> Result<(), CryptoError>;
+
+    /// Number of times the key has been used to seal a packet
+    fn counter(&self) -> u64;
 
     /// The length in bytes of the block size for this cipher
     fn block_len(&self) -> usize;

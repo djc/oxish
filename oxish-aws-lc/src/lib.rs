@@ -172,6 +172,10 @@ impl SealingKey for Aes128GcmSealer {
         Ok(())
     }
 
+    fn counter(&self) -> u64 {
+        self.0.counter
+    }
+
     fn block_len(&self) -> usize {
         16
     }
@@ -203,6 +207,10 @@ impl OpeningKey for Aes128GcmOpener {
         encrypted
     }
 
+    fn counter(&self) -> u64 {
+        self.0.counter
+    }
+
     fn tag_len(&self) -> usize {
         self.0.key.algorithm().tag_len()
     }
@@ -212,27 +220,21 @@ impl OpeningKey for Aes128GcmOpener {
 struct GcmState {
     key: LessSafeKey,
     nonce: [u8; NONCE_LEN],
+    counter: u64,
 }
 
 impl GcmState {
     fn new(counter: u64, source: &KeySourceSide) -> Result<Self, CryptoError> {
-        let mut nonce = source.initial_iv.derive::<NONCE_LEN>();
-        let Some(counter_dst) = nonce.last_chunk_mut::<8>() else {
-            return Err(CryptoError::InvalidLength);
-        };
-
-        let Some(new) = u64::from_be_bytes(*counter_dst).checked_add(counter) else {
-            return Err(CryptoError::NonceOverflow);
-        };
-
-        *counter_dst = new.to_be_bytes();
-        Ok(Self {
+        let mut new = Self {
             key: LessSafeKey::new(
                 UnboundKey::new(&AES_128_GCM, &source.encryption_key.derive::<16>())
                     .map_err(|_| CryptoError::InvalidLength)?,
             ),
-            nonce,
-        })
+            nonce: source.initial_iv.derive::<NONCE_LEN>(),
+            counter,
+        };
+        new.increment(counter)?;
+        Ok(new)
     }
 
     /// Return the nonce for the next packet and advance the invocation counter
@@ -241,22 +243,22 @@ impl GcmState {
     /// big-endian invocation counter that is incremented after each packet.
     fn nonce(&mut self) -> Result<Nonce, CryptoError> {
         let nonce = Nonce::assume_unique_for_key(self.nonce);
-        let Some((_, counter)) = self.nonce.split_first_chunk_mut::<4>() else {
+        self.increment(1)?;
+        Ok(nonce)
+    }
+
+    fn increment(&mut self, delta: u64) -> Result<(), CryptoError> {
+        let Some(counter_dst) = self.nonce.last_chunk_mut::<8>() else {
             return Err(CryptoError::InvalidLength);
         };
 
-        let Some((counter, rest)) = counter.split_first_chunk_mut::<8>() else {
-            return Err(CryptoError::InvalidLength);
-        };
-
-        debug_assert!(rest.is_empty(), "nonce length is not 12 bytes");
-        let count = u64::from_be_bytes(*counter);
-        let Some(next) = count.checked_add(1) else {
+        let Some(new) = u64::from_be_bytes(*counter_dst).checked_add(delta) else {
             return Err(CryptoError::NonceOverflow);
         };
 
-        *counter = next.to_be_bytes();
-        Ok(nonce)
+        *counter_dst = new.to_be_bytes();
+        self.counter += delta;
+        Ok(())
     }
 }
 
