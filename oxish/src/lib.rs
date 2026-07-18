@@ -32,6 +32,8 @@ mod authentication;
 pub use authentication::{Auth, User};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
+mod spawn;
+pub use spawn::SessionState;
 
 mod terminal;
 #[cfg(test)]
@@ -145,7 +147,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         addr: SocketAddr,
         host_keys: &[Arc<dyn SigningKey>],
         provider: &dyn CryptoProvider,
-    ) -> Result<(Self, Digest), ()> {
+    ) -> Result<(Self, Digest, KeySourceSet), ()> {
         let mut new = Self {
             stream,
             addr,
@@ -155,7 +157,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let future = new.exchange_keys(host_keys, provider);
         match timeout(Duration::from_secs(30), future).await {
-            Ok(Ok(session_id)) => Ok((new, session_id)),
+            Ok(Ok((session_id, keys))) => Ok((new, session_id, keys)),
             Ok(Err(())) => Err(()),
             Err(_) => {
                 error!("key exchange timed out");
@@ -169,7 +171,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         &mut self,
         host_keys: &[Arc<dyn SigningKey>],
         provider: &dyn CryptoProvider,
-    ) -> Result<Digest, ()> {
+    ) -> Result<(Digest, KeySourceSet), ()> {
         if host_keys.is_empty() {
             error!("no host keys configured");
             return Err(());
@@ -237,19 +239,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Exchange new keys packets and install new keys
 
-        self.update_keys(keys, kx.negotiated.strict_key_exchange, provider)
+        self.update_keys(&keys, kx.negotiated.strict_key_exchange, provider)
             .await?;
         if kx.negotiated.want_extension_info {
             self.send(&kx.ext_info).await?;
         }
 
         self.send(&Ignore::default()).await?;
-        Ok(session_id)
+        Ok((session_id, keys))
     }
 
     async fn update_keys(
         &mut self,
-        keys: KeySourceSet,
+        keys: &KeySourceSet,
         strict: bool,
         provider: &dyn CryptoProvider,
     ) -> Result<(), ()> {
@@ -269,16 +271,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         if strict {
             self.write.reset_sequence_number();
         }
-        let KeySourceSet {
-            client_to_server,
-            server_to_client,
-        } = keys;
 
-        // The cipher is negotiated during key exchange; currently this hard codes
-        // aes128-gcm@openssh.com, an AEAD that also provides integrity protection.
         let results = (
-            provider.opening_key(0, &client_to_server),
-            provider.sealing_key(0, &server_to_client),
+            provider.opening_key(0, &keys.client_to_server),
+            provider.sealing_key(0, &keys.server_to_client),
         );
         match results {
             (Ok(opener), Ok(sealer)) => {
@@ -443,7 +439,9 @@ pub(crate) async fn buffer<'a>(
 }
 
 #[derive(Debug, Error)]
-enum Error {
+pub enum Error {
+    #[error("invalid state: {0}")]
+    InvalidState(&'static str),
     #[error("invalid user name")]
     InvalidUsername,
     #[error("IO error: {0}")]

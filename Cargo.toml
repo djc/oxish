@@ -24,7 +24,7 @@ tokio = { version = "1.42", features = ["io-util", "macros", "net", "process", "
 tokio-stream = "0.1.18"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-rustix = { version = "1", features = ["termios", "pty", "process", "fs", "stdio"] }
+rustix = { version = "1", features = ["termios", "pty", "process", "fs", "net", "stdio"] }
 
 [workspace.lints.rust]
 elided_lifetimes_in_paths = "warn"

@@ -11,7 +11,7 @@ use proto::{PublicKeyAlgorithm, crypto::CryptoProvider};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
-use crate::{Auth, Connection, Session, User, authentication::AuthorizedKey};
+use crate::{Auth, Connection, Session, SessionState, User, authentication::AuthorizedKey};
 
 /// Exercise a full handshake and session against the aws-lc-rs provider
 #[cfg(feature = "aws-lc")]
@@ -20,6 +20,7 @@ async fn handshake_ecdsa_aws_lc() {
     handshake(
         aws_lc::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        false,
     )
     .await;
 }
@@ -31,6 +32,7 @@ async fn handshake_ecdsa_graviola() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        false,
     )
     .await;
 }
@@ -39,17 +41,37 @@ async fn handshake_ecdsa_graviola() {
 #[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ed25519_aws_lc() {
-    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519, false).await;
 }
 
 /// Exercise an ssh-ed25519 client key against the graviola provider
 #[cfg(feature = "graviola")]
 #[tokio::test]
 async fn handshake_ed25519_graviola() {
-    handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+    handshake(
+        graviola::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::Ed25519,
+        false,
+    )
+    .await;
 }
 
-async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAlgorithm<'_>) {
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn handshake_ecdsa_graviola_split() {
+    handshake(
+        graviola::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        true,
+    )
+    .await;
+}
+
+async fn handshake(
+    provider: &'static dyn CryptoProvider,
+    algorithm: PublicKeyAlgorithm<'_>,
+    split: bool,
+) {
     subscribe();
 
     let dir = TempDir::new().unwrap();
@@ -83,12 +105,17 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
     let addr = listener.local_addr().unwrap();
 
     let host_keys = Arc::new([host_key]);
+    let session_bin = match split {
+        true => Some(session_binary().await),
+        false => None,
+    };
+
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();
         stream.set_nodelay(true).ok();
 
         let future = Connection::accept(stream, peer, &*host_keys, provider);
-        let Ok((mut conn, session_id)) = future.await else {
+        let Ok((mut conn, session_id, keys)) = future.await else {
             return Err(());
         };
 
@@ -99,7 +126,27 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
             return Err(());
         };
 
-        Session::new(conn).run().await
+        let Some(session_bin) = session_bin else {
+            return Session::new(conn).run().await;
+        };
+
+        let (state, stream) = SessionState::from_connection(conn, keys).map_err(|_| ())?;
+        let mut child = state
+            .spawn(stream, &session_bin)
+            .await
+            .expect("failed to hand off connection");
+
+        match child.wait().await {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => {
+                println!("session process exited with {status}");
+                Err(())
+            }
+            Err(error) => {
+                println!("failed to wait for session process: {error}");
+                Err(())
+            }
+        }
     });
 
     let mut child = Command::new("ssh")
@@ -187,6 +234,37 @@ async fn verify_keys() {
                 .expect_err("signature over a different message must not verify");
         }
     }
+}
+
+/// Build and locate the `oxish-session` binary
+///
+/// `cargo test` only builds the crate's binaries as test harnesses, so build the real
+/// binary here (a no-op when fresh). Unit tests run from `target/<profile>/deps/`, while
+/// cargo places the binary in `target/<profile>/`.
+async fn session_binary() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
+
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command.args(["build", "-p", "oxish", "--bin", "oxish-session"]);
+    if profile_dir
+        .file_name()
+        .is_some_and(|name| name == "release")
+    {
+        command.arg("--release");
+    }
+
+    let status = command.status().await.expect("failed to run cargo build");
+    assert!(status.success(), "failed to build oxish-session");
+
+    let bin = profile_dir.join("oxish-session");
+    assert!(
+        bin.is_file(),
+        "oxish-session binary not found at `{}`",
+        bin.display(),
+    );
+    bin
 }
 
 fn keygen_args(algorithm: &PublicKeyAlgorithm<'_>) -> &'static [&'static str] {

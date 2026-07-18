@@ -15,9 +15,9 @@ pub struct ReadState {
     ///
     /// Set after decoding and decrypting a packet successfully in `poll_packet()`; reduced at
     /// the start of each call to `poll_packet()`.
-    last_length: usize,
+    pub last_length: usize,
 
-    sequence_number: u32,
+    pub sequence_number: u32,
     pub opener: Option<Box<dyn OpeningKey>>,
 }
 
@@ -58,7 +58,6 @@ impl ReadState {
             // the cleartext length field, which stays in `buf` alongside the ciphertext even
             // though it is not itself decrypted.
             opener.open_in_place(self.sequence_number, length_data, tag)?;
-
             (packet_length, tag_len)
         } else {
             let Decoded {
@@ -184,7 +183,7 @@ pub struct WriteState {
     /// been sent to the transport stream
     written: usize,
 
-    sequence_number: u32,
+    pub sequence_number: u32,
     pub sealer: Option<Box<dyn SealingKey>>,
 
     /// Source of random bytes for packet padding

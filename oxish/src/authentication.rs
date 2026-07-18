@@ -254,11 +254,11 @@ impl Auth {
 
 #[derive(Clone, Debug)]
 pub struct User {
-    name: String,
+    pub(crate) name: String,
     #[expect(dead_code)]
-    id: u32,
+    pub(crate) id: u32,
     #[expect(dead_code)]
-    home_dir: PathBuf,
+    pub(crate) home_dir: PathBuf,
     /// Cached authorized keys for the user
     ///
     /// Since finding the authorized keys can be somewhat expensive, prefer to cache them
