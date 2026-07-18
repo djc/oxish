@@ -56,10 +56,14 @@ async fn handshake(provider: &'static dyn CryptoProvider) {
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();
         stream.set_nodelay(true).ok();
+
         let mut io = IoStream::new(stream, peer, provider);
+        let Ok(session_id) = io.exchange_keys(&*host_key, provider).await else {
+            return Err(());
+        };
 
         let Ok(_user) = Auth::Fixed(user)
-            .authenticate(&mut io, &*host_key, provider)
+            .authenticate(session_id, &mut io, provider)
             .await
         else {
             return Err(());
