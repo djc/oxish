@@ -4,25 +4,25 @@ use core::{
     pin::Pin,
     task::{Context, Poll},
 };
-use std::{borrow::Cow, io, str, sync::Arc, task::ready};
+use std::{io, str, sync::Arc, task::ready};
 
 use proto::{
     crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
-    Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, EcdhKeyExchangeReply,
-    Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
-    IdentificationError, IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, Method,
-    MethodName, NewKeys, OutgoingNameList, Pretty, ProtoError, PublicKeyAlgorithm, ReadState,
-    ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
-    UserAuthRequest, WriteState, PROTOCOL,
+    Completion, Decoded, Disconnect, Encode, EncryptionAlgorithm, Identification,
+    IdentificationError, IncomingPacket, KeySourceSet, MessageType, MethodName, NewKeys, Pretty,
+    ProtoError, ReadState, UserAuthFailure, WriteState, PROTOCOL,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 mod authentication;
-use authentication::{Auth, AuthorizedKey, User};
+use authentication::Auth;
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
+
+#[cfg(test)]
+use crate::authentication::User;
 
 mod terminal;
 #[cfg(test)]
@@ -71,219 +71,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.io.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
-        let exchange = match self.io.identify().await {
-            Ok(exchange) => exchange,
-            Err(error) => {
-                error!(%error, "failed to complete version exchange");
-                return Err(());
-            }
-        };
-
-        // Receive and send key exchange init packets
-
-        let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
-        let (key_exchange_init, mut exchange, negotiated) = match KeyExchangeInit::peer(
-            packet,
-            exchange,
-            vec![self.host_key.algorithm()],
-            [ExtensionId::StrictKexServer].into_iter(),
-            self.provider,
-        ) {
-            Ok(result) => result,
-            Err(error) => {
-                error!(%error, "failed to read key exchange init");
-                return Err(());
-            }
-        };
-
-        self.io
-            .send_handshake(&key_exchange_init, Some(&mut exchange))
+        let _user = self
+            .auth
+            .authenticate(&mut self.io, &*self.host_key, self.provider)
             .await?;
-
-        // Perform ECDH key exchange
-
-        let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
-        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
-            Ok(key_exchange_init) => key_exchange_init,
-            Err(error) => {
-                error!(%error, "failed to read ecdh key exchange init");
-                return Err(());
-            }
-        };
-
-        let result = EcdhKeyExchangeReply::new(
-            ecdh_key_exchange_init,
-            &negotiated,
-            exchange,
-            &*self.host_key,
-            &*self.provider,
-        );
-
-        let (key_exchange_reply, session_id, keys) = match result {
-            Ok(out) => out,
-            Err(error) => {
-                error!(%error, "failed to complete ecdh key exchange");
-                return Err(());
-            }
-        };
-
-        self.io.send(&key_exchange_reply).await?;
-
-        // Exchange new keys packets and install new keys
-
-        self.io
-            .update_keys(keys, negotiated.strict_key_exchange, self.provider)
-            .await?;
-        if negotiated.want_extension_info {
-            let ext_info = ExtInfo {
-                extensions: vec![(
-                    ExtensionName::ServerSigAlgs,
-                    &OutgoingNameList(&[PublicKeyAlgorithm::EcdsaSha2Nistp256]),
-                )],
-            };
-            self.io.send(&ext_info).await?;
-        }
-
-        self.io.send(&MessageType::Ignore).await?;
-
-        // Handle authentication
-
-        let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
-        let service_request = match ServiceRequest::try_from(packet) {
-            Ok(req) => req,
-            Err(error) => {
-                error!(%error, "failed to read service request");
-                return Err(());
-            }
-        };
-
-        if service_request.service_name != ServiceName::UserAuth {
-            error!(
-                service_name = ?service_request.service_name,
-                "unsupported service requested"
-            );
-
-            let disconnect = Disconnect {
-                reason_code: DisconnectReason::ServiceNotAvailable,
-                description: "only user authentication service is supported",
-            };
-
-            self.io.send(&disconnect).await?;
-            return Err(());
-        }
-
-        let service_accept = ServiceAccept {
-            service_name: ServiceName::UserAuth,
-        };
-        self.io.send(&service_accept).await?;
-
-        let mut cached_user = None::<User>;
-        let _user = loop {
-            let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
-            let user_auth_request = match UserAuthRequest::try_from(packet) {
-                Ok(req) => req,
-                Err(error) => {
-                    error!(%error, "failed to read user auth request");
-                    return Err(());
-                }
-            };
-
-            debug!(?user_auth_request, "received user auth request");
-            if user_auth_request.service_name != ServiceName::Connection {
-                error!(
-                    service_name = ?user_auth_request.service_name,
-                    "unsupported service requested"
-                );
-
-                let disconnect = Disconnect {
-                    reason_code: DisconnectReason::ServiceNotAvailable,
-                    description: "only connection service is supported",
-                };
-                self.io.send(&disconnect).await?;
-                return Err(());
-            }
-
-            let Method::PublicKey(public_key) = user_auth_request.method else {
-                warn!(
-                    method = ?user_auth_request.method,
-                    "unsupported authentication method requested"
-                );
-                self.io.send_auth_failed().await?;
-                continue;
-            };
-
-            if public_key.algorithm != PublicKeyAlgorithm::EcdsaSha2Nistp256 {
-                warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
-                self.io.send_auth_failed().await?;
-                continue;
-            }
-
-            let user = match (&mut cached_user, &self.auth) {
-                (Some(user), _) if user.name == user_auth_request.user_name => user,
-                (_, auth) => match auth.resolve(user_auth_request.user_name, self.provider) {
-                    Some(user) => cached_user.insert(user),
-                    None => {
-                        self.io.send_auth_failed().await?;
-                        continue;
-                    }
-                },
-            };
-
-            let authorized_key = user.authorized_keys.iter().find(|key| {
-                key.algorithm == public_key.algorithm && key.blob.as_slice() == public_key.key_blob
-            });
-
-            let (sig, authorized_key) = match (public_key.signature, authorized_key) {
-                // Signature, authorized key => verify signature
-                (Some(sig), Some(key)) if sig.algorithm == key.algorithm => (sig, key.clone()),
-                // Signature, no authorized key => verify signature against fake key
-                (Some(sig), None) => (sig, AuthorizedKey::fake(self.provider)),
-                // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
-                (Some(_), Some(_)) => {
-                    warn!(
-                        algorithm = ?public_key.algorithm,
-                        "mismatched signature algorithm in authentication request"
-                    );
-                    self.io.send_auth_failed().await?;
-                    continue;
-                }
-                // No signature, authorized key => send pk-ok and wait for signature
-                (None, Some(_)) => {
-                    let pk_ok = UserAuthPkOk {
-                        algorithm: public_key.algorithm.to_owned(),
-                        key_blob: Cow::Owned(public_key.key_blob.to_vec()),
-                    };
-                    debug!(ok = ?pk_ok, "sending pk-ok for user");
-                    self.io.send(&pk_ok).await?;
-                    continue;
-                }
-                // No signature, no authorized key => fail authentication
-                (None, None) => {
-                    self.io.send_auth_failed().await?;
-                    continue;
-                }
-            };
-
-            let message = SignatureData {
-                session_id: session_id.as_ref(),
-                user_name: &user.name,
-                service_name: user_auth_request.service_name,
-                algorithm: public_key.algorithm,
-                public_key: public_key.key_blob,
-            };
-
-            match authorized_key.verify(message, sig).await {
-                Ok(()) => {
-                    info!(user = %user.name, "authentication successful");
-                    self.io.send(&MessageType::UserAuthSuccess).await?;
-                    break user;
-                }
-                _ => {
-                    self.io.send_auth_failed().await?;
-                    continue;
-                }
-            }
-        };
 
         // Main loop for handling channel messages
         loop {
