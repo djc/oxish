@@ -123,40 +123,61 @@ pub trait SealingKey: Send + Sync {
 
 pub struct KeySourceSide {
     pub algorithm: EncryptionAlgorithm<'static>,
-    pub initial_iv: KeySource,
-    pub encryption_key: KeySource,
+    pub initial_iv: Vec<u8>,
+    pub encryption_key: Vec<u8>,
 }
 
 impl KeySourceSide {
-    pub fn client_to_server(
+    pub(crate) fn client_to_server(
         derivation: &KeyDerivation,
         algorithm: EncryptionAlgorithm<'static>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, CryptoError> {
+        let Some(KeyLengths { key_len, iv_len }) = algorithm.lengths() else {
+            return Err(CryptoError::UnknownAlgorithm);
+        };
+
+        Ok(Self {
             algorithm,
-            initial_iv: derivation.key(KeyInput::InitialIvClientToServer),
-            encryption_key: derivation.key(KeyInput::EncryptionKeyClientToServer),
-        }
+            initial_iv: derivation
+                .key(KeyInput::InitialIvClientToServer)
+                .derive(iv_len),
+            encryption_key: derivation
+                .key(KeyInput::EncryptionKeyClientToServer)
+                .derive(key_len),
+        })
     }
 
-    pub fn server_to_client(
+    pub(crate) fn server_to_client(
         derivation: &KeyDerivation,
         algorithm: EncryptionAlgorithm<'static>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, CryptoError> {
+        let Some(KeyLengths { key_len, iv_len }) = algorithm.lengths() else {
+            return Err(CryptoError::UnknownAlgorithm);
+        };
+
+        Ok(Self {
             algorithm,
-            initial_iv: derivation.key(KeyInput::InitialIvServerToClient),
-            encryption_key: derivation.key(KeyInput::EncryptionKeyServerToClient),
-        }
+            initial_iv: derivation
+                .key(KeyInput::InitialIvServerToClient)
+                .derive(iv_len),
+            encryption_key: derivation
+                .key(KeyInput::EncryptionKeyServerToClient)
+                .derive(key_len),
+        })
     }
 }
 
-pub struct KeyDerivation {
-    pub hash: &'static dyn Hash,
+pub struct KeyLengths {
+    pub key_len: usize,
+    pub iv_len: usize,
+}
+
+pub(crate) struct KeyDerivation {
+    pub(crate) hash: &'static dyn Hash,
     /// The shared secret `K`, encoded exactly as fed into the exchange hash
-    pub shared_secret: Vec<u8>,
-    pub exchange_hash: Digest,
-    pub session_id: Digest,
+    pub(crate) shared_secret: Vec<u8>,
+    pub(crate) exchange_hash: Digest,
+    pub(crate) session_id: Digest,
 }
 
 impl KeyDerivation {
@@ -174,7 +195,7 @@ impl KeyDerivation {
     }
 }
 
-pub struct KeySource {
+struct KeySource {
     base: Box<dyn HashContext>,
     block_len: usize,
     session_id: Digest,
@@ -182,9 +203,9 @@ pub struct KeySource {
 }
 
 impl KeySource {
-    pub fn derive<const N: usize>(&self) -> [u8; N] {
+    fn derive(&self, len: usize) -> Vec<u8> {
         let block_len = self.block_len;
-        let mut key = [0; N];
+        let mut key = vec![0; len];
 
         // K1 = HASH(K || H || X || session_id)
         let mut context = self.base.fork();
@@ -192,15 +213,15 @@ impl KeySource {
         context.update(self.session_id.as_ref());
         let block = context.finish();
         let bytes = block.as_ref();
-        let mut have = Ord::min(bytes.len(), N);
+        let mut have = Ord::min(bytes.len(), len);
         key[..have].copy_from_slice(&block.as_ref()[..have]);
 
         // K2 = HASH(K || H || K1), K3 = HASH(K || H || K1 || K2), ...
-        while have < N {
+        while have < len {
             let mut context = self.base.fork();
             context.update(&key[..have]);
             let block = context.finish();
-            let take = block_len.min(N - have);
+            let take = block_len.min(len - have);
             key[have..have + take].copy_from_slice(&block.as_ref()[..take]);
             have += take;
         }
@@ -541,22 +562,18 @@ mod tests {
                 session_id: Digest::new(vector.session_id),
             };
 
-            let iv_c = derivation
-                .key(KeyInput::InitialIvClientToServer)
-                .derive::<8>();
-            assert_eq!(iv_c.as_slice(), vector.iv_client);
-            let iv_s = derivation
-                .key(KeyInput::InitialIvServerToClient)
-                .derive::<8>();
-            assert_eq!(iv_s.as_slice(), vector.iv_server);
+            let iv_c = derivation.key(KeyInput::InitialIvClientToServer).derive(8);
+            assert_eq!(iv_c, vector.iv_client);
+            let iv_s = derivation.key(KeyInput::InitialIvServerToClient).derive(8);
+            assert_eq!(iv_s, vector.iv_server);
             let enc_c = derivation
                 .key(KeyInput::EncryptionKeyClientToServer)
-                .derive::<24>();
-            assert_eq!(enc_c.as_slice(), vector.enc_client);
+                .derive(24);
+            assert_eq!(enc_c, vector.enc_client);
             let enc_s = derivation
                 .key(KeyInput::EncryptionKeyServerToClient)
-                .derive::<24>();
-            assert_eq!(enc_s.as_slice(), vector.enc_server);
+                .derive(24);
+            assert_eq!(enc_s, vector.enc_server);
         }
     }
 

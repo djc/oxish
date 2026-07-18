@@ -308,11 +308,11 @@ impl EcdhKeyExchangeReply {
                 client_to_server: KeySourceSide::client_to_server(
                     &derivation,
                     negotiated.encryption_client_to_server,
-                ),
+                )?,
                 server_to_client: KeySourceSide::server_to_client(
                     &derivation,
                     negotiated.encryption_server_to_client,
-                ),
+                )?,
             },
         ))
     }

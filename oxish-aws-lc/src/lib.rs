@@ -223,14 +223,19 @@ struct GcmState {
 
 impl GcmState {
     fn new(counter: u64, source: &KeySourceSide) -> Result<Self, CryptoError> {
+        let Ok(nonce) = <&[u8; NONCE_LEN]>::try_from(source.initial_iv.as_slice()) else {
+            return Err(CryptoError::InvalidLength);
+        };
+
         let mut new = Self {
             key: LessSafeKey::new(
-                UnboundKey::new(&AES_128_GCM, &source.encryption_key.derive::<16>())
+                UnboundKey::new(&AES_128_GCM, &source.encryption_key)
                     .map_err(|_| CryptoError::InvalidLength)?,
             ),
-            nonce: source.initial_iv.derive::<NONCE_LEN>(),
-            counter,
+            nonce: *nonce,
+            counter: 0,
         };
+
         new.increment(counter)?;
         Ok(new)
     }
