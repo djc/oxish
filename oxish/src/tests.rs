@@ -9,28 +9,47 @@ use crate::{Auth, Connection, Session, User, authentication::AuthorizedKey};
 
 /// Exercise a full handshake and session against the aws-lc-rs provider.
 #[tokio::test]
-async fn handshake_aws_lc() {
-    handshake(aws_lc::DEFAULT_PROVIDER).await;
+async fn handshake_ecdsa_aws_lc() {
+    handshake(
+        aws_lc::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::EcdsaSha2Nistp256,
+    )
+    .await;
 }
 
 /// Exercise a full handshake and session against the graviola provider.
 #[tokio::test]
-async fn handshake_graviola() {
-    handshake(graviola::DEFAULT_PROVIDER).await;
+async fn handshake_ecdsa_graviola() {
+    handshake(
+        graviola::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::EcdsaSha2Nistp256,
+    )
+    .await;
 }
 
-async fn handshake(provider: &'static dyn CryptoProvider) {
+/// Exercise an ssh-ed25519 client key against the aws-lc-rs provider.
+#[tokio::test]
+async fn handshake_ed25519_aws_lc() {
+    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+}
+
+/// Exercise an ssh-ed25519 client key against the graviola provider.
+#[tokio::test]
+async fn handshake_ed25519_graviola() {
+    handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+}
+
+async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAlgorithm<'_>) {
     subscribe();
 
     let dir = TempDir::new().unwrap();
     let key_path = dir.path().join("key");
 
-    // Generate an ecdsa-sha2-nistp256 client key; ssh-keygen writes the private
-    // key with 0600 permissions, which the ssh client requires.
+    // Generate the client key; ssh-keygen writes the private key with 0600
+    // permissions, which the ssh client requires.
     let status = Command::new("ssh-keygen")
         .arg("-q") // quiet: suppress the interactive progress output
-        .args(["-t", "ecdsa"]) // key type
-        .args(["-b", "256"]) // key size in bits, which selects the nistp256 curve
+        .args(keygen_args(&algorithm)) // key type (and size, where applicable)
         .args(["-N", ""]) // empty passphrase, so the private key is not encrypted
         .args(["-C", "oxish-e2e"]) // key comment
         .arg("-f") // output file for the private key (public key gets a .pub suffix)
@@ -125,6 +144,39 @@ async fn handshake(provider: &'static dyn CryptoProvider) {
         stdout_len = output.stdout.len(),
         stderr_len = output.stderr.len(),
     );
+}
+
+#[tokio::test]
+async fn ed25519_verify_cross_provider() {
+    for signer in [aws_lc::DEFAULT_PROVIDER, graviola::DEFAULT_PROVIDER] {
+        for verifier in [aws_lc::DEFAULT_PROVIDER, graviola::DEFAULT_PROVIDER] {
+            let (signing_key, _) = signer
+                .generate_signing_key(&PublicKeyAlgorithm::Ed25519)
+                .expect("failed to generate signing key");
+
+            let message = b"the quick brown fox";
+            let signature = signing_key.sign(message);
+            let verifying_key = verifier
+                .verifying_key(signing_key.public_key(), &PublicKeyAlgorithm::Ed25519)
+                .expect("failed to build verifying key");
+
+            verifying_key
+                .verify(message, &signature)
+                .expect("valid signature should verify");
+
+            verifying_key
+                .verify(b"the quick brown cat", &signature)
+                .expect_err("signature over a different message must not verify");
+        }
+    }
+}
+
+fn keygen_args(algorithm: &PublicKeyAlgorithm<'_>) -> &'static [&'static str] {
+    match algorithm {
+        PublicKeyAlgorithm::EcdsaSha2Nistp256 => &["-t", "ecdsa", "-b", "256"],
+        PublicKeyAlgorithm::Ed25519 => &["-t", "ed25519"],
+        _ => panic!("unsupported key type for ssh-keygen: {algorithm:?}"),
+    }
 }
 
 fn subscribe() {

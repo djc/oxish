@@ -218,7 +218,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             let ext_info = ExtInfo {
                 extensions: vec![(
                     ExtensionName::ServerSigAlgs,
-                    &OutgoingNameList(&[PublicKeyAlgorithm::EcdsaSha2Nistp256]),
+                    &OutgoingNameList(&[
+                        PublicKeyAlgorithm::EcdsaSha2Nistp256,
+                        PublicKeyAlgorithm::Ed25519,
+                    ]),
                 )],
             };
             self.send(&ext_info).await?;

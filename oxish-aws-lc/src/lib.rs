@@ -61,6 +61,9 @@ impl CryptoProvider for Provider {
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => Ok(Arc::new(EcdsaP256VerifyingKey {
                 key: UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, key.to_owned()),
             })),
+            PublicKeyAlgorithm::Ed25519 => Ok(Arc::new(Ed25519VerifyingKey {
+                key: UnparsedPublicKey::new(&signature::ED25519, key.to_owned()),
+            })),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -107,7 +110,10 @@ impl CryptoProvider for Provider {
     fn supported_algorithms(&self) -> SupportedAlgorithms {
         SupportedAlgorithms {
             key_exchange: &[KeyExchangeAlgorithm::MlKem768X25519Sha256],
-            public_key: &[PublicKeyAlgorithm::EcdsaSha2Nistp256],
+            public_key: &[
+                PublicKeyAlgorithm::EcdsaSha2Nistp256,
+                PublicKeyAlgorithm::Ed25519,
+            ],
             encryption: &[EncryptionAlgorithm::Aes128Gcm],
             mac: &[MacAlgorithm::None],
         }
@@ -321,6 +327,18 @@ struct EcdsaP256VerifyingKey {
 }
 
 impl VerifyingKey for EcdsaP256VerifyingKey {
+    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
+        self.key
+            .verify(message, signature)
+            .map_err(|_| CryptoError::VerificationFailed)
+    }
+}
+
+struct Ed25519VerifyingKey {
+    key: UnparsedPublicKey<Vec<u8>>,
+}
+
+impl VerifyingKey for Ed25519VerifyingKey {
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
         self.key
             .verify(message, signature)
