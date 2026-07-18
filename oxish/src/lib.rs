@@ -131,7 +131,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Exchange new keys packets and install new keys
 
-        self.update_keys(keys, negotiated.strict_key_exchange)
+        self.io
+            .update_keys(keys, negotiated.strict_key_exchange, self.provider)
             .await?;
         if negotiated.want_extension_info {
             let ext_info = ExtInfo {
@@ -345,49 +346,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         }
     }
-
-    async fn update_keys(&mut self, keys: KeySourceSet, strict: bool) -> Result<(), ()> {
-        let packet = receive(&mut self.io.stream, &mut self.io.read).await?;
-        if let Err(error) = NewKeys::try_from(packet) {
-            error!(%error, "failed to read new keys packet");
-            return Err(());
-        }
-
-        // Under strict key exchange the sequence numbers are reset to zero once NEWKEYS crosses in
-        // each direction, so the first encrypted packet after NEWKEYS uses sequence number zero.
-        if strict {
-            self.io.read.reset_sequence_number();
-        }
-
-        self.io.send(&NewKeys).await?;
-        if strict {
-            self.io.write.reset_sequence_number();
-        }
-        let KeySourceSet {
-            client_to_server,
-            server_to_client,
-        } = keys;
-
-        // The cipher is negotiated during key exchange; currently this hard codes
-        // aes128-gcm@openssh.com, an AEAD that also provides integrity protection.
-        let results = (
-            self.provider
-                .opening_key(client_to_server, &EncryptionAlgorithm::Aes128Gcm),
-            self.provider
-                .sealing_key(server_to_client, &EncryptionAlgorithm::Aes128Gcm),
-        );
-        match results {
-            (Ok(opener), Ok(sealer)) => {
-                self.io.read.opener = Some(opener);
-                self.io.write.sealer = Some(sealer);
-                Ok(())
-            }
-            (Err(error), _) | (_, Err(error)) => {
-                error!(%error, "failed to create opening or sealing key");
-                Err(())
-            }
-        }
-    }
 }
 
 struct IoStream<T> {
@@ -398,6 +356,52 @@ struct IoStream<T> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> IoStream<T> {
+    async fn update_keys(
+        &mut self,
+        keys: KeySourceSet,
+        strict: bool,
+        provider: &dyn CryptoProvider,
+    ) -> Result<(), ()> {
+        let packet = receive(&mut self.stream, &mut self.read).await?;
+        if let Err(error) = NewKeys::try_from(packet) {
+            error!(%error, "failed to read new keys packet");
+            return Err(());
+        }
+
+        // Under strict key exchange the sequence numbers are reset to zero once NEWKEYS crosses in
+        // each direction, so the first encrypted packet after NEWKEYS uses sequence number zero.
+        if strict {
+            self.read.reset_sequence_number();
+        }
+
+        self.send(&NewKeys).await?;
+        if strict {
+            self.write.reset_sequence_number();
+        }
+        let KeySourceSet {
+            client_to_server,
+            server_to_client,
+        } = keys;
+
+        // The cipher is negotiated during key exchange; currently this hard codes
+        // aes128-gcm@openssh.com, an AEAD that also provides integrity protection.
+        let results = (
+            provider.opening_key(client_to_server, &EncryptionAlgorithm::Aes128Gcm),
+            provider.sealing_key(server_to_client, &EncryptionAlgorithm::Aes128Gcm),
+        );
+        match results {
+            (Ok(opener), Ok(sealer)) => {
+                self.read.opener = Some(opener);
+                self.write.sealer = Some(sealer);
+                Ok(())
+            }
+            (Err(error), _) | (_, Err(error)) => {
+                error!(%error, "failed to create opening or sealing key");
+                Err(())
+            }
+        }
+    }
+
     async fn identify(&mut self) -> Result<HandshakeBuffer, Error> {
         // TODO: enforce timeout if this is taking too long
         let (buf, Decoded { value: ident, next }) = loop {
