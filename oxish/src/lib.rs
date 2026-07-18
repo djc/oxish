@@ -46,12 +46,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         provider: &'static dyn CryptoProvider,
     ) -> Self {
         Self {
-            io: IoStream {
-                stream,
-                addr,
-                read: ReadState::default(),
-                write: WriteState::new(provider.secure_random()),
-            },
+            io: IoStream::new(stream, addr, provider),
             host_key,
             auth: Auth::System,
             provider,
@@ -147,6 +142,16 @@ struct IoStream<T> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> IoStream<T> {
+    /// Create a new [`IoStream`]
+    fn new(stream: T, addr: SocketAddr, provider: &dyn CryptoProvider) -> Self {
+        Self {
+            stream,
+            addr,
+            read: ReadState::default(),
+            write: WriteState::new(provider.secure_random()),
+        }
+    }
+
     async fn update_keys(
         &mut self,
         keys: KeySourceSet,
