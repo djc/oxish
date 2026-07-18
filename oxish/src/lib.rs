@@ -96,7 +96,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        self.send_handshake(&key_exchange_init, Some(&mut exchange))
+        self.io
+            .send_handshake(&key_exchange_init, Some(&mut exchange))
             .await?;
 
         // Perform ECDH key exchange
@@ -126,7 +127,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        self.send(&key_exchange_reply).await?;
+        self.io.send(&key_exchange_reply).await?;
 
         // Exchange new keys packets and install new keys
 
@@ -139,10 +140,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     &OutgoingNameList(&[PublicKeyAlgorithm::EcdsaSha2Nistp256]),
                 )],
             };
-            self.send(&ext_info).await?;
+            self.io.send(&ext_info).await?;
         }
 
-        self.send(&MessageType::Ignore).await?;
+        self.io.send(&MessageType::Ignore).await?;
 
         // Handle authentication
 
@@ -166,14 +167,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 description: "only user authentication service is supported",
             };
 
-            self.send(&disconnect).await?;
+            self.io.send(&disconnect).await?;
             return Err(());
         }
 
         let service_accept = ServiceAccept {
             service_name: ServiceName::UserAuth,
         };
-        self.send(&service_accept).await?;
+        self.io.send(&service_accept).await?;
 
         let mut cached_user = None::<User>;
         let _user = loop {
@@ -197,7 +198,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     reason_code: DisconnectReason::ServiceNotAvailable,
                     description: "only connection service is supported",
                 };
-                self.send(&disconnect).await?;
+                self.io.send(&disconnect).await?;
                 return Err(());
             }
 
@@ -206,13 +207,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     method = ?user_auth_request.method,
                     "unsupported authentication method requested"
                 );
-                self.send_auth_failed().await?;
+                self.io.send_auth_failed().await?;
                 continue;
             };
 
             if public_key.algorithm != PublicKeyAlgorithm::EcdsaSha2Nistp256 {
                 warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
-                self.send_auth_failed().await?;
+                self.io.send_auth_failed().await?;
                 continue;
             }
 
@@ -221,7 +222,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 (_, auth) => match auth.resolve(user_auth_request.user_name, self.provider) {
                     Some(user) => cached_user.insert(user),
                     None => {
-                        self.send_auth_failed().await?;
+                        self.io.send_auth_failed().await?;
                         continue;
                     }
                 },
@@ -242,7 +243,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                         algorithm = ?public_key.algorithm,
                         "mismatched signature algorithm in authentication request"
                     );
-                    self.send_auth_failed().await?;
+                    self.io.send_auth_failed().await?;
                     continue;
                 }
                 // No signature, authorized key => send pk-ok and wait for signature
@@ -252,12 +253,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                         key_blob: Cow::Owned(public_key.key_blob.to_vec()),
                     };
                     debug!(ok = ?pk_ok, "sending pk-ok for user");
-                    self.send(&pk_ok).await?;
+                    self.io.send(&pk_ok).await?;
                     continue;
                 }
                 // No signature, no authorized key => fail authentication
                 (None, None) => {
-                    self.send_auth_failed().await?;
+                    self.io.send_auth_failed().await?;
                     continue;
                 }
             };
@@ -273,11 +274,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             match authorized_key.verify(message, sig).await {
                 Ok(()) => {
                     info!(user = %user.name, "authentication successful");
-                    self.send(&MessageType::UserAuthSuccess).await?;
+                    self.io.send(&MessageType::UserAuthSuccess).await?;
                     break user;
                 }
                 _ => {
-                    self.send_auth_failed().await?;
+                    self.io.send_auth_failed().await?;
                     continue;
                 }
             }
@@ -332,7 +333,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     match result {
                         Ok(Some(outgoing)) => {
                             debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
-                            self.send(&outgoing).await?;
+                            self.io.send(&outgoing).await?;
                         }
                         Ok(None) => {}
                         Err(error) => {
@@ -358,7 +359,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             self.io.read.reset_sequence_number();
         }
 
-        self.send(&NewKeys).await?;
+        self.io.send(&NewKeys).await?;
         if strict {
             self.io.write.reset_sequence_number();
         }
@@ -386,37 +387,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 Err(())
             }
         }
-    }
-
-    async fn send_auth_failed(&mut self) -> Result<(), ()> {
-        self.send(&UserAuthFailure {
-            can_continue: &[MethodName::PublicKey],
-            partial_success: false,
-        })
-        .await
-    }
-
-    async fn send(&mut self, payload: &impl Encode) -> Result<(), ()> {
-        self.send_handshake(payload, None).await
-    }
-
-    async fn send_handshake(
-        &mut self,
-        payload: &impl Encode,
-        exchange_hash: Option<&mut HandshakeHash>,
-    ) -> Result<(), ()> {
-        if let Err(error) = self.io.write.handle_packet(payload, exchange_hash) {
-            error!(%error, ?payload, "failed to encode packet");
-            return Err(());
-        }
-
-        let future = future::poll_fn(|cx| send(&mut self.io.stream, &mut self.io.write, cx));
-        if let Err(error) = future.await {
-            error!(%error, ?payload, "failed to write packet to stream");
-            return Err(());
-        }
-
-        Ok(())
     }
 }
 
@@ -478,6 +448,37 @@ impl<T: AsyncRead + AsyncWrite + Unpin> IoStream<T> {
         let last_length = buf.len() - rest;
         self.read.set_last_length(last_length);
         Ok(exchange)
+    }
+
+    async fn send_auth_failed(&mut self) -> Result<(), ()> {
+        self.send(&UserAuthFailure {
+            can_continue: &[MethodName::PublicKey],
+            partial_success: false,
+        })
+        .await
+    }
+
+    async fn send(&mut self, payload: &impl Encode) -> Result<(), ()> {
+        self.send_handshake(payload, None).await
+    }
+
+    async fn send_handshake(
+        &mut self,
+        payload: &impl Encode,
+        exchange_hash: Option<&mut HandshakeHash>,
+    ) -> Result<(), ()> {
+        if let Err(error) = self.write.handle_packet(payload, exchange_hash) {
+            error!(%error, ?payload, "failed to encode packet");
+            return Err(());
+        }
+
+        let future = future::poll_fn(|cx| send(&mut self.stream, &mut self.write, cx));
+        if let Err(error) = future.await {
+            error!(%error, ?payload, "failed to write packet to stream");
+            return Err(());
+        }
+
+        Ok(())
     }
 }
 
