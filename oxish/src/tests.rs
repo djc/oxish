@@ -7,7 +7,8 @@ use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout
 
 use crate::{Auth, Connection, Session, User, authentication::AuthorizedKey};
 
-/// Exercise a full handshake and session against the aws-lc-rs provider.
+/// Exercise a full handshake and session against the aws-lc-rs provider
+#[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ecdsa_aws_lc() {
     handshake(
@@ -17,7 +18,8 @@ async fn handshake_ecdsa_aws_lc() {
     .await;
 }
 
-/// Exercise a full handshake and session against the graviola provider.
+/// Exercise a full handshake and session against the graviola provider
+#[cfg(feature = "graviola")]
 #[tokio::test]
 async fn handshake_ecdsa_graviola() {
     handshake(
@@ -27,13 +29,15 @@ async fn handshake_ecdsa_graviola() {
     .await;
 }
 
-/// Exercise an ssh-ed25519 client key against the aws-lc-rs provider.
+/// Exercise an ssh-ed25519 client key against the aws-lc-rs provider
+#[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ed25519_aws_lc() {
     handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
 }
 
-/// Exercise an ssh-ed25519 client key against the graviola provider.
+/// Exercise an ssh-ed25519 client key against the graviola provider
+#[cfg(feature = "graviola")]
 #[tokio::test]
 async fn handshake_ed25519_graviola() {
     handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
@@ -147,9 +151,16 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
 }
 
 #[tokio::test]
-async fn ed25519_verify_cross_provider() {
-    for signer in [aws_lc::DEFAULT_PROVIDER, graviola::DEFAULT_PROVIDER] {
-        for verifier in [aws_lc::DEFAULT_PROVIDER, graviola::DEFAULT_PROVIDER] {
+async fn verify_keys() {
+    let providers = [
+        #[cfg(feature = "aws-lc")]
+        aws_lc::DEFAULT_PROVIDER,
+        #[cfg(feature = "graviola")]
+        graviola::DEFAULT_PROVIDER,
+    ];
+
+    for signer in providers {
+        for verifier in providers {
             let (signing_key, _) = signer
                 .generate_signing_key(&PublicKeyAlgorithm::Ed25519)
                 .expect("failed to generate signing key");

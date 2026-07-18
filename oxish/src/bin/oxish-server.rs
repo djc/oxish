@@ -4,13 +4,19 @@ use std::{
     io::{self, Write},
 };
 
+#[cfg(feature = "aws-lc")]
 use aws_lc::DEFAULT_PROVIDER;
 use clap::Parser;
+#[cfg(all(feature = "graviola", not(feature = "aws-lc")))]
+use graviola::DEFAULT_PROVIDER;
 use listenfd::ListenFd;
 use oxish::{Auth, Connection, Session};
 use proto::PublicKeyAlgorithm;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
+
+#[cfg(all(not(feature = "aws-lc"), not(feature = "graviola")))]
+compile_error!("no crypto providers enabled -- enable at least one to fix this error");
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

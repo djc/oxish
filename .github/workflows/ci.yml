@@ -24,6 +24,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
+      - run: cargo check --all-targets
+      - run: cargo check --no-default-features --features aws-lc --all-targets
       - run: cargo check --all-features --all-targets
       - run: cargo test --all-features
 
@@ -34,7 +36,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.85.0
-      - run: cargo check --all-features --bins
+      # aws-lc-rs has a lower MSRV than graviola, so we use it to test our MSRV
+      - run: cargo check -p oxish --no-default-features --features aws-lc --bins
 
   lint:
     runs-on: ubuntu-latest
