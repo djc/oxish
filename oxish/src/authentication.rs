@@ -1,4 +1,4 @@
-use core::{ffi::c_char, fmt, ops::ControlFlow};
+use core::{ffi::c_char, fmt, ops::ControlFlow, time::Duration};
 #[cfg(target_vendor = "apple")]
 use std::os::darwin::fs::MetadataExt;
 #[cfg(target_os = "linux")]
@@ -29,6 +29,7 @@ use proto::{
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     task::spawn_blocking,
+    time::timeout,
 };
 use tracing::{debug, error, info, instrument, warn};
 
@@ -52,8 +53,27 @@ impl Auth {
         conn: &mut Connection<T>,
         provider: &dyn CryptoProvider,
     ) -> Result<User, ()> {
-        // Handle authentication
+        let future = self.inner(session_id, conn, provider);
+        if let Ok(result) = timeout(Duration::from_secs(60), future).await {
+            return result;
+        }
 
+        error!("authentication timed out");
+        let disconnect = Disconnect {
+            reason_code: DisconnectReason::ByApplication,
+            description: "authentication timed out",
+        };
+
+        let _ = timeout(Duration::from_secs(1), conn.send(&disconnect)).await;
+        Err(())
+    }
+
+    async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        session_id: Digest,
+        conn: &mut Connection<T>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<User, ()> {
         let packet = receive(&mut conn.stream, &mut conn.read).await?;
         let service_request = match ServiceRequest::try_from(packet) {
             Ok(req) => req,
