@@ -6,6 +6,7 @@ use std::os::linux::fs::MetadataExt;
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "linux")))]
 use std::os::unix::fs::MetadataExt;
 use std::{
+    borrow::Cow,
     ffi::{CStr, CString, OsStr},
     fs::File,
     io::{self, Read},
@@ -20,13 +21,19 @@ use std::{
 
 use libc::{getpwnam_r, sysconf, _SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY};
 use proto::{
-    crypto::{CryptoProvider, VerifyingKey},
-    Decode, Decoded, Named, ProtoError, PublicKeyAlgorithm, Signature, SignatureData,
+    crypto::{CryptoProvider, SigningKey, VerifyingKey},
+    Decode, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, EcdhKeyExchangeReply,
+    ExtInfo, ExtensionId, ExtensionName, KeyExchangeInit, MessageType, Method, Named,
+    OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept, ServiceName, ServiceRequest,
+    Signature, SignatureData, UserAuthPkOk, UserAuthRequest,
 };
-use tokio::task::spawn_blocking;
-use tracing::{debug, error, warn};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    task::spawn_blocking,
+};
+use tracing::{debug, error, info, warn};
 
-use crate::Error;
+use crate::{receive, Error, IoStream};
 
 pub(crate) enum Auth {
     /// Look up the requested user in the system database and read their
@@ -38,6 +45,229 @@ pub(crate) enum Auth {
 }
 
 impl Auth {
+    pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        io: &mut IoStream<T>,
+        host_key: &dyn SigningKey,
+        provider: &dyn CryptoProvider,
+    ) -> Result<User, ()> {
+        let exchange = match io.identify().await {
+            Ok(exchange) => exchange,
+            Err(error) => {
+                error!(%error, "failed to identify client");
+                return Err(());
+            }
+        };
+
+        // Receive and send key exchange init packets
+
+        let packet = receive(&mut io.stream, &mut io.read).await?;
+        let (key_exchange_init, mut exchange, negotiated) = match KeyExchangeInit::peer(
+            packet,
+            exchange,
+            vec![host_key.algorithm()],
+            [ExtensionId::StrictKexServer].into_iter(),
+            provider,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                error!(%error, "failed to read key exchange init");
+                return Err(());
+            }
+        };
+
+        io.send_handshake(&key_exchange_init, Some(&mut exchange))
+            .await?;
+
+        // Perform ECDH key exchange
+
+        let packet = receive(&mut io.stream, &mut io.read).await?;
+        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
+            Ok(key_exchange_init) => key_exchange_init,
+            Err(error) => {
+                error!(%error, "failed to read ecdh key exchange init");
+                return Err(());
+            }
+        };
+
+        let result = EcdhKeyExchangeReply::new(
+            ecdh_key_exchange_init,
+            &negotiated,
+            exchange,
+            host_key,
+            provider,
+        );
+
+        let (key_exchange_reply, session_id, keys) = match result {
+            Ok(out) => out,
+            Err(error) => {
+                error!(%error, "failed to complete ecdh key exchange");
+                return Err(());
+            }
+        };
+
+        io.send(&key_exchange_reply).await?;
+
+        // Exchange new keys packets and install new keys
+
+        io.update_keys(keys, negotiated.strict_key_exchange, provider)
+            .await?;
+        if negotiated.want_extension_info {
+            let ext_info = ExtInfo {
+                extensions: vec![(
+                    ExtensionName::ServerSigAlgs,
+                    &OutgoingNameList(&[PublicKeyAlgorithm::EcdsaSha2Nistp256]),
+                )],
+            };
+            io.send(&ext_info).await?;
+        }
+
+        io.send(&MessageType::Ignore).await?;
+
+        // Handle authentication
+
+        let packet = receive(&mut io.stream, &mut io.read).await?;
+        let service_request = match ServiceRequest::try_from(packet) {
+            Ok(req) => req,
+            Err(error) => {
+                error!(%error, "failed to read service request");
+                return Err(());
+            }
+        };
+
+        if service_request.service_name != ServiceName::UserAuth {
+            error!(
+                service_name = ?service_request.service_name,
+                "unsupported service requested"
+            );
+
+            let disconnect = Disconnect {
+                reason_code: DisconnectReason::ServiceNotAvailable,
+                description: "only user authentication service is supported",
+            };
+
+            io.send(&disconnect).await?;
+            return Err(());
+        }
+
+        let service_accept = ServiceAccept {
+            service_name: ServiceName::UserAuth,
+        };
+        io.send(&service_accept).await?;
+
+        let mut cached_user = None::<User>;
+        loop {
+            let packet = receive(&mut io.stream, &mut io.read).await?;
+            let user_auth_request = match UserAuthRequest::try_from(packet) {
+                Ok(req) => req,
+                Err(error) => {
+                    error!(%error, "failed to read user auth request");
+                    return Err(());
+                }
+            };
+
+            debug!(?user_auth_request, "received user auth request");
+            if user_auth_request.service_name != ServiceName::Connection {
+                error!(
+                    service_name = ?user_auth_request.service_name,
+                    "unsupported service requested"
+                );
+
+                let disconnect = Disconnect {
+                    reason_code: DisconnectReason::ServiceNotAvailable,
+                    description: "only connection service is supported",
+                };
+                io.send(&disconnect).await?;
+                return Err(());
+            }
+
+            let Method::PublicKey(public_key) = user_auth_request.method else {
+                warn!(
+                    method = ?user_auth_request.method,
+                    "unsupported authentication method requested"
+                );
+                io.send_auth_failed().await?;
+                continue;
+            };
+
+            if public_key.algorithm != PublicKeyAlgorithm::EcdsaSha2Nistp256 {
+                warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
+                io.send_auth_failed().await?;
+                continue;
+            }
+
+            let user = match (&mut cached_user, self) {
+                (Some(user), _) if user.name == user_auth_request.user_name => user,
+                (_, auth) => match auth.resolve(user_auth_request.user_name, provider) {
+                    Some(user) => cached_user.insert(user),
+                    None => {
+                        io.send_auth_failed().await?;
+                        continue;
+                    }
+                },
+            };
+
+            let authorized_key = user.authorized_keys.iter().find(|key| {
+                key.algorithm == public_key.algorithm && key.blob.as_slice() == public_key.key_blob
+            });
+
+            let (sig, authorized_key) = match (public_key.signature, authorized_key) {
+                // Signature, authorized key => verify signature
+                (Some(sig), Some(key)) if sig.algorithm == key.algorithm => (sig, key.clone()),
+                // Signature, no authorized key => verify signature against fake key
+                (Some(sig), None) => (sig, AuthorizedKey::fake(provider)),
+                // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
+                (Some(_), Some(_)) => {
+                    warn!(
+                        algorithm = ?public_key.algorithm,
+                        "mismatched signature algorithm in authentication request"
+                    );
+                    io.send_auth_failed().await?;
+                    continue;
+                }
+                // No signature, authorized key => send pk-ok and wait for signature
+                (None, Some(_)) => {
+                    let pk_ok = UserAuthPkOk {
+                        algorithm: public_key.algorithm.to_owned(),
+                        key_blob: Cow::Owned(public_key.key_blob.to_vec()),
+                    };
+                    debug!(ok = ?pk_ok, "sending pk-ok for user");
+                    io.send(&pk_ok).await?;
+                    continue;
+                }
+                // No signature, no authorized key => fail authentication
+                (None, None) => {
+                    io.send_auth_failed().await?;
+                    continue;
+                }
+            };
+
+            let message = SignatureData {
+                session_id: session_id.as_ref(),
+                user_name: &user.name,
+                service_name: user_auth_request.service_name,
+                algorithm: public_key.algorithm,
+                public_key: public_key.key_blob,
+            };
+
+            match authorized_key.verify(message, sig).await {
+                Ok(()) => {
+                    let Some(user) = cached_user else {
+                        return Err(());
+                    };
+
+                    info!(user = %user.name, "authentication successful");
+                    io.send(&MessageType::UserAuthSuccess).await?;
+                    break Ok(user);
+                }
+                _ => {
+                    io.send_auth_failed().await?;
+                    continue;
+                }
+            }
+        }
+    }
+
     pub(crate) fn resolve(&self, name: &str, provider: &dyn CryptoProvider) -> Option<User> {
         match self {
             Self::System => match User::from_system(name, provider) {
@@ -65,20 +295,20 @@ impl Auth {
 
 #[derive(Clone, Debug)]
 pub(crate) struct User {
-    pub(crate) name: String,
+    name: String,
     #[expect(dead_code)]
-    pub(crate) id: u32,
+    id: u32,
     #[expect(dead_code)]
-    pub(crate) home_dir: PathBuf,
+    home_dir: PathBuf,
     /// Cached authorized keys for the user
     ///
     /// Since finding the authorized keys can be somewhat expensive, prefer to cache them
     /// here so we can reuse them across attempts for the same user.
-    pub(crate) authorized_keys: Vec<AuthorizedKey>,
+    authorized_keys: Vec<AuthorizedKey>,
 }
 
 impl User {
-    pub(crate) fn from_system(name: &str, provider: &dyn CryptoProvider) -> Result<Self, Error> {
+    fn from_system(name: &str, provider: &dyn CryptoProvider) -> Result<Self, Error> {
         let c_name = CString::new(name).map_err(|_| Error::InvalidUsername)?;
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
@@ -160,11 +390,7 @@ impl User {
 /// - None of the path components have group or other write permissions
 /// - Each of the path components are owned by root or the target user
 /// - Avoid TOCTOU issues when opening each path component
-pub(crate) fn authorized_keys(
-    home_dir: &Path,
-    uid: u32,
-    provider: &dyn CryptoProvider,
-) -> Vec<AuthorizedKey> {
+fn authorized_keys(home_dir: &Path, uid: u32, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
     let home = match File::open(home_dir) {
         Ok(file) => file,
         Err(error) => {
@@ -256,13 +482,13 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
 
 #[derive(Clone)]
 pub(crate) struct AuthorizedKey {
-    pub(crate) algorithm: PublicKeyAlgorithm<'static>,
-    pub(crate) blob: Vec<u8>,
-    pub(crate) key: Arc<dyn VerifyingKey>,
+    algorithm: PublicKeyAlgorithm<'static>,
+    blob: Vec<u8>,
+    key: Arc<dyn VerifyingKey>,
 }
 
 impl AuthorizedKey {
-    pub(crate) fn fake(provider: &dyn CryptoProvider) -> Self {
+    fn fake(provider: &dyn CryptoProvider) -> Self {
         Self {
             algorithm: PublicKeyAlgorithm::EcdsaSha2Nistp256,
             blob: Vec::new(),
@@ -335,7 +561,7 @@ impl AuthorizedKey {
         }))
     }
 
-    pub(crate) async fn verify(
+    async fn verify(
         &self,
         message: SignatureData<'_>,
         signature: Signature<'_>,

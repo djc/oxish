@@ -5,7 +5,7 @@ use proto::{crypto::CryptoProvider, PublicKeyAlgorithm};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
-use crate::{AuthorizedKey, Connection, User};
+use crate::{authentication::AuthorizedKey, Connection, User};
 
 /// Exercise a full handshake and session against the aws-lc-rs provider.
 #[tokio::test]
