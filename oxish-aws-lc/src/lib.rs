@@ -90,9 +90,8 @@ impl CryptoProvider for Provider {
         &self,
         counter: u64,
         source: &KeySourceSide,
-        algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn OpeningKey>, CryptoError> {
-        match algorithm {
+        match source.algorithm {
             EncryptionAlgorithm::Aes128Gcm => {
                 Ok(Box::new(Aes128GcmOpener(GcmState::new(counter, source)?)))
             }
@@ -104,9 +103,8 @@ impl CryptoProvider for Provider {
         &self,
         counter: u64,
         source: &KeySourceSide,
-        algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn SealingKey>, CryptoError> {
-        match algorithm {
+        match source.algorithm {
             EncryptionAlgorithm::Aes128Gcm => {
                 Ok(Box::new(Aes128GcmSealer(GcmState::new(counter, source)?)))
             }
