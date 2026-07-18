@@ -11,7 +11,7 @@ use clap::Parser;
 use graviola::DEFAULT_PROVIDER;
 use listenfd::ListenFd;
 use oxish::{Auth, Connection, Session};
-use proto::PublicKeyAlgorithm;
+use proto::{Named, PublicKeyAlgorithm};
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
@@ -29,8 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let host_key = if args.generate_host_key {
         match File::create_new(&args.host_key_file) {
             Ok(mut host_key_file) => {
-                let Ok((_, pkcs8)) = provider.generate_signing_key(&PublicKeyAlgorithm::Ed25519)
-                else {
+                let Ok((_, pkcs8)) = provider.generate_signing_key(&args.host_key_type) else {
                     anyhow::bail!("failed to generate host key");
                 };
 
@@ -106,4 +105,13 @@ struct Args {
     host_key_file: String,
     #[clap(long)]
     generate_host_key: bool,
+    #[clap(long, value_parser = host_key_type, default_value = "ssh-ed25519")]
+    host_key_type: PublicKeyAlgorithm<'static>,
+}
+
+fn host_key_type(name: &str) -> Result<PublicKeyAlgorithm<'static>, String> {
+    match PublicKeyAlgorithm::typed(name) {
+        PublicKeyAlgorithm::Unknown(_) => Err(format!("unsupported host key type `{name}`")),
+        algorithm => Ok(algorithm.to_owned()),
+    }
 }

@@ -6,7 +6,7 @@ use ::aws_lc_rs::{
     digest,
     kem::ML_KEM_768,
     rand,
-    signature::{self, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
+    signature::{self, EcdsaKeyPair, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
 };
 use aws_lc_rs::kem::EncapsulationKey;
 use proto::{
@@ -42,14 +42,32 @@ impl CryptoProvider for Provider {
 
                 Ok((Arc::new(Ed25519SigningKey::new(key_pair)), pkcs8))
             }
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
+                let key_pair = EcdsaKeyPair::generate(&signature::ECDSA_P256_SHA256_FIXED_SIGNING)
+                    .map_err(|_| CryptoError::KeyGenerationFailed)?;
+
+                let pkcs8 = key_pair
+                    .to_pkcs8v1()
+                    .map_err(|_| CryptoError::Unspecified)?
+                    .as_ref()
+                    .to_vec();
+
+                Ok((Arc::new(EcdsaP256SigningKey::new(key_pair)), pkcs8))
+            }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Arc<dyn SigningKey>, CryptoError> {
-        Ok(Arc::new(Ed25519SigningKey::new(
-            Ed25519KeyPair::from_pkcs8(pkcs8).map_err(|_| CryptoError::KeyRejected)?,
-        )))
+        // The PKCS#8 algorithm identifier distinguishes the key type; each loader
+        // validates it, so try Ed25519 first and fall back to ECDSA P-256.
+        if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(pkcs8) {
+            return Ok(Arc::new(Ed25519SigningKey::new(key_pair)));
+        }
+
+        let key_pair = EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8)
+            .map_err(|_| CryptoError::KeyRejected)?;
+        Ok(Arc::new(EcdsaP256SigningKey::new(key_pair)))
     }
 
     fn verifying_key(
@@ -319,6 +337,41 @@ impl SigningKey for Ed25519SigningKey {
 
     fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
         PublicKeyAlgorithm::Ed25519
+    }
+}
+
+struct EcdsaP256SigningKey {
+    key_pair: EcdsaKeyPair,
+    public_key: Vec<u8>,
+}
+
+impl EcdsaP256SigningKey {
+    fn new(key_pair: EcdsaKeyPair) -> Self {
+        // `public_key()` returns the point in X9.62 uncompressed form.
+        let public_key = key_pair.public_key().as_ref().to_vec();
+        Self {
+            key_pair,
+            public_key,
+        }
+    }
+}
+
+impl SigningKey for EcdsaP256SigningKey {
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
+        // The fixed-format algorithm yields a 64-byte `r || s` signature; the SSH mpint framing
+        // is applied by the protocol layer. aws-lc-rs ignores the supplied RNG for ECDSA signing.
+        match self.key_pair.sign(&rand::SystemRandom::new(), message) {
+            Ok(signature) => signature.as_ref().to_vec(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn public_key(&self) -> &[u8] {
+        &self.public_key
+    }
+
+    fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
+        PublicKeyAlgorithm::EcdsaSha2Nistp256
     }
 }
 
