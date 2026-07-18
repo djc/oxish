@@ -272,8 +272,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // The cipher is negotiated during key exchange; currently this hard codes
         // aes128-gcm@openssh.com, an AEAD that also provides integrity protection.
         let results = (
-            provider.opening_key(&client_to_server, &EncryptionAlgorithm::Aes128Gcm),
-            provider.sealing_key(&server_to_client, &EncryptionAlgorithm::Aes128Gcm),
+            provider.opening_key(0, &client_to_server, &EncryptionAlgorithm::Aes128Gcm),
+            provider.sealing_key(0, &server_to_client, &EncryptionAlgorithm::Aes128Gcm),
         );
         match results {
             (Ok(opener), Ok(sealer)) => {

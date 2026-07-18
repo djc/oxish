@@ -29,16 +29,18 @@ pub trait CryptoProvider: Send + Sync {
         algorithm: &PublicKeyAlgorithm<'_>,
     ) -> Result<Arc<dyn VerifyingKey>, CryptoError>;
 
-    /// Build a decryption state from `key` and `iv`
+    /// Build a decryption state from key `source` material and initial `counter`
     fn opening_key(
         &self,
+        counter: u64,
         source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn OpeningKey>, CryptoError>;
 
-    /// Build an encryption state from `key` and `iv`
+    /// Build an encryption state from key `source` material and initial `counter`
     fn sealing_key(
         &self,
+        counter: u64,
         source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn SealingKey>, CryptoError>;

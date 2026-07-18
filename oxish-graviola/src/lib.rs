@@ -95,22 +95,28 @@ impl CryptoProvider for Provider {
 
     fn opening_key(
         &self,
+        counter: u64,
         source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn OpeningKey>, CryptoError> {
         match algorithm {
-            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmOpener(GcmState::new(source)))),
+            EncryptionAlgorithm::Aes128Gcm => {
+                Ok(Box::new(Aes128GcmOpener(GcmState::new(counter, source)?)))
+            }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn sealing_key(
         &self,
+        counter: u64,
         source: &KeySourceSide,
         algorithm: &EncryptionAlgorithm<'_>,
     ) -> Result<Box<dyn SealingKey>, CryptoError> {
         match algorithm {
-            EncryptionAlgorithm::Aes128Gcm => Ok(Box::new(Aes128GcmSealer(GcmState::new(source)))),
+            EncryptionAlgorithm::Aes128Gcm => {
+                Ok(Box::new(Aes128GcmSealer(GcmState::new(counter, source)?)))
+            }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -216,11 +222,21 @@ struct GcmState {
 }
 
 impl GcmState {
-    fn new(source: &KeySourceSide) -> Self {
-        Self {
+    fn new(counter: u64, source: &KeySourceSide) -> Result<Self, CryptoError> {
+        let mut nonce = source.initial_iv.derive::<NONCE_LEN>();
+        let Some(counter_dst) = nonce.last_chunk_mut::<8>() else {
+            return Err(CryptoError::InvalidLength);
+        };
+
+        let Some(new) = u64::from_be_bytes(*counter_dst).checked_add(counter) else {
+            return Err(CryptoError::NonceOverflow);
+        };
+
+        *counter_dst = new.to_be_bytes();
+        Ok(Self {
             key: AesGcm::new(&source.encryption_key.derive::<16>()),
-            nonce: source.initial_iv.derive::<NONCE_LEN>(),
-        }
+            nonce,
+        })
     }
 
     /// Return the nonce for the next packet and advance the invocation counter
