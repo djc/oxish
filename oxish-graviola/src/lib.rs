@@ -7,7 +7,7 @@ use graviola::{
     random,
     signing::{
         ecdsa::{self, P256},
-        eddsa::Ed25519SigningKey,
+        eddsa::{Ed25519SigningKey, Ed25519VerifyingKey as GEd25519VerifyingKey},
     },
 };
 use proto::{
@@ -65,6 +65,9 @@ impl CryptoProvider for Provider {
                 ecdsa::VerifyingKey::<P256>::from_x962_uncompressed(key)
                     .map_err(|_| CryptoError::KeyRejected)?,
             ))),
+            PublicKeyAlgorithm::Ed25519 => Ok(Arc::new(Ed25519VerifyingKey(
+                GEd25519VerifyingKey::from_bytes(key).map_err(|_| CryptoError::KeyRejected)?,
+            ))),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
@@ -111,7 +114,10 @@ impl CryptoProvider for Provider {
     fn supported_algorithms(&self) -> SupportedAlgorithms {
         SupportedAlgorithms {
             key_exchange: &[KeyExchangeAlgorithm::MlKem768X25519Sha256],
-            public_key: &[PublicKeyAlgorithm::EcdsaSha2Nistp256],
+            public_key: &[
+                PublicKeyAlgorithm::EcdsaSha2Nistp256,
+                PublicKeyAlgorithm::Ed25519,
+            ],
             encryption: &[EncryptionAlgorithm::Aes128Gcm],
             mac: &[MacAlgorithm::None],
         }
@@ -301,6 +307,16 @@ impl VerifyingKey for EcdsaP256VerifyingKey {
         // fixed-length r||s encoding graviola expects.
         self.0
             .verify::<GSha256>(&[message], signature)
+            .map_err(|_| CryptoError::VerificationFailed)
+    }
+}
+
+struct Ed25519VerifyingKey(GEd25519VerifyingKey);
+
+impl VerifyingKey for Ed25519VerifyingKey {
+    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
+        self.0
+            .verify(signature, message)
             .map_err(|_| CryptoError::VerificationFailed)
     }
 }

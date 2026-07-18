@@ -24,7 +24,7 @@ use proto::{
     Decode, Decoded, Disconnect, DisconnectReason, MessageType, Method, Named, ProtoError,
     PublicKeyAlgorithm, ServiceAccept, ServiceName, ServiceRequest, Signature, SignatureData,
     UserAuthPkOk, UserAuthRequest,
-    crypto::{CryptoProvider, Digest, VerifyingKey},
+    crypto::{CryptoError, CryptoProvider, Digest, VerifyingKey},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -138,12 +138,6 @@ impl Auth {
                 continue;
             };
 
-            if public_key.algorithm != PublicKeyAlgorithm::EcdsaSha2Nistp256 {
-                warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
-                conn.send_auth_failed().await?;
-                continue;
-            }
-
             let user = match (&mut cached_user, self) {
                 (Some(user), _) if user.name == user_auth_request.user_name => user,
                 (_, auth) => match auth.resolve(user_auth_request.user_name, provider) {
@@ -163,7 +157,17 @@ impl Auth {
                 // Signature, authorized key => verify signature
                 (Some(sig), Some(key)) if sig.algorithm == key.algorithm => (sig, key.clone()),
                 // Signature, no authorized key => verify signature against fake key
-                (Some(sig), None) => (sig, AuthorizedKey::fake(provider)),
+                (Some(sig), None) => (
+                    sig,
+                    match AuthorizedKey::fake(&public_key.algorithm, provider) {
+                        Ok(key) => key,
+                        Err(_) => {
+                            warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
+                            conn.send_auth_failed().await?;
+                            continue;
+                        }
+                    },
+                ),
                 // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
                 (Some(_), Some(_)) => {
                     warn!(
@@ -436,14 +440,28 @@ pub(crate) struct AuthorizedKey {
 }
 
 impl AuthorizedKey {
-    fn fake(provider: &dyn CryptoProvider) -> Self {
-        Self {
-            algorithm: PublicKeyAlgorithm::EcdsaSha2Nistp256,
+    /// Build a fake key for the given `algorithm` to mitigate timing attacks
+    ///
+    /// We want to execute a signature verification even when the user does not have a matching
+    /// authorized key, so we build a fake key for the requested algorithm and verify the
+    /// signature against it. This ensures that the response time is consistent regardless of
+    /// whether the user has a matching authorized key.
+    fn fake(
+        algorithm: &PublicKeyAlgorithm<'_>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, CryptoError> {
+        Ok(Self {
+            key: provider.verifying_key(
+                match algorithm {
+                    PublicKeyAlgorithm::EcdsaSha2Nistp256 => &Self::FAKE_ECDSA_P256_KEY[..],
+                    PublicKeyAlgorithm::Ed25519 => &Self::FAKE_ED25519_KEY[..],
+                    _ => return Err(CryptoError::UnknownAlgorithm),
+                },
+                algorithm,
+            )?,
+            algorithm: algorithm.to_owned(),
             blob: Vec::new(),
-            key: provider
-                .verifying_key(&Self::FAKE_KEY[..], &PublicKeyAlgorithm::EcdsaSha2Nistp256)
-                .expect("fake key uses a supported algorithm"),
-        }
+        })
     }
 
     pub(crate) fn from_str(s: &str, provider: &dyn CryptoProvider) -> Result<Option<Self>, ()> {
@@ -475,36 +493,71 @@ impl AuthorizedKey {
             return Err(());
         };
 
-        let next = match <&[u8]>::decode(&blob) {
-            // Unused `key_type` field, should match `alg`
-            Ok(Decoded { next, .. }) => next,
-            Err(error) => {
-                debug!(%error, "invalid key type");
-                return Err(());
-            }
+        let Ok(Decoded {
+            value: key_type,
+            next,
+        }) = <&[u8]>::decode(&blob)
+        else {
+            debug!("failed to decode key blob");
+            return Err(());
         };
 
-        let next = match <&[u8]>::decode(next) {
-            // Unused `curve_name` field
-            Ok(Decoded { next, .. }) => next,
-            Err(error) => {
-                debug!(%error, "invalid curve name");
-                return Err(());
-            }
-        };
+        if key_type != algorithm.name().as_bytes() {
+            debug!(?key_type, ?algorithm, "key type does not match algorithm");
+            return Err(());
+        }
 
-        let q = match <&[u8]>::decode(next) {
-            // TODO: what does the trailing data mean?
-            Ok(Decoded { value: q, .. }) => q,
-            Err(error) => {
-                debug!(%error, "invalid public key data");
+        let key = match algorithm {
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
+                let Ok(Decoded { next, .. }) = <&[u8]>::decode(next) else {
+                    debug!("invalid public key data");
+                    return Err(());
+                };
+
+                let Ok(Decoded { value, next }) = <&[u8]>::decode(next) else {
+                    debug!("invalid public key data");
+                    return Err(());
+                };
+
+                if !next.is_empty() {
+                    debug!("trailing data after ECDSA public key");
+                    return Err(());
+                }
+
+                let Ok(key) = provider.verifying_key(value, &algorithm) else {
+                    debug!("failed to build verifying key");
+                    return Err(());
+                };
+
+                key
+            }
+            PublicKeyAlgorithm::Ed25519 => {
+                let Ok(Decoded { value, next }) = <&[u8]>::decode(next) else {
+                    debug!("invalid public key data");
+                    return Err(());
+                };
+
+                if !next.is_empty() {
+                    debug!("trailing data after ED25519 public key");
+                    return Err(());
+                }
+
+                let Ok(key) = provider.verifying_key(value, &algorithm) else {
+                    debug!("failed to build verifying key");
+                    return Err(());
+                };
+
+                key
+            }
+            PublicKeyAlgorithm::Unknown(_) => {
+                debug!(?algorithm, "unsupported public key algorithm");
                 return Err(());
             }
         };
 
         Ok(Some(Self {
             algorithm: algorithm.to_owned(),
-            key: provider.verifying_key(q, &algorithm).map_err(|_| ())?,
+            key,
             blob,
         }))
     }
@@ -514,7 +567,7 @@ impl AuthorizedKey {
         message: SignatureData<'_>,
         signature: Signature<'_>,
     ) -> Result<(), ProtoError> {
-        match &self.algorithm {
+        let signature = match &self.algorithm {
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
                 let Decoded {
                     value: r,
@@ -541,36 +594,42 @@ impl AuthorizedKey {
                     ));
                 }
 
-                let encoded = message.encode();
-                let key = self.key.clone();
-                spawn_blocking(move || {
-                    key.verify(&encoded, &fixed)
-                        .map_err(|_| ProtoError::InvalidPacket("invalid signature"))
-                })
-                .await
-                .map_err(|_| ProtoError::InvalidPacket("signature verification task failed"))?
+                fixed.to_vec()
             }
+            PublicKeyAlgorithm::Ed25519 => signature.signature_blob.to_vec(),
             algorithm => {
                 warn!(
                     ?algorithm,
                     "unsupported public key algorithm for verification"
                 );
-                Err(ProtoError::InvalidPacket(
+                return Err(ProtoError::InvalidPacket(
                     "unsupported public key algorithm for verification",
-                ))
+                ));
             }
-        }
+        };
+
+        let encoded = message.encode();
+        let key = self.key.clone();
+        spawn_blocking(move || {
+            key.verify(&encoded, &signature)
+                .map_err(|_| ProtoError::InvalidPacket("invalid signature"))
+        })
+        .await
+        .map_err(|_| ProtoError::InvalidPacket("signature verification task failed"))?
     }
 
-    /// A random key used to mitigate timing attacks during authentication.
-    ///
-    /// When no matching authorized key is found, we still perform signature
-    /// verification against this key so the response time is consistent.
-    const FAKE_KEY: [u8; 65] = [
+    /// Random ECDSA-P256 key used to mitigate timing attacks during authentication
+    const FAKE_ECDSA_P256_KEY: [u8; 65] = [
         4, 78, 12, 149, 151, 123, 231, 212, 239, 236, 97, 37, 76, 163, 223, 212, 61, 5, 10, 96,
         214, 7, 210, 196, 146, 69, 178, 104, 253, 196, 241, 61, 7, 253, 242, 178, 22, 112, 52, 123,
         76, 129, 155, 245, 233, 144, 111, 94, 173, 252, 107, 114, 3, 36, 2, 237, 66, 51, 119, 181,
         246, 15, 91, 101, 104,
+    ];
+
+    /// Random Ed25519 public key used to mitigate timing attacks during authentication
+    const FAKE_ED25519_KEY: [u8; 32] = [
+        53, 254, 24, 208, 158, 138, 72, 33, 71, 112, 54, 108, 176, 116, 42, 105, 104, 190, 172, 93,
+        11, 224, 84, 28, 7, 216, 133, 129, 156, 80, 156, 64,
     ];
 }
 
