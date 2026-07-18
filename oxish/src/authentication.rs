@@ -35,7 +35,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{receive, Error, IoStream};
 
-pub(crate) enum Auth {
+pub enum Auth {
     /// Look up the requested user in the system database and read their
     /// `authorized_keys` file.
     System,
@@ -45,7 +45,8 @@ pub(crate) enum Auth {
 }
 
 impl Auth {
-    pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
+    /// Authenticate a user over the given SSH connection
+    pub async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
         &self,
         io: &mut IoStream<T>,
         host_key: &dyn SigningKey,
@@ -294,7 +295,7 @@ impl Auth {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct User {
+pub struct User {
     name: String,
     #[expect(dead_code)]
     id: u32,
