@@ -3,9 +3,11 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use tracing::warn;
 
-use super::base::{Decode, Decoded, Encode, IncomingPacket, MessageType};
-use super::named::ChannelType;
-use super::ProtoError;
+use crate::{
+    ProtoError,
+    base::{Decode, Decoded, Encode, IncomingPacket, MessageType},
+    named::ChannelType,
+};
 
 #[derive(Debug)]
 pub struct ChannelOpen<'a> {
@@ -49,7 +51,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
                 false => {
                     return Err(ProtoError::InvalidPacket(
                         "extra data in channel open packet",
-                    ))
+                    ));
                 }
             },
             ChannelType::Unknown(_) => {}
@@ -171,7 +173,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     false => {
                         return Err(ProtoError::InvalidPacket(
                             "extra data in pty-req channel request",
-                        ))
+                        ));
                     }
                 }
             }
@@ -182,7 +184,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     false => {
                         return Err(ProtoError::InvalidPacket(
                             "extra data in env channel request",
-                        ))
+                        ));
                     }
                 }
             }
@@ -191,7 +193,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                 false => {
                     return Err(ProtoError::InvalidPacket(
                         "extra data in shell channel request",
-                    ))
+                    ));
                 }
             },
             _ => {

@@ -241,7 +241,7 @@ impl<'a> Decode<'a> for PublicKey<'a> {
             (false, false) => {
                 return Err(ProtoError::InvalidPacket(
                     "trailing bytes in public key auth without signature",
-                ))
+                ));
             }
             (true, _) => {
                 let Decoded {

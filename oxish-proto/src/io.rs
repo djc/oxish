@@ -2,9 +2,9 @@ use core::iter;
 use std::io;
 
 use crate::{
-    crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
     ProtoError,
+    crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
 };
 
 /// The reader and decryption state for an SSH connection

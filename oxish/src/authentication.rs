@@ -19,13 +19,13 @@ use std::{
     sync::Arc,
 };
 
-use libc::{getpwnam_r, sysconf, _SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY};
+use libc::{_SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY, getpwnam_r, sysconf};
 use proto::{
-    crypto::{CryptoProvider, SigningKey, VerifyingKey},
     Decode, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, EcdhKeyExchangeReply,
     ExtInfo, ExtensionId, ExtensionName, KeyExchangeInit, MessageType, Method, Named,
     OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept, ServiceName, ServiceRequest,
     Signature, SignatureData, UserAuthPkOk, UserAuthRequest,
+    crypto::{CryptoProvider, SigningKey, VerifyingKey},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -33,7 +33,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::{receive, Error, IoStream};
+use crate::{Error, IoStream, receive};
 
 pub enum Auth {
     /// Look up the requested user in the system database and read their

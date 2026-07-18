@@ -1,6 +1,6 @@
 use core::fmt;
 
-use super::ProtoError;
+use crate::ProtoError;
 
 pub struct IncomingPacket<'a> {
     pub sequence_number: u32,
