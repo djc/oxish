@@ -21,17 +21,16 @@ use std::{
 
 use libc::{_SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY, getpwnam_r, sysconf};
 use proto::{
-    Decode, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, EcdhKeyExchangeReply,
-    ExtInfo, ExtensionId, ExtensionName, KeyExchangeInit, MessageType, Method, Named,
-    OutgoingNameList, ProtoError, PublicKeyAlgorithm, ServiceAccept, ServiceName, ServiceRequest,
-    Signature, SignatureData, UserAuthPkOk, UserAuthRequest,
-    crypto::{CryptoProvider, SigningKey, VerifyingKey},
+    Decode, Decoded, Disconnect, DisconnectReason, MessageType, Method, Named, ProtoError,
+    PublicKeyAlgorithm, ServiceAccept, ServiceName, ServiceRequest, Signature, SignatureData,
+    UserAuthPkOk, UserAuthRequest,
+    crypto::{CryptoProvider, Digest, VerifyingKey},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     task::spawn_blocking,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::{Error, IoStream, receive};
 
@@ -46,85 +45,13 @@ pub enum Auth {
 
 impl Auth {
     /// Authenticate a user over the given SSH connection
+    #[instrument(name = "authentication", skip(self, session_id, io, provider), fields(addr = %io.addr))]
     pub async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
         &self,
+        session_id: Digest,
         io: &mut IoStream<T>,
-        host_key: &dyn SigningKey,
         provider: &dyn CryptoProvider,
     ) -> Result<User, ()> {
-        let exchange = match io.identify().await {
-            Ok(exchange) => exchange,
-            Err(error) => {
-                error!(%error, "failed to identify client");
-                return Err(());
-            }
-        };
-
-        // Receive and send key exchange init packets
-
-        let packet = receive(&mut io.stream, &mut io.read).await?;
-        let (key_exchange_init, mut exchange, negotiated) = match KeyExchangeInit::peer(
-            packet,
-            exchange,
-            vec![host_key.algorithm()],
-            [ExtensionId::StrictKexServer].into_iter(),
-            provider,
-        ) {
-            Ok(result) => result,
-            Err(error) => {
-                error!(%error, "failed to read key exchange init");
-                return Err(());
-            }
-        };
-
-        io.send_handshake(&key_exchange_init, Some(&mut exchange))
-            .await?;
-
-        // Perform ECDH key exchange
-
-        let packet = receive(&mut io.stream, &mut io.read).await?;
-        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
-            Ok(key_exchange_init) => key_exchange_init,
-            Err(error) => {
-                error!(%error, "failed to read ecdh key exchange init");
-                return Err(());
-            }
-        };
-
-        let result = EcdhKeyExchangeReply::new(
-            ecdh_key_exchange_init,
-            &negotiated,
-            exchange,
-            host_key,
-            provider,
-        );
-
-        let (key_exchange_reply, session_id, keys) = match result {
-            Ok(out) => out,
-            Err(error) => {
-                error!(%error, "failed to complete ecdh key exchange");
-                return Err(());
-            }
-        };
-
-        io.send(&key_exchange_reply).await?;
-
-        // Exchange new keys packets and install new keys
-
-        io.update_keys(keys, negotiated.strict_key_exchange, provider)
-            .await?;
-        if negotiated.want_extension_info {
-            let ext_info = ExtInfo {
-                extensions: vec![(
-                    ExtensionName::ServerSigAlgs,
-                    &OutgoingNameList(&[PublicKeyAlgorithm::EcdsaSha2Nistp256]),
-                )],
-            };
-            io.send(&ext_info).await?;
-        }
-
-        io.send(&MessageType::Ignore).await?;
-
         // Handle authentication
 
         let packet = receive(&mut io.stream, &mut io.read).await?;

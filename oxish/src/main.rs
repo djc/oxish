@@ -74,10 +74,14 @@ async fn main() -> anyhow::Result<()> {
             if let Err(err) = stream.set_nodelay(true) {
                 warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
             }
+
             let mut io = IoStream::new(stream, addr, provider);
+            let Ok(session_id) = io.exchange_keys(&*host_key, provider).await else {
+                return Err(());
+            };
 
             let Ok(_user) = Auth::System
-                .authenticate(&mut io, &*host_key, provider)
+                .authenticate(session_id, &mut io, provider)
                 .await
             else {
                 return Err(());

@@ -7,10 +7,12 @@ use core::{
 use std::{io, str, task::ready};
 
 use proto::{
-    Completion, Decoded, Disconnect, Encode, EncryptionAlgorithm, Identification,
-    IdentificationError, IncomingPacket, KeySourceSet, MessageType, MethodName, NewKeys, PROTOCOL,
-    Pretty, ProtoError, ReadState, UserAuthFailure, WriteState,
-    crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash},
+    Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode,
+    EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification, IdentificationError,
+    IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, MethodName, NewKeys,
+    OutgoingNameList, PROTOCOL, Pretty, ProtoError, PublicKeyAlgorithm, ReadState, UserAuthFailure,
+    WriteState,
+    crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -122,6 +124,88 @@ impl<T: AsyncRead + AsyncWrite + Unpin> IoStream<T> {
             read: ReadState::default(),
             write: WriteState::new(provider.secure_random()),
         }
+    }
+
+    /// Perform the SSH handshake and key exchange, returning the session ID
+    #[instrument(name = "handshake", skip(self, host_key, provider), fields(addr = %self.addr))]
+    pub async fn exchange_keys(
+        &mut self,
+        host_key: &dyn SigningKey,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Digest, ()> {
+        let exchange = match self.identify().await {
+            Ok(exchange) => exchange,
+            Err(error) => {
+                error!(%error, "failed to identify client");
+                return Err(());
+            }
+        };
+
+        // Receive and send key exchange init packets
+
+        let packet = receive(&mut self.stream, &mut self.read).await?;
+        let (key_exchange_init, mut exchange, negotiated) = match KeyExchangeInit::peer(
+            packet,
+            exchange,
+            vec![host_key.algorithm()],
+            [ExtensionId::StrictKexServer].into_iter(),
+            provider,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                error!(%error, "failed to read key exchange init");
+                return Err(());
+            }
+        };
+
+        self.send_handshake(&key_exchange_init, Some(&mut exchange))
+            .await?;
+
+        // Perform ECDH key exchange
+
+        let packet = receive(&mut self.stream, &mut self.read).await?;
+        let ecdh_key_exchange_init = match EcdhKeyExchangeInit::try_from(packet) {
+            Ok(key_exchange_init) => key_exchange_init,
+            Err(error) => {
+                error!(%error, "failed to read ecdh key exchange init");
+                return Err(());
+            }
+        };
+
+        let result = EcdhKeyExchangeReply::new(
+            ecdh_key_exchange_init,
+            &negotiated,
+            exchange,
+            host_key,
+            provider,
+        );
+
+        let (key_exchange_reply, session_id, keys) = match result {
+            Ok(out) => out,
+            Err(error) => {
+                error!(%error, "failed to complete ecdh key exchange");
+                return Err(());
+            }
+        };
+
+        self.send(&key_exchange_reply).await?;
+
+        // Exchange new keys packets and install new keys
+
+        self.update_keys(keys, negotiated.strict_key_exchange, provider)
+            .await?;
+        if negotiated.want_extension_info {
+            let ext_info = ExtInfo {
+                extensions: vec![(
+                    ExtensionName::ServerSigAlgs,
+                    &OutgoingNameList(&[PublicKeyAlgorithm::EcdsaSha2Nistp256]),
+                )],
+            };
+            self.send(&ext_info).await?;
+        }
+
+        self.send(&MessageType::Ignore).await?;
+        Ok(session_id)
     }
 
     async fn update_keys(
