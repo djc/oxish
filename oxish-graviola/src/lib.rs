@@ -178,6 +178,10 @@ impl SealingKey for Aes128GcmSealer {
         Ok(())
     }
 
+    fn counter(&self) -> u64 {
+        self.0.counter
+    }
+
     fn block_len(&self) -> usize {
         16
     }
@@ -207,6 +211,10 @@ impl OpeningKey for Aes128GcmOpener {
         encrypted
     }
 
+    fn counter(&self) -> u64 {
+        self.0.counter
+    }
+
     fn tag_len(&self) -> usize {
         TAG_LEN
     }
@@ -219,24 +227,18 @@ const NONCE_LEN: usize = 12;
 struct GcmState {
     key: AesGcm,
     nonce: [u8; NONCE_LEN],
+    counter: u64,
 }
 
 impl GcmState {
     fn new(counter: u64, source: &KeySourceSide) -> Result<Self, CryptoError> {
-        let mut nonce = source.initial_iv.derive::<NONCE_LEN>();
-        let Some(counter_dst) = nonce.last_chunk_mut::<8>() else {
-            return Err(CryptoError::InvalidLength);
-        };
-
-        let Some(new) = u64::from_be_bytes(*counter_dst).checked_add(counter) else {
-            return Err(CryptoError::NonceOverflow);
-        };
-
-        *counter_dst = new.to_be_bytes();
-        Ok(Self {
+        let mut new = Self {
             key: AesGcm::new(&source.encryption_key.derive::<16>()),
-            nonce,
-        })
+            nonce: source.initial_iv.derive::<NONCE_LEN>(),
+            counter,
+        };
+        new.increment(counter)?;
+        Ok(new)
     }
 
     /// Return the nonce for the next packet and advance the invocation counter
@@ -245,16 +247,22 @@ impl GcmState {
     /// big-endian invocation counter that is incremented after each packet.
     fn nonce(&mut self) -> Result<[u8; NONCE_LEN], CryptoError> {
         let nonce = self.nonce;
-        let Some(counter) = self.nonce.last_chunk_mut::<8>() else {
+        self.increment(1)?;
+        Ok(nonce)
+    }
+
+    fn increment(&mut self, delta: u64) -> Result<(), CryptoError> {
+        let Some(counter_dst) = self.nonce.last_chunk_mut::<8>() else {
             return Err(CryptoError::InvalidLength);
         };
 
-        let Some(next) = u64::from_be_bytes(*counter).checked_add(1) else {
+        let Some(new) = u64::from_be_bytes(*counter_dst).checked_add(delta) else {
             return Err(CryptoError::NonceOverflow);
         };
 
-        *counter = next.to_be_bytes();
-        Ok(nonce)
+        *counter_dst = new.to_be_bytes();
+        self.counter += delta;
+        Ok(())
     }
 }
 
