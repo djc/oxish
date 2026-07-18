@@ -230,11 +230,20 @@ struct GcmState {
 
 impl GcmState {
     fn new(counter: u64, source: &KeySourceSide) -> Result<Self, CryptoError> {
-        let mut new = Self {
-            key: AesGcm::new(&source.encryption_key.derive::<16>()),
-            nonce: source.initial_iv.derive::<NONCE_LEN>(),
-            counter,
+        let Ok(key) = <&[u8; 16]>::try_from(source.encryption_key.as_slice()) else {
+            return Err(CryptoError::InvalidLength);
         };
+
+        let Ok(nonce) = <&[u8; NONCE_LEN]>::try_from(source.initial_iv.as_slice()) else {
+            return Err(CryptoError::InvalidLength);
+        };
+
+        let mut new = Self {
+            key: AesGcm::new(key),
+            nonce: *nonce,
+            counter: 0,
+        };
+
         new.increment(counter)?;
         Ok(new)
     }

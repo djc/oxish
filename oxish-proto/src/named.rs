@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use crate::{
     ProtoError,
     base::{Decode, Decoded, Encode},
+    crypto::KeyLengths,
 };
 
 #[derive(Debug)]
@@ -245,6 +246,18 @@ pub enum EncryptionAlgorithm<'a> {
     /// aes128-gcm@openssh.com (<https://www.rfc-editor.org/rfc/rfc5647>)
     Aes128Gcm,
     Unknown(&'a str),
+}
+
+impl EncryptionAlgorithm<'_> {
+    pub fn lengths(&self) -> Option<KeyLengths> {
+        match self {
+            Self::Aes128Gcm => Some(KeyLengths {
+                key_len: 16,
+                iv_len: 12,
+            }),
+            Self::Unknown(_) => None,
+        }
+    }
 }
 
 impl<'a> Named<'a> for EncryptionAlgorithm<'a> {
