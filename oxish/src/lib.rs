@@ -117,19 +117,27 @@ pub struct Connection<T> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
-    /// Create a new [`Connection`]
-    pub fn new(stream: T, addr: SocketAddr, provider: &dyn CryptoProvider) -> Self {
-        Self {
+    /// Create a new [`Connection`] and perform key exchange
+    #[instrument(name = "handshake", skip(stream, addr, host_key, provider), fields(addr = %addr))]
+    pub async fn accept(
+        stream: T,
+        addr: SocketAddr,
+        host_key: &dyn SigningKey,
+        provider: &dyn CryptoProvider,
+    ) -> Result<(Self, Digest), ()> {
+        let mut new = Self {
             stream,
             addr,
             read: ReadState::default(),
             write: WriteState::new(provider.secure_random()),
-        }
+        };
+
+        let session_id = new.exchange_keys(host_key, provider).await?;
+        Ok((new, session_id))
     }
 
     /// Perform the SSH handshake and key exchange, returning the session ID
-    #[instrument(name = "handshake", skip(self, host_key, provider), fields(addr = %self.addr))]
-    pub async fn exchange_keys(
+    async fn exchange_keys(
         &mut self,
         host_key: &dyn SigningKey,
         provider: &dyn CryptoProvider,

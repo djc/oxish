@@ -75,19 +75,19 @@ async fn main() -> anyhow::Result<()> {
                 warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
             }
 
-            let mut io = Connection::new(stream, addr, provider);
-            let Ok(session_id) = io.exchange_keys(&*host_key, provider).await else {
+            let future = Connection::accept(stream, addr, &*host_key, provider);
+            let Ok((mut conn, session_id)) = future.await else {
                 return Err(());
             };
 
             let Ok(_user) = Auth::System
-                .authenticate(session_id, &mut io, provider)
+                .authenticate(session_id, &mut conn, provider)
                 .await
             else {
                 return Err(());
             };
 
-            Session::new(io).run().await
+            Session::new(conn).run().await
         });
     }
 }
