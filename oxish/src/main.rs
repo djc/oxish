@@ -7,7 +7,7 @@ use std::{
 use aws_lc::DEFAULT_PROVIDER;
 use clap::Parser;
 use listenfd::ListenFd;
-use oxish::Connection;
+use oxish::{Connection, IoStream};
 use proto::PublicKeyAlgorithm;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -67,7 +67,8 @@ async fn main() -> anyhow::Result<()> {
                     warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
                 }
 
-                tokio::spawn(Connection::new(stream, addr, host_key.clone(), provider).run());
+                let io = IoStream::new(stream, addr, provider);
+                tokio::spawn(Connection::new(io, host_key.clone(), provider).run());
             }
             Err(error) => {
                 warn!(%error, "failed to accept connection");

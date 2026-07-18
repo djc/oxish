@@ -40,13 +40,12 @@ pub struct Connection<T> {
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Create a new [`Connection`]
     pub fn new(
-        stream: T,
-        addr: SocketAddr,
+        io: IoStream<T>,
         host_key: Arc<dyn SigningKey>,
         provider: &'static dyn CryptoProvider,
     ) -> Self {
         Self {
-            io: IoStream::new(stream, addr, provider),
+            io,
             host_key,
             auth: Auth::System,
             provider,
@@ -134,7 +133,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 }
 
-struct IoStream<T> {
+pub struct IoStream<T> {
     stream: T,
     addr: SocketAddr,
     read: ReadState,
@@ -143,7 +142,7 @@ struct IoStream<T> {
 
 impl<T: AsyncRead + AsyncWrite + Unpin> IoStream<T> {
     /// Create a new [`IoStream`]
-    fn new(stream: T, addr: SocketAddr, provider: &dyn CryptoProvider) -> Self {
+    pub fn new(stream: T, addr: SocketAddr, provider: &dyn CryptoProvider) -> Self {
         Self {
             stream,
             addr,
