@@ -1,8 +1,10 @@
 use core::{fmt, str};
 use std::borrow::Cow;
 
-use super::base::{Decode, Decoded, Encode};
-use super::ProtoError;
+use crate::{
+    ProtoError,
+    base::{Decode, Decoded, Encode},
+};
 
 #[derive(Debug)]
 pub enum MethodName<'a> {

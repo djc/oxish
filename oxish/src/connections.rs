@@ -7,7 +7,7 @@ use core::{
 };
 use std::{
     borrow::Cow,
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{BTreeMap, btree_map::Entry},
 };
 
 use proto::{
@@ -17,7 +17,7 @@ use proto::{
 };
 use tracing::{debug, warn};
 
-use crate::{terminal::Terminal, Encoder, Error};
+use crate::{Encoder, Error, terminal::Terminal};
 
 #[derive(Default)]
 pub(crate) struct Channels {

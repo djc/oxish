@@ -7,10 +7,10 @@ use core::{
 use std::{io, str, task::ready};
 
 use proto::{
-    crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash},
     Completion, Decoded, Disconnect, Encode, EncryptionAlgorithm, Identification,
-    IdentificationError, IncomingPacket, KeySourceSet, MessageType, MethodName, NewKeys, Pretty,
-    ProtoError, ReadState, UserAuthFailure, WriteState, PROTOCOL,
+    IdentificationError, IncomingPacket, KeySourceSet, MessageType, MethodName, NewKeys, PROTOCOL,
+    Pretty, ProtoError, ReadState, UserAuthFailure, WriteState,
+    crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash},
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

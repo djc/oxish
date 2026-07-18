@@ -3,7 +3,7 @@ members = ["oxish", "oxish-aws-lc", "oxish-graviola", "oxish-proto"]
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 rust-version = "1.85"
 
 [workspace.dependencies]

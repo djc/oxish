@@ -2,8 +2,8 @@ use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
 use crate::{
-    named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm},
     MacAlgorithm,
+    named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm},
 };
 
 /// A bundle of cryptographic algorithm implementations

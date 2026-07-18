@@ -1,11 +1,11 @@
 use core::{net::Ipv4Addr, time::Duration};
 use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
-use proto::{crypto::CryptoProvider, PublicKeyAlgorithm};
+use proto::{PublicKeyAlgorithm, crypto::CryptoProvider};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
-use crate::{authentication::AuthorizedKey, Auth, Connection, IoStream, User};
+use crate::{Auth, Connection, IoStream, User, authentication::AuthorizedKey};
 
 /// Exercise a full handshake and session against the aws-lc-rs provider.
 #[tokio::test]
