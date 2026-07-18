@@ -28,14 +28,14 @@ mod terminal;
 mod tests;
 
 /// A single SSH connection
-pub struct Connection<T> {
-    io: IoStream<T>,
+pub struct Session<T> {
+    io: Connection<T>,
     channels: Channels,
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
+impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
     /// Create a new [`Connection`]
-    pub fn new(io: IoStream<T>) -> Self {
+    pub fn new(io: Connection<T>) -> Self {
         Self {
             io,
             channels: Channels::default(),
@@ -108,15 +108,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 }
 
-pub struct IoStream<T> {
+/// Core connection state and logic for an SSH session
+pub struct Connection<T> {
     stream: T,
     addr: SocketAddr,
     read: ReadState,
     write: WriteState,
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin> IoStream<T> {
-    /// Create a new [`IoStream`]
+impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
+    /// Create a new [`Connection`]
     pub fn new(stream: T, addr: SocketAddr, provider: &dyn CryptoProvider) -> Self {
         Self {
             stream,

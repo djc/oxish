@@ -7,7 +7,7 @@ use std::{
 use aws_lc::DEFAULT_PROVIDER;
 use clap::Parser;
 use listenfd::ListenFd;
-use oxish::{Auth, Connection, IoStream};
+use oxish::{Auth, Connection, Session};
 use proto::PublicKeyAlgorithm;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
                 warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
             }
 
-            let mut io = IoStream::new(stream, addr, provider);
+            let mut io = Connection::new(stream, addr, provider);
             let Ok(session_id) = io.exchange_keys(&*host_key, provider).await else {
                 return Err(());
             };
@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
                 return Err(());
             };
 
-            Connection::new(io).run().await
+            Session::new(io).run().await
         });
     }
 }

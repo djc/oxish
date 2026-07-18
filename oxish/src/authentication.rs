@@ -32,7 +32,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{Error, IoStream, receive};
+use crate::{Connection, Error, receive};
 
 pub enum Auth {
     /// Look up the requested user in the system database and read their
@@ -45,16 +45,16 @@ pub enum Auth {
 
 impl Auth {
     /// Authenticate a user over the given SSH connection
-    #[instrument(name = "authentication", skip(self, session_id, io, provider), fields(addr = %io.addr))]
+    #[instrument(name = "authentication", skip(self, session_id, conn, provider), fields(addr = %conn.addr))]
     pub async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
         &self,
         session_id: Digest,
-        io: &mut IoStream<T>,
+        conn: &mut Connection<T>,
         provider: &dyn CryptoProvider,
     ) -> Result<User, ()> {
         // Handle authentication
 
-        let packet = receive(&mut io.stream, &mut io.read).await?;
+        let packet = receive(&mut conn.stream, &mut conn.read).await?;
         let service_request = match ServiceRequest::try_from(packet) {
             Ok(req) => req,
             Err(error) => {
@@ -74,18 +74,18 @@ impl Auth {
                 description: "only user authentication service is supported",
             };
 
-            io.send(&disconnect).await?;
+            conn.send(&disconnect).await?;
             return Err(());
         }
 
         let service_accept = ServiceAccept {
             service_name: ServiceName::UserAuth,
         };
-        io.send(&service_accept).await?;
+        conn.send(&service_accept).await?;
 
         let mut cached_user = None::<User>;
         loop {
-            let packet = receive(&mut io.stream, &mut io.read).await?;
+            let packet = receive(&mut conn.stream, &mut conn.read).await?;
             let user_auth_request = match UserAuthRequest::try_from(packet) {
                 Ok(req) => req,
                 Err(error) => {
@@ -105,7 +105,7 @@ impl Auth {
                     reason_code: DisconnectReason::ServiceNotAvailable,
                     description: "only connection service is supported",
                 };
-                io.send(&disconnect).await?;
+                conn.send(&disconnect).await?;
                 return Err(());
             }
 
@@ -114,13 +114,13 @@ impl Auth {
                     method = ?user_auth_request.method,
                     "unsupported authentication method requested"
                 );
-                io.send_auth_failed().await?;
+                conn.send_auth_failed().await?;
                 continue;
             };
 
             if public_key.algorithm != PublicKeyAlgorithm::EcdsaSha2Nistp256 {
                 warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
-                io.send_auth_failed().await?;
+                conn.send_auth_failed().await?;
                 continue;
             }
 
@@ -129,7 +129,7 @@ impl Auth {
                 (_, auth) => match auth.resolve(user_auth_request.user_name, provider) {
                     Some(user) => cached_user.insert(user),
                     None => {
-                        io.send_auth_failed().await?;
+                        conn.send_auth_failed().await?;
                         continue;
                     }
                 },
@@ -150,7 +150,7 @@ impl Auth {
                         algorithm = ?public_key.algorithm,
                         "mismatched signature algorithm in authentication request"
                     );
-                    io.send_auth_failed().await?;
+                    conn.send_auth_failed().await?;
                     continue;
                 }
                 // No signature, authorized key => send pk-ok and wait for signature
@@ -160,12 +160,12 @@ impl Auth {
                         key_blob: Cow::Owned(public_key.key_blob.to_vec()),
                     };
                     debug!(ok = ?pk_ok, "sending pk-ok for user");
-                    io.send(&pk_ok).await?;
+                    conn.send(&pk_ok).await?;
                     continue;
                 }
                 // No signature, no authorized key => fail authentication
                 (None, None) => {
-                    io.send_auth_failed().await?;
+                    conn.send_auth_failed().await?;
                     continue;
                 }
             };
@@ -185,11 +185,11 @@ impl Auth {
                     };
 
                     info!(user = %user.name, "authentication successful");
-                    io.send(&MessageType::UserAuthSuccess).await?;
+                    conn.send(&MessageType::UserAuthSuccess).await?;
                     break Ok(user);
                 }
                 _ => {
-                    io.send_auth_failed().await?;
+                    conn.send_auth_failed().await?;
                     continue;
                 }
             }
