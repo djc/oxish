@@ -4,10 +4,10 @@ use core::{
     pin::Pin,
     task::{Context, Poll},
 };
-use std::{io, str, sync::Arc, task::ready};
+use std::{io, str, task::ready};
 
 use proto::{
-    crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
+    crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash},
     Completion, Decoded, Disconnect, Encode, EncryptionAlgorithm, Identification,
     IdentificationError, IncomingPacket, KeySourceSet, MessageType, MethodName, NewKeys, Pretty,
     ProtoError, ReadState, UserAuthFailure, WriteState, PROTOCOL,
@@ -17,12 +17,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 mod authentication;
-use authentication::Auth;
+pub use authentication::{Auth, User};
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
-
-#[cfg(test)]
-use crate::authentication::User;
 
 mod terminal;
 #[cfg(test)]
@@ -31,45 +28,21 @@ mod tests;
 /// A single SSH connection
 pub struct Connection<T> {
     io: IoStream<T>,
-    host_key: Arc<dyn SigningKey>,
-    auth: Auth,
-    provider: &'static dyn CryptoProvider,
     channels: Channels,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Create a new [`Connection`]
-    pub fn new(
-        io: IoStream<T>,
-        host_key: Arc<dyn SigningKey>,
-        provider: &'static dyn CryptoProvider,
-    ) -> Self {
+    pub fn new(io: IoStream<T>) -> Self {
         Self {
             io,
-            host_key,
-            auth: Auth::System,
-            provider,
             channels: Channels::default(),
         }
-    }
-
-    /// Use a fixed set of authorized keys for authentication
-    ///
-    /// By default, we find the `authorized_keys` file from the user's `.ssh` directory.
-    #[cfg(test)]
-    pub(crate) fn for_user(mut self, user: User) -> Self {
-        self.auth = Auth::Fixed(user);
-        self
     }
 
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.io.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
-        let _user = self
-            .auth
-            .authenticate(&mut self.io, &*self.host_key, self.provider)
-            .await?;
-
         // Main loop for handling channel messages
         loop {
             tokio::select! {

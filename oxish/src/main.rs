@@ -7,7 +7,7 @@ use std::{
 use aws_lc::DEFAULT_PROVIDER;
 use clap::Parser;
 use listenfd::ListenFd;
-use oxish::{Connection, IoStream};
+use oxish::{Auth, Connection, IoStream};
 use proto::PublicKeyAlgorithm;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -60,21 +60,31 @@ async fn main() -> anyhow::Result<()> {
     info!(addr = %listener.local_addr()?, "listening for connections");
 
     loop {
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                debug!(%addr, "accepted connection");
-                if let Err(err) = stream.set_nodelay(true) {
-                    warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
-                }
-
-                let io = IoStream::new(stream, addr, provider);
-                tokio::spawn(Connection::new(io, host_key.clone(), provider).run());
-            }
+        let (stream, addr) = match listener.accept().await {
+            Ok((stream, addr)) => (stream, addr),
             Err(error) => {
                 warn!(%error, "failed to accept connection");
                 continue;
             }
-        }
+        };
+
+        let host_key = host_key.clone();
+        tokio::spawn(async move {
+            debug!(%addr, "accepted connection");
+            if let Err(err) = stream.set_nodelay(true) {
+                warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
+            }
+            let mut io = IoStream::new(stream, addr, provider);
+
+            let Ok(_user) = Auth::System
+                .authenticate(&mut io, &*host_key, provider)
+                .await
+            else {
+                return Err(());
+            };
+
+            Connection::new(io).run().await
+        });
     }
 }
 
