@@ -5,12 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0 OR MIT"
 
+[features]
+default = ["graviola"]
+aws-lc = ["dep:aws-lc"]
+graviola = ["dep:graviola"]
+
 [dependencies]
 anyhow = { workspace = true }
-aws-lc = { package = "oxish-aws-lc", version = "0.1.0", path = "../oxish-aws-lc" }
+aws-lc = { package = "oxish-aws-lc", version = "0.1.0", path = "../oxish-aws-lc", optional = true }
 bitflags = { workspace = true }
 clap = { workspace = true }
 data-encoding = { workspace = true }
+graviola = { package = "oxish-graviola", version = "0.1.0", path = "../oxish-graviola", optional = true }
 libc = { workspace = true }
 listenfd = { workspace = true }
 proto = { package = "oxish-proto", version = "0.1", path = "../oxish-proto" }
@@ -24,7 +30,6 @@ tracing-subscriber = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
-graviola = { package = "oxish-graviola", version = "0.1.0", path = "../oxish-graviola" }
 tempfile = { workspace = true }
 
 [lints]
