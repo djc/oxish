@@ -250,6 +250,21 @@ impl Encode for u32 {
     }
 }
 
+impl Decode<'_> for u64 {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        <[u8; 8]>::decode(bytes).map(|decoded| Decoded {
+            value: Self::from_be_bytes(decoded.value),
+            next: decoded.next,
+        })
+    }
+}
+
+impl Encode for u64 {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_be_bytes());
+    }
+}
+
 impl<'a, const N: usize> Decode<'a> for [u8; N] {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         match bytes.split_first_chunk::<N>() {
