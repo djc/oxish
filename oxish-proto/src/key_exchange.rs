@@ -332,6 +332,13 @@ impl Encode for TaggedPublicKey<'_> {
         let start = buf.len();
         buf.extend([0; 4]);
         self.algorithm.encode(buf);
+
+        // RFC 5656 section 3.1: an ECDSA public key blob carries the curve
+        // identifier between the algorithm name and the point `Q`.
+        if matches!(self.algorithm, PublicKeyAlgorithm::EcdsaSha2Nistp256) {
+            "nistp256".as_bytes().encode(buf);
+        }
+
         self.key.encode(buf);
         let len = (buf.len() - start - 4) as u32;
         if let Some(dst) = buf.get_mut(start..start + 4) {
@@ -350,12 +357,52 @@ impl Encode for TaggedSignature<'_> {
         let start = buf.len();
         buf.extend([0; 4]);
         self.algorithm.encode(buf);
-        self.signature.as_slice().encode(buf);
+
+        match self.algorithm {
+            // RFC 5656 section 3.1.2: the ECDSA signature blob is the pair of
+            // integers `r` and `s`, each encoded as an mpint. The signing key
+            // hands us the fixed-length `r || s` form, which we split in half.
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
+                let blob_start = buf.len();
+                buf.extend([0; 4]);
+                let (r, s) = self.signature.split_at(self.signature.len() / 2);
+                encode_mpint(r, buf);
+                encode_mpint(s, buf);
+                let blob_len = (buf.len() - blob_start - 4) as u32;
+                if let Some(dst) = buf.get_mut(blob_start..blob_start + 4) {
+                    dst.copy_from_slice(&blob_len.to_be_bytes());
+                }
+            }
+            PublicKeyAlgorithm::Ed25519 => self.signature.as_slice().encode(buf),
+            PublicKeyAlgorithm::Unknown(_) => {
+                unreachable!("unknown algorithm should not be used for signing")
+            }
+        }
+
         let len = (buf.len() - start - 4) as u32;
         if let Some(dst) = buf.get_mut(start..start + 4) {
             dst.copy_from_slice(&len.to_be_bytes());
         }
     }
+}
+
+/// Append `value` to `buf` as an SSH mpint (RFC 4251 section 5)
+///
+/// Leading zero bytes are stripped, and a single zero byte is prepended when the
+/// most significant bit is set so the value is interpreted as positive.
+fn encode_mpint(value: &[u8], buf: &mut Vec<u8>) {
+    let trimmed = match value.iter().position(|&b| b != 0) {
+        Some(first) => &value[first..],
+        None => &[],
+    };
+
+    let pad = matches!(trimmed.first(), Some(&b) if b & 0x80 != 0);
+    let len = trimmed.len() + usize::from(pad);
+    buf.extend_from_slice(&(len as u32).to_be_bytes());
+    if pad {
+        buf.push(0);
+    }
+    buf.extend_from_slice(trimmed);
 }
 
 impl fmt::Debug for TaggedSignature<'_> {
@@ -409,4 +456,125 @@ impl Negotiated {
 pub struct KeySourceSet {
     pub client_to_server: KeySourceSide,
     pub server_to_client: KeySourceSide,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode_string(bytes: &[u8]) -> (&[u8], &[u8]) {
+        let Decoded { value, next } = <&[u8]>::decode(bytes).unwrap();
+        (value, next)
+    }
+
+    #[test]
+    fn mpint_encoding() {
+        // Leading zero bytes are stripped.
+        let mut buf = Vec::new();
+        encode_mpint(&[0x00, 0x00, 0x05, 0x06], &mut buf);
+        assert_eq!(buf, [0, 0, 0, 2, 0x05, 0x06]);
+
+        // A set most significant bit forces a leading zero byte.
+        buf.clear();
+        encode_mpint(&[0x80, 0x01], &mut buf);
+        assert_eq!(buf, [0, 0, 0, 3, 0x00, 0x80, 0x01]);
+
+        // An all-zero value encodes as a zero-length mpint.
+        buf.clear();
+        encode_mpint(&[0x00, 0x00], &mut buf);
+        assert_eq!(buf, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn ecdsa_signature_framing() {
+        // `r` has its top bit set (needs padding); `s` has leading zeros (stripped).
+        let mut signature = [0x11u8; 64];
+        signature[0] = 0x80;
+        signature[32] = 0x00;
+        signature[33] = 0x00;
+        signature[34] = 0x05;
+
+        let tagged = TaggedSignature {
+            algorithm: PublicKeyAlgorithm::EcdsaSha2Nistp256,
+            signature: signature.to_vec(),
+        };
+
+        let mut buf = Vec::new();
+        tagged.encode(&mut buf);
+
+        // The whole thing is wrapped in a single string.
+        let (inner, next) = decode_string(&buf);
+        assert!(next.is_empty());
+
+        let (name, next) = decode_string(inner);
+        assert_eq!(name, b"ecdsa-sha2-nistp256");
+
+        // RFC 5656 section 3.1.2: the signature blob is `mpint r || mpint s`.
+        let (blob, next) = decode_string(next);
+        assert!(next.is_empty());
+
+        let (r, next) = decode_string(blob);
+        let (s, next) = decode_string(next);
+        assert!(next.is_empty());
+
+        let mut expected_r = vec![0x00, 0x80];
+        expected_r.extend([0x11; 31]);
+        assert_eq!(r, expected_r);
+
+        let mut expected_s = vec![0x05];
+        expected_s.extend([0x11; 29]);
+        assert_eq!(s, expected_s);
+    }
+
+    #[test]
+    fn ecdsa_public_key_framing() {
+        // A stand-in uncompressed point: the marker byte plus 64 coordinate bytes.
+        let mut point = vec![0x04];
+        point.extend([0x42; 64]);
+
+        let tagged = TaggedPublicKey {
+            algorithm: PublicKeyAlgorithm::EcdsaSha2Nistp256,
+            key: Cow::Borrowed(&point),
+        };
+
+        let mut buf = Vec::new();
+        tagged.encode(&mut buf);
+
+        // RFC 5656 section 3.1: `ecdsa-sha2-nistp256 || nistp256 || Q`.
+        let (inner, next) = decode_string(&buf);
+        assert!(next.is_empty());
+
+        let (name, next) = decode_string(inner);
+        assert_eq!(name, b"ecdsa-sha2-nistp256");
+
+        let (curve, next) = decode_string(next);
+        assert_eq!(curve, b"nistp256");
+
+        let (q, next) = decode_string(next);
+        assert_eq!(q, point.as_slice());
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn ed25519_public_key_framing() {
+        // Ed25519 keys carry no curve identifier (RFC 8709 section 4).
+        let key = [0x07u8; 32];
+        let tagged = TaggedPublicKey {
+            algorithm: PublicKeyAlgorithm::Ed25519,
+            key: Cow::Borrowed(&key),
+        };
+
+        let mut buf = Vec::new();
+        tagged.encode(&mut buf);
+
+        let (inner, next) = decode_string(&buf);
+        assert!(next.is_empty());
+
+        let (name, next) = decode_string(inner);
+        assert_eq!(name, b"ssh-ed25519");
+
+        let (value, next) = decode_string(next);
+        assert_eq!(value, key);
+        assert!(next.is_empty());
+    }
 }

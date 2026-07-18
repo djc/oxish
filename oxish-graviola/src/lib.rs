@@ -3,7 +3,7 @@ use std::sync::Arc;
 use graviola::{
     aead::AesGcm,
     hashing::{Hash as GHash, HashContext as GHashContext, Sha256 as GSha256},
-    key_agreement::{mlkem768, x25519},
+    key_agreement::{mlkem768, p256::StaticPrivateKey, x25519},
     random,
     signing::{
         ecdsa::{self, P256},
@@ -45,14 +45,35 @@ impl CryptoProvider for Provider {
 
                 Ok((Arc::new(Ed25519Key::new(key)), pkcs8))
             }
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
+                let private_key =
+                    StaticPrivateKey::new_random().map_err(|_| CryptoError::KeyGenerationFailed)?;
+                let key = ecdsa::SigningKey::<P256> { private_key };
+
+                // A P-256 PKCS#8 v1 document (with the embedded public key) is
+                // comfortably under 256 bytes.
+                let mut buf = [0u8; 256];
+                let pkcs8 = key
+                    .to_pkcs8_der(&mut buf)
+                    .map_err(|_| CryptoError::Unspecified)?
+                    .to_vec();
+
+                Ok((Arc::new(EcdsaP256Key::new(key)), pkcs8))
+            }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Arc<dyn SigningKey>, CryptoError> {
-        Ok(Arc::new(Ed25519Key::new(
-            Ed25519SigningKey::from_pkcs8_der(pkcs8).map_err(|_| CryptoError::KeyRejected)?,
-        )))
+        // The PKCS#8 algorithm identifier distinguishes the key type; each loader
+        // validates it, so try Ed25519 first and fall back to ECDSA P-256.
+        if let Ok(key) = Ed25519SigningKey::from_pkcs8_der(pkcs8) {
+            return Ok(Arc::new(Ed25519Key::new(key)));
+        }
+
+        let key = ecdsa::SigningKey::<P256>::from_pkcs8_der(pkcs8)
+            .map_err(|_| CryptoError::KeyRejected)?;
+        Ok(Arc::new(EcdsaP256Key::new(key)))
     }
 
     fn verifying_key(
@@ -296,6 +317,39 @@ impl SigningKey for Ed25519Key {
 
     fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
         PublicKeyAlgorithm::Ed25519
+    }
+}
+
+struct EcdsaP256Key {
+    key: ecdsa::SigningKey<P256>,
+    public_key: Vec<u8>,
+}
+
+impl EcdsaP256Key {
+    fn new(key: ecdsa::SigningKey<P256>) -> Self {
+        let public_key = key.private_key.public_key_uncompressed().to_vec();
+        Self { key, public_key }
+    }
+}
+
+impl SigningKey for EcdsaP256Key {
+    fn sign(&self, message: &[u8]) -> Vec<u8> {
+        // ECDSA over P-256 with SHA-256 produces a fixed-length `r || s`
+        // signature (32 bytes each); the SSH mpint framing is applied by the
+        // protocol layer.
+        let mut signature = [0u8; 64];
+        match self.key.sign::<GSha256>(&[message], &mut signature) {
+            Ok(signature) => signature.to_vec(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn public_key(&self) -> &[u8] {
+        &self.public_key
+    }
+
+    fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
+        PublicKeyAlgorithm::EcdsaSha2Nistp256
     }
 }
 

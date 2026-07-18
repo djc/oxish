@@ -71,7 +71,7 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
 
     // Start the server on a loopback port and serve exactly one connection.
     let (host_key, _) = provider
-        .generate_signing_key(&PublicKeyAlgorithm::Ed25519)
+        .generate_signing_key(&algorithm)
         .expect("failed to generate host key");
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
