@@ -5,7 +5,7 @@ use proto::{crypto::CryptoProvider, PublicKeyAlgorithm};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
-use crate::{authentication::AuthorizedKey, Connection, User};
+use crate::{authentication::AuthorizedKey, Connection, IoStream, User};
 
 /// Exercise a full handshake and session against the aws-lc-rs provider.
 #[tokio::test]
@@ -56,7 +56,8 @@ async fn handshake(provider: &'static dyn CryptoProvider) {
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();
         stream.set_nodelay(true).ok();
-        Connection::new(stream, peer, host_key, provider)
+        let io = IoStream::new(stream, peer, provider);
+        Connection::new(io, host_key, provider)
             .for_user(user)
             .run()
             .await
