@@ -38,36 +38,18 @@ impl<'a> KeyExchangeInit<'a> {
         packet: IncomingPacket<'a>,
         mut exchange: HandshakeBuffer,
         server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
+        extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
     ) -> Result<(KeyExchangeInit<'static>, HandshakeHash, Negotiated), ProtoError> {
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
         exchange.update(&[u8::from(packet.message_type)]);
         exchange.update(packet.payload);
+
         let peer_key_exchange_init = KeyExchangeInit::try_from(packet)?;
-
         debug!(key_exchange_init = %Pretty(&peer_key_exchange_init), "received key exchange init");
-        let (negotiated, key_exchange_init) = KeyExchangeInit::new(
-            peer_key_exchange_init,
-            server_host_key_algorithms,
-            [ExtensionId::StrictKexServer].into_iter(),
-            provider,
-        )?;
 
-        let hash = provider.hash(&negotiated.key_exchange)?;
-        Ok((key_exchange_init, exchange.hash(hash), negotiated))
-    }
-}
-
-impl KeyExchangeInit<'static> {
-    pub fn new(
-        peer_key_exchange_init: KeyExchangeInit<'_>,
-        server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
-        extensions: impl Iterator<Item = ExtensionId<'static>>,
-        provider: &dyn CryptoProvider,
-    ) -> Result<(Negotiated, Self), ProtoError> {
         let mut cookie = [0; 16];
         provider.secure_random().fill(&mut cookie)?;
-
         let supported = provider.supported_algorithms();
         let mut key_exchange_algorithms = supported
             .key_exchange
@@ -93,7 +75,12 @@ impl KeyExchangeInit<'static> {
             extended: 0,
         };
 
-        Ok((Negotiated::choose(peer_key_exchange_init, &init)?, init))
+        let negotiated = Negotiated::choose(peer_key_exchange_init, &init)?;
+        Ok((
+            init,
+            exchange.hash(provider.hash(&negotiated.key_exchange)?),
+            negotiated,
+        ))
     }
 }
 

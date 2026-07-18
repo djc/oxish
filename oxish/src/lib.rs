@@ -9,11 +9,11 @@ use std::{borrow::Cow, io, str, sync::Arc, task::ready};
 use proto::{
     crypto::{CryptoError, CryptoProvider, HandshakeBuffer, HandshakeHash, SigningKey},
     Completion, Decoded, Disconnect, DisconnectReason, EcdhKeyExchangeInit, EcdhKeyExchangeReply,
-    Encode, EncryptionAlgorithm, ExtInfo, ExtensionName, Identification, IdentificationError,
-    IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, Method, MethodName, NewKeys,
-    OutgoingNameList, Pretty, ProtoError, PublicKeyAlgorithm, ReadState, ServiceAccept,
-    ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk, UserAuthRequest,
-    WriteState, PROTOCOL,
+    Encode, EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification,
+    IdentificationError, IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, Method,
+    MethodName, NewKeys, OutgoingNameList, Pretty, ProtoError, PublicKeyAlgorithm, ReadState,
+    ServiceAccept, ServiceName, ServiceRequest, SignatureData, UserAuthFailure, UserAuthPkOk,
+    UserAuthRequest, WriteState, PROTOCOL,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -86,6 +86,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             packet,
             exchange,
             vec![self.host_key.algorithm()],
+            [ExtensionId::StrictKexServer].into_iter(),
             self.provider,
         ) {
             Ok(result) => result,
