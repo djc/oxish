@@ -403,19 +403,16 @@ pub(crate) async fn receive<'a>(
 
 pub(crate) struct Encoder<'a> {
     write: &'a mut WriteState,
-    pub(crate) buffered: bool,
 }
 
 impl Encoder<'_> {
     pub(crate) fn new(write: &mut WriteState) -> Encoder<'_> {
         Encoder {
             write,
-            buffered: false,
         }
     }
 
     pub(crate) fn enqueue(&mut self, payload: &impl Encode) -> Result<(), Error> {
-        self.buffered = true;
         self.write.handle_packet(payload, None).map_err(|error| {
             error!(%error, ?payload, "failed to encode packet");
             Error::from(error)
