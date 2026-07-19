@@ -34,7 +34,7 @@ use tokio::{
 };
 use tracing::{debug, trace};
 
-use proto::{Mode, PtyReq};
+use proto::{Mode, PtyReq, WindowChange};
 
 pub(crate) struct Terminal {
     pty: AsyncFd<OwnedFd>,
@@ -101,6 +101,20 @@ impl Terminal {
             pty: AsyncFd::new(controller)?,
             child,
         })
+    }
+
+    /// Resize the PTY window (in response to a window-change request)
+    pub(crate) fn resize(&self, size: &WindowChange) -> io::Result<()> {
+        let winsize = Winsize {
+            ws_col: size.cols as u16,
+            ws_row: size.rows as u16,
+            ws_xpixel: size.width_px as u16,
+            ws_ypixel: size.height_px as u16,
+        };
+
+        debug!(?size, "resizing PTY window");
+        termios::tcsetwinsize(self.pty.get_ref(), winsize)?;
+        Ok(())
     }
 
     /// Write data to the PTY (sends input to the shell)

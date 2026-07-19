@@ -89,6 +89,10 @@ impl Channels {
                     &channel.env,
                 )?));
             }
+            ChannelRequestType::WindowChange(window_change) => match &channel.terminal {
+                Some(TerminalState::Running(terminal)) => terminal.resize(&window_change)?,
+                _ => warn!("window-change request without running terminal"),
+            },
         }
 
         if request.want_reply {
