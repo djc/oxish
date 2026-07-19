@@ -92,7 +92,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         return Err(());
                     }
 
-                    encoder.flush(&mut self.conn.stream).await?;
+                    future::poll_fn(|cx| send(&mut self.conn.stream, encoder.write, cx))
+                        .await
+                        .map_err(|error| {
+                            error!(%error, "failed to write queued packets to stream");
+                        })?;
                 }
                 result = TerminalsFuture::new(self.channels.channels_mut()) => {
                     match result {
@@ -416,18 +420,6 @@ impl Encoder<'_> {
             error!(%error, ?payload, "failed to encode packet");
             Error::from(error)
         })
-    }
-
-    pub(crate) async fn flush(self, stream: &mut (impl AsyncWrite + Unpin)) -> Result<(), ()> {
-        if !self.buffered {
-            return Ok(());
-        }
-
-        future::poll_fn(|cx| send(stream, self.write, cx))
-            .await
-            .map_err(|error| {
-                error!(%error, "failed to write queued packets to stream");
-            })
     }
 }
 
