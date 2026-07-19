@@ -6,7 +6,8 @@ use tracing::{debug, warn};
 
 mod base;
 pub use base::{
-    Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
+    Completion, Decode, Decoded, Encode, Ignore, IncomingPacket, MessageType, PacketLength,
+    PaddingLength,
 };
 mod channels;
 pub use channels::{

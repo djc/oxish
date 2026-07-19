@@ -2,6 +2,16 @@ use core::fmt;
 
 use crate::ProtoError;
 
+#[derive(Debug, Default)]
+pub struct Ignore<'a>(pub &'a [u8]);
+
+impl Encode for Ignore<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::Ignore.encode(buf);
+        self.0.encode(buf);
+    }
+}
+
 pub struct IncomingPacket<'a> {
     pub sequence_number: u32,
     pub message_type: MessageType,
