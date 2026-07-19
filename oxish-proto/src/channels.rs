@@ -196,6 +196,17 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     ));
                 }
             },
+            b"window-change" => {
+                let Decoded { value, next } = WindowChange::decode(next)?;
+                match next.is_empty() {
+                    true => ChannelRequestType::WindowChange(value),
+                    false => {
+                        return Err(ProtoError::InvalidPacket(
+                            "extra data in window-change channel request",
+                        ));
+                    }
+                }
+            }
             _ => {
                 match str::from_utf8(r#type) {
                     Ok(r#type) => warn!(%r#type, "unknown channel request type"),
@@ -219,6 +230,40 @@ pub enum ChannelRequestType<'a> {
     PtyReq(PtyReq<'a>),
     Env(Env<'a>),
     Shell,
+    WindowChange(WindowChange),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WindowChange {
+    pub cols: u32,
+    pub rows: u32,
+    pub width_px: u32,
+    pub height_px: u32,
+}
+
+impl<'a> Decode<'a> for WindowChange {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
+        let Decoded { value: cols, next } = u32::decode(input)?;
+        let Decoded { value: rows, next } = u32::decode(next)?;
+        let Decoded {
+            value: width_px,
+            next,
+        } = u32::decode(next)?;
+        let Decoded {
+            value: height_px,
+            next,
+        } = u32::decode(next)?;
+
+        Ok(Decoded {
+            value: Self {
+                cols,
+                rows,
+                width_px,
+                height_px,
+            },
+            next,
+        })
+    }
 }
 
 #[derive(Debug)]
