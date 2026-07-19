@@ -2,6 +2,7 @@ use core::net::{Ipv4Addr, SocketAddr};
 use std::{
     fs::{self, File},
     io::{self, Write},
+    sync::Arc,
 };
 
 use clap::Parser;
@@ -19,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
 
     let provider = DEFAULT_PROVIDER;
     let args = Args::parse();
-    let host_key = if args.generate_host_key {
+    let host_keys = if args.generate_host_key {
         match File::create_new(&args.host_key_file) {
             Ok(mut host_key_file) => {
                 let Ok((_, pkcs8)) = provider.generate_signing_key(&args.host_key_type) else {
@@ -40,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
         let Ok(host_key) = provider.signing_key_from_pkcs8(&fs::read(args.host_key_file)?) else {
             anyhow::bail!("failed to load host key");
         };
-        host_key
+        Arc::new([host_key])
     };
 
     let listener = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
@@ -66,14 +67,14 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        let host_key = host_key.clone();
+        let host_keys = host_keys.clone();
         tokio::spawn(async move {
             debug!(%addr, "accepted connection");
             if let Err(err) = stream.set_nodelay(true) {
                 warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
             }
 
-            let future = Connection::accept(stream, addr, &*host_key, provider);
+            let future = Connection::accept(stream, addr, &*host_keys, provider);
             let Ok((mut conn, session_id)) = future.await else {
                 return Err(());
             };

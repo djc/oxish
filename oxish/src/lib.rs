@@ -5,7 +5,7 @@ use core::{
     task::{Context, Poll},
     time::Duration,
 };
-use std::{io, str, task::ready};
+use std::{io, str, sync::Arc, task::ready};
 
 use proto::{
     Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, Encoder,
@@ -140,11 +140,11 @@ pub struct Connection<T> {
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Create a new [`Connection`] and perform key exchange
-    #[instrument(name = "handshake", skip(stream, addr, host_key, provider), fields(addr = %addr))]
+    #[instrument(name = "handshake", skip(stream, addr, host_keys, provider), fields(addr = %addr))]
     pub async fn accept(
         stream: T,
         addr: SocketAddr,
-        host_key: &dyn SigningKey,
+        host_keys: &[Arc<dyn SigningKey>],
         provider: &dyn CryptoProvider,
     ) -> Result<(Self, Digest), ()> {
         let mut new = Self {
@@ -154,7 +154,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             write: WriteState::new(provider.secure_random()),
         };
 
-        let future = new.exchange_keys(host_key, provider);
+        let future = new.exchange_keys(host_keys, provider);
         match timeout(Duration::from_secs(30), future).await {
             Ok(Ok(session_id)) => Ok((new, session_id)),
             Ok(Err(())) => Err(()),
@@ -168,9 +168,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Perform the SSH handshake and key exchange, returning the session ID
     async fn exchange_keys(
         &mut self,
-        host_key: &dyn SigningKey,
+        host_keys: &[Arc<dyn SigningKey>],
         provider: &dyn CryptoProvider,
     ) -> Result<Digest, ()> {
+        if host_keys.is_empty() {
+            error!("no host keys configured");
+            return Err(());
+        }
+
         let exchange = match self.identify().await {
             Ok(exchange) => exchange,
             Err(error) => {
@@ -185,7 +190,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let (key_exchange_init, mut exchange, negotiated) = match KeyExchangeInit::peer(
             packet,
             exchange,
-            vec![host_key.algorithm()],
+            host_keys
+                .iter()
+                .map(|key| key.algorithm())
+                .collect::<Vec<_>>(),
             [ExtensionId::StrictKexServer].into_iter(),
             provider,
         ) {
@@ -214,7 +222,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             ecdh_key_exchange_init,
             &negotiated,
             exchange,
-            host_key,
+            host_keys,
             provider,
         );
 

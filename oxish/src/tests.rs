@@ -1,5 +1,11 @@
 use core::{net::Ipv4Addr, time::Duration};
-use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
+use std::{
+    fs,
+    panic::resume_unwind,
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, Once},
+};
 
 use proto::{PublicKeyAlgorithm, crypto::CryptoProvider};
 use tempfile::TempDir;
@@ -76,11 +82,12 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
+    let host_keys = Arc::new([host_key]);
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();
         stream.set_nodelay(true).ok();
 
-        let future = Connection::accept(stream, peer, &*host_key, provider);
+        let future = Connection::accept(stream, peer, &*host_keys, provider);
         let Ok((mut conn, session_id)) = future.await else {
             return Err(());
         };
