@@ -4,14 +4,14 @@ use std::{borrow::Cow, sync::Arc};
 use tracing::debug;
 
 use crate::{
-    Decode, Decoded, Encode, IncomingPacket, KeyExchangeAlgorithm, MessageType, Pretty, ProtoError,
-    PublicKeyAlgorithm,
+    Decode, Decoded, Encode, ExtInfo, IncomingPacket, KeyExchangeAlgorithm, MessageType, Pretty,
+    ProtoError, PublicKeyAlgorithm,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyDerivation,
         KeySourceSide, SigningKey,
     },
     named::{
-        CompressionAlgorithm, EncryptionAlgorithm, ExtensionId, IncomingNameList,
+        CompressionAlgorithm, EncryptionAlgorithm, ExtensionId, ExtensionName, IncomingNameList,
         KeyExchangeAlgorithmOrExtensionId, Language, MacAlgorithm, OutgoingNameList,
     },
 };
@@ -40,7 +40,15 @@ impl<'a> KeyExchangeInit<'a> {
         server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
-    ) -> Result<(KeyExchangeInit<'static>, HandshakeHash, Negotiated), ProtoError> {
+    ) -> Result<
+        (
+            KeyExchangeInit<'static>,
+            HandshakeHash,
+            Negotiated,
+            ExtInfo<'static>,
+        ),
+        ProtoError,
+    > {
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
         exchange.update(&[u8::from(packet.message_type)]);
         exchange.update(packet.payload);
@@ -58,6 +66,13 @@ impl<'a> KeyExchangeInit<'a> {
             .collect::<Vec<_>>();
         key_exchange_algorithms
             .extend(extensions.map(KeyExchangeAlgorithmOrExtensionId::Extension));
+
+        let ext_info = ExtInfo {
+            extensions: vec![(
+                ExtensionName::ServerSigAlgs,
+                Box::new(OutgoingNameList(supported.public_key)),
+            )],
+        };
 
         let init = KeyExchangeInit {
             cookie,
@@ -80,6 +95,7 @@ impl<'a> KeyExchangeInit<'a> {
             init,
             exchange.hash(provider.hash(&negotiated.key_exchange)?),
             negotiated,
+            ext_info,
         ))
     }
 }

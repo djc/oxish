@@ -387,7 +387,7 @@ impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
 }
 
 #[derive(Debug)]
-pub struct OutgoingNameList<'a, T>(pub &'a [T]);
+pub(crate) struct OutgoingNameList<'a, T>(pub &'a [T]);
 
 impl<'a, T: Named<'a>> Encode for OutgoingNameList<'_, T> {
     fn encode(&self, buf: &mut Vec<u8>) {

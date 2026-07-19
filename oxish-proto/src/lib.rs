@@ -24,10 +24,11 @@ pub use key_exchange::{
     EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchangeInit, KeySourceSet, Negotiated,
 };
 mod named;
+use named::OutgoingNameList;
 pub use named::{
     ChannelType, CompressionAlgorithm, EncryptionAlgorithm, ExtensionId, ExtensionName,
-    KeyExchangeAlgorithm, Language, MacAlgorithm, MethodName, Named, OutgoingNameList,
-    PublicKeyAlgorithm, ServiceName,
+    KeyExchangeAlgorithm, Language, MacAlgorithm, MethodName, Named, PublicKeyAlgorithm,
+    ServiceName,
 };
 
 #[derive(Debug)]
@@ -120,7 +121,7 @@ impl Encode for NewKeys {
 
 #[derive(Debug)]
 pub struct ExtInfo<'a> {
-    pub extensions: Vec<(ExtensionName<'a>, &'a dyn Encode)>,
+    pub extensions: Vec<(ExtensionName<'a>, Box<dyn Encode + 'a>)>,
 }
 
 impl Encode for ExtInfo<'_> {
