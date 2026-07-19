@@ -9,7 +9,7 @@ use std::{io, str, sync::Arc, task::ready};
 
 use proto::{
     Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, Encoder,
-    ExtensionId, Identification, IdentificationError, Ignore, IncomingPacket, KeyExchangeInit,
+    ExtensionId, Identification, IdentificationError, Ignore, IncomingPacket, KeyExchange,
     KeySourceSet, MessageType, MethodName, NewKeys, PROTOCOL, Pretty, ProtoError, ReadState,
     UserAuthFailure, WriteState,
     crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
@@ -186,7 +186,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Receive and send key exchange init packets
 
         let packet = receive(&mut self.stream, &mut self.read).await?;
-        let (key_exchange_init, mut exchange, negotiated, ext_info) = match KeyExchangeInit::peer(
+        let mut kx = match KeyExchange::start(
             packet,
             exchange,
             host_keys
@@ -203,7 +203,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             }
         };
 
-        self.send_handshake(&key_exchange_init, Some(&mut exchange))
+        self.send_handshake(&kx.local, Some(&mut kx.exchange))
             .await?;
 
         // Perform ECDH key exchange
@@ -219,8 +219,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let result = EcdhKeyExchangeReply::new(
             ecdh_key_exchange_init,
-            &negotiated,
-            exchange,
+            &kx.negotiated,
+            kx.exchange,
             host_keys,
             provider,
         );
@@ -237,10 +237,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Exchange new keys packets and install new keys
 
-        self.update_keys(keys, negotiated.strict_key_exchange, provider)
+        self.update_keys(keys, kx.negotiated.strict_key_exchange, provider)
             .await?;
-        if negotiated.want_extension_info {
-            self.send(&ext_info).await?;
+        if kx.negotiated.want_extension_info {
+            self.send(&kx.ext_info).await?;
         }
 
         self.send(&Ignore::default()).await?;

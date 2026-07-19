@@ -16,39 +16,22 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
-pub struct KeyExchangeInit<'a> {
-    cookie: [u8; 16],
-    pub(crate) key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'a>>,
-    pub(crate) server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
-    pub(crate) encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
-    pub(crate) encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
-    pub(crate) mac_algorithms_client_to_server: Vec<MacAlgorithm<'a>>,
-    pub(crate) mac_algorithms_server_to_client: Vec<MacAlgorithm<'a>>,
-    pub(crate) compression_algorithms_client_to_server: Vec<CompressionAlgorithm<'a>>,
-    pub(crate) compression_algorithms_server_to_client: Vec<CompressionAlgorithm<'a>>,
-    pub(crate) languages_client_to_server: Vec<Language<'a>>,
-    pub(crate) languages_server_to_client: Vec<Language<'a>>,
-    first_kex_packet_follows: bool,
-    extended: u32,
+/// Output from the initial key exchange phase
+pub struct KeyExchange {
+    pub local: KeyExchangeInit<'static>,
+    pub exchange: HandshakeHash,
+    pub negotiated: Negotiated,
+    pub ext_info: ExtInfo<'static>,
 }
 
-impl<'a> KeyExchangeInit<'a> {
-    pub fn peer(
-        packet: IncomingPacket<'a>,
+impl KeyExchange {
+    pub fn start(
+        packet: IncomingPacket<'_>,
         mut exchange: HandshakeBuffer,
         server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
-    ) -> Result<
-        (
-            KeyExchangeInit<'static>,
-            HandshakeHash,
-            Negotiated,
-            ExtInfo<'static>,
-        ),
-        ProtoError,
-    > {
+    ) -> Result<Self, ProtoError> {
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
         exchange.update(&[u8::from(packet.message_type)]);
         exchange.update(packet.payload);
@@ -74,7 +57,7 @@ impl<'a> KeyExchangeInit<'a> {
             )],
         };
 
-        let init = KeyExchangeInit {
+        let local = KeyExchangeInit {
             cookie,
             key_exchange_algorithms,
             server_host_key_algorithms,
@@ -90,14 +73,31 @@ impl<'a> KeyExchangeInit<'a> {
             extended: 0,
         };
 
-        let negotiated = Negotiated::choose(peer_key_exchange_init, &init)?;
-        Ok((
-            init,
-            exchange.hash(provider.hash(&negotiated.key_exchange)?),
+        let negotiated = Negotiated::choose(peer_key_exchange_init, &local)?;
+        Ok(Self {
+            local,
+            exchange: exchange.hash(provider.hash(&negotiated.key_exchange)?),
             negotiated,
             ext_info,
-        ))
+        })
     }
+}
+
+#[derive(Debug)]
+pub struct KeyExchangeInit<'a> {
+    cookie: [u8; 16],
+    pub(crate) key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'a>>,
+    pub(crate) server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
+    pub(crate) encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
+    pub(crate) encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
+    pub(crate) mac_algorithms_client_to_server: Vec<MacAlgorithm<'a>>,
+    pub(crate) mac_algorithms_server_to_client: Vec<MacAlgorithm<'a>>,
+    pub(crate) compression_algorithms_client_to_server: Vec<CompressionAlgorithm<'a>>,
+    pub(crate) compression_algorithms_server_to_client: Vec<CompressionAlgorithm<'a>>,
+    pub(crate) languages_client_to_server: Vec<Language<'a>>,
+    pub(crate) languages_server_to_client: Vec<Language<'a>>,
+    first_kex_packet_follows: bool,
+    extended: u32,
 }
 
 impl<'a> KeyExchangeInit<'a> {
