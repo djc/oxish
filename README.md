@@ -29,6 +29,7 @@ If any features you need are missing, please open an issue or submit a pull requ
 
 - [RFC 4251][rfc4251]: The Secure Shell (SSH) Protocol Architecture
 - [RFC 4253][rfc4253]: The Secure Shell (SSH) Transport Layer Protocol
+- [RFC 4254][rfc4254]: The Secure Shell (SSH) Connection Protocol
 - [RFC 4344][rfc4344]: The Secure Shell (SSH) Transport Layer Encryption Modes
 - [RFC 5647][rfc5647]: AES Galois Counter Mode for the Secure Shell Transport Layer Protocol
 - [RFC 5656][rfc5656]: Elliptic Curve Algorithm Integration in the Secure Shell Transport Layer
@@ -39,6 +40,7 @@ If any features you need are missing, please open an issue or submit a pull requ
 
 [rfc4251]: https://www.rfc-editor.org/rfc/rfc4251
 [rfc4253]: https://www.rfc-editor.org/rfc/rfc4253
+[rfc4254]: https://www.rfc-editor.org/rfc/rfc4254
 [rfc4344]: https://www.rfc-editor.org/rfc/rfc4344
 [rfc5647]: https://www.rfc-editor.org/rfc/rfc5647
 [rfc5656]: https://www.rfc-editor.org/rfc/rfc5656
