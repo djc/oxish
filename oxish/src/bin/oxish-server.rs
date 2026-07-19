@@ -112,12 +112,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            tokio::spawn(async move {
-                match child.wait().await {
-                    Ok(status) => info!(%addr, %status, "session process exited"),
-                    Err(error) => warn!(%addr, %error, "failed to wait for session process"),
-                }
-            });
+            match child.wait().await {
+                Ok(status) => info!(%addr, %status, "session process exited"),
+                Err(error) => warn!(%addr, %error, "failed to wait for session process"),
+            }
 
             Ok(())
         });
