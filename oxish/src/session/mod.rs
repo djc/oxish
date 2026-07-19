@@ -1,6 +1,6 @@
 use core::{
     cmp::Ordering,
-    fmt,
+    fmt, future,
     mem::MaybeUninit,
     net::SocketAddr,
     str::{self, FromStr},
@@ -17,7 +17,8 @@ use std::{
 };
 
 use proto::{
-    Decode, Decoded, Encode, EncryptionAlgorithm, KeySourceSet, ProtoError, ReadState, WriteState,
+    Decode, Decoded, Disconnect, Encode, Encoder, EncryptionAlgorithm, KeySourceSet, MessageType,
+    Pretty, ProtoError, ReadState, WriteState,
     crypto::{CryptoProvider, KeyLengths, KeySourceSide},
 };
 use rustix::net::{
@@ -25,17 +26,109 @@ use rustix::net::{
     SendAncillaryMessage, SendFlags,
 };
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     process::{Child, Command},
 };
+use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::{Auth, Connection, Error, User};
+use crate::{Auth, Connection, Error, User, receive, send};
 
-/// Element type of the group list passed to `getgrouplist()`, which differs by platform
-#[cfg(target_os = "macos")]
-type RawGroupId = libc::c_int;
-#[cfg(not(target_os = "macos"))]
-type RawGroupId = libc::gid_t;
+mod connections;
+use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
+mod terminal;
+
+/// A single SSH connection
+pub struct Session<T> {
+    conn: Connection<T>,
+    channels: Channels,
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
+    /// Create a new [`Connection`]
+    pub fn new(conn: Connection<T>) -> Self {
+        Self {
+            conn,
+            channels: Channels::default(),
+        }
+    }
+
+    /// Drive the connection forward
+    #[instrument(name = "connection", skip(self), fields(addr = %self.conn.addr))]
+    pub async fn run(mut self) -> Result<(), ()> {
+        // Main loop for handling channel messages
+        loop {
+            tokio::select! {
+                result = receive(&mut self.conn.stream, &mut self.conn.read) => {
+                    let packet = result?;
+                    match packet.message_type {
+                        MessageType::Ignore | MessageType::Debug => {
+                            trace!(?packet.message_type, "ignoring transport-layer message");
+                            continue;
+                        }
+                        MessageType::Disconnect => {
+                            match Disconnect::try_from(packet) {
+                                Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
+                                Err(error) => warn!(%error, "failed to read disconnect packet"),
+                            }
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+
+                    let channel_message = match IncomingChannelMessage::try_from(packet) {
+                        Ok(req) => req,
+                        Err(error) => {
+                            error!(%error, "failed to read channel message");
+                            return Err(());
+                        }
+                    };
+
+                    debug!(message = %Pretty(&channel_message), "handling channel message");
+                    let mut encoder = Encoder::new(&mut self.conn.write);
+                    let result = match channel_message {
+                        IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
+                        IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),
+                        IncomingChannelMessage::Data(data) => match self.channels.data(&data) {
+                            Ok(Some((session, data))) => match session.write(data).await {
+                                Ok(_) => Ok(()),
+                                Err(error) => Err(error.into()),
+                            },
+                            Ok(None) => Ok(()),
+                            Err(error) => Err(error.into()),
+                        }
+                        IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
+                        IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut encoder),
+                    };
+
+                    if let Err(error) = result {
+                        error!(%error, "failed to handle channel message");
+                        return Err(());
+                    }
+
+                    future::poll_fn(|cx| send(&mut self.conn.stream, encoder.write, cx))
+                        .await
+                        .map_err(|error| {
+                            error!(%error, "failed to write queued packets to stream");
+                        })?;
+                }
+                result = TerminalsFuture::new(self.channels.channels_mut()) => {
+                    match result {
+                        Ok(Some(outgoing)) => {
+                            debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
+                            self.conn.send(&outgoing).await?;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            error!(%error, "failed to poll sessions");
+                            return Err(());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// The state needed to resume an authenticated connection in a session process
 pub struct SessionState {
@@ -471,6 +564,12 @@ impl Decode<'_> for SideState {
         })
     }
 }
+
+/// Element type of the group list passed to `getgrouplist()`, which differs by platform
+#[cfg(target_os = "macos")]
+type RawGroupId = libc::c_int;
+#[cfg(not(target_os = "macos"))]
+type RawGroupId = libc::gid_t;
 
 #[cfg(test)]
 mod tests {

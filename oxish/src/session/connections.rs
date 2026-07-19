@@ -17,7 +17,8 @@ use proto::{
 };
 use tracing::{debug, warn};
 
-use crate::{Error, terminal::Terminal};
+use super::terminal::Terminal;
+use crate::Error;
 
 #[derive(Default)]
 pub(crate) struct Channels {

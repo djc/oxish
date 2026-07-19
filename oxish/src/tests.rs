@@ -11,7 +11,11 @@ use proto::{PublicKeyAlgorithm, crypto::CryptoProvider};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
-use crate::{Auth, Connection, Session, SessionState, User, authentication::AuthorizedKey};
+use crate::{
+    Auth, Connection, User,
+    authentication::AuthorizedKey,
+    session::{Session, SessionState},
+};
 
 /// Exercise a full handshake and session against the aws-lc-rs provider
 #[cfg(feature = "aws-lc")]
