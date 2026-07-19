@@ -8,10 +8,9 @@ use core::{
 use std::{io, str, sync::Arc, task::ready};
 
 use proto::{
-    Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, Encoder,
-    ExtensionId, Identification, IdentificationError, Ignore, IncomingPacket, KeyExchange,
-    KeySourceSet, MessageType, MethodName, NewKeys, PROTOCOL, Pretty, ProtoError, ReadState,
-    UserAuthFailure, WriteState,
+    Completion, Decoded, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, ExtensionId,
+    Identification, IdentificationError, Ignore, IncomingPacket, KeyExchange, KeySourceSet,
+    MethodName, NewKeys, PROTOCOL, ProtoError, ReadState, UserAuthFailure, WriteState,
     crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
 };
 use thiserror::Error;
@@ -19,7 +18,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     time::timeout,
 };
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 #[cfg(feature = "aws-lc")]
 pub use aws_lc::DEFAULT_PROVIDER;
@@ -30,106 +29,11 @@ compile_error!("no crypto providers enabled -- enable at least one to fix this e
 
 mod authentication;
 pub use authentication::{Auth, User};
-mod connections;
-use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
-mod spawn;
-pub use spawn::SessionState;
+mod session;
+pub use session::{Session, SessionState};
 
-mod terminal;
 #[cfg(test)]
 mod tests;
-
-/// A single SSH connection
-pub struct Session<T> {
-    conn: Connection<T>,
-    channels: Channels,
-}
-
-impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
-    /// Create a new [`Connection`]
-    pub fn new(conn: Connection<T>) -> Self {
-        Self {
-            conn,
-            channels: Channels::default(),
-        }
-    }
-
-    /// Drive the connection forward
-    #[instrument(name = "connection", skip(self), fields(addr = %self.conn.addr))]
-    pub async fn run(mut self) -> Result<(), ()> {
-        // Main loop for handling channel messages
-        loop {
-            tokio::select! {
-                result = receive(&mut self.conn.stream, &mut self.conn.read) => {
-                    let packet = result?;
-                    match packet.message_type {
-                        MessageType::Ignore | MessageType::Debug => {
-                            trace!(?packet.message_type, "ignoring transport-layer message");
-                            continue;
-                        }
-                        MessageType::Disconnect => {
-                            match Disconnect::try_from(packet) {
-                                Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
-                                Err(error) => warn!(%error, "failed to read disconnect packet"),
-                            }
-                            return Ok(());
-                        }
-                        _ => {}
-                    }
-
-                    let channel_message = match IncomingChannelMessage::try_from(packet) {
-                        Ok(req) => req,
-                        Err(error) => {
-                            error!(%error, "failed to read channel message");
-                            return Err(());
-                        }
-                    };
-
-                    debug!(message = %Pretty(&channel_message), "handling channel message");
-                    let mut encoder = Encoder::new(&mut self.conn.write);
-                    let result = match channel_message {
-                        IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
-                        IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),
-                        IncomingChannelMessage::Data(data) => match self.channels.data(&data) {
-                            Ok(Some((session, data))) => match session.write(data).await {
-                                Ok(_) => Ok(()),
-                                Err(error) => Err(error.into()),
-                            },
-                            Ok(None) => Ok(()),
-                            Err(error) => Err(error.into()),
-                        }
-                        IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
-                        IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut encoder),
-                    };
-
-                    if let Err(error) = result {
-                        error!(%error, "failed to handle channel message");
-                        return Err(());
-                    }
-
-                    future::poll_fn(|cx| send(&mut self.conn.stream, encoder.write, cx))
-                        .await
-                        .map_err(|error| {
-                            error!(%error, "failed to write queued packets to stream");
-                        })?;
-                }
-                result = TerminalsFuture::new(self.channels.channels_mut()) => {
-                    match result {
-                        Ok(Some(outgoing)) => {
-                            debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
-                            self.conn.send(&outgoing).await?;
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            error!(%error, "failed to poll sessions");
-                            return Err(());
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// Core connection state and logic for an SSH session
 pub struct Connection<T> {
