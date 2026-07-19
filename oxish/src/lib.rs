@@ -33,26 +33,26 @@ mod tests;
 
 /// A single SSH connection
 pub struct Session<T> {
-    io: Connection<T>,
+    conn: Connection<T>,
     channels: Channels,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
     /// Create a new [`Connection`]
-    pub fn new(io: Connection<T>) -> Self {
+    pub fn new(conn: Connection<T>) -> Self {
         Self {
-            io,
+            conn,
             channels: Channels::default(),
         }
     }
 
     /// Drive the connection forward
-    #[instrument(name = "connection", skip(self), fields(addr = %self.io.addr))]
+    #[instrument(name = "connection", skip(self), fields(addr = %self.conn.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
         // Main loop for handling channel messages
         loop {
             tokio::select! {
-                result = receive(&mut self.io.stream, &mut self.io.read) => {
+                result = receive(&mut self.conn.stream, &mut self.conn.read) => {
                     let packet = result?;
                     if packet.message_type == MessageType::Disconnect {
                         match Disconnect::try_from(packet) {
@@ -71,7 +71,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                     };
 
                     debug!(message = %Pretty(&channel_message), "handling channel message");
-                    let mut encoder = Encoder::new(&mut self.io.write);
+                    let mut encoder = Encoder::new(&mut self.conn.write);
                     let result = match channel_message {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
                         IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),
@@ -92,13 +92,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         return Err(());
                     }
 
-                    encoder.flush(&mut self.io.stream).await?;
+                    encoder.flush(&mut self.conn.stream).await?;
                 }
                 result = TerminalsFuture::new(self.channels.channels_mut()) => {
                     match result {
                         Ok(Some(outgoing)) => {
                             debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
-                            self.io.send(&outgoing).await?;
+                            self.conn.send(&outgoing).await?;
                         }
                         Ok(None) => {}
                         Err(error) => {
