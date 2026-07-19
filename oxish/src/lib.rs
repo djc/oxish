@@ -22,6 +22,13 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
+#[cfg(feature = "aws-lc")]
+pub use aws_lc::DEFAULT_PROVIDER;
+#[cfg(all(feature = "graviola", not(feature = "aws-lc")))]
+pub use graviola::DEFAULT_PROVIDER;
+#[cfg(all(not(feature = "aws-lc"), not(feature = "graviola")))]
+compile_error!("no crypto providers enabled -- enable at least one to fix this error");
+
 mod authentication;
 pub use authentication::{Auth, User};
 mod connections;
