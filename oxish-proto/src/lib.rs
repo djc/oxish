@@ -21,7 +21,8 @@ mod io;
 pub use io::{Encoder, ReadState, WriteState};
 mod key_exchange;
 pub use key_exchange::{
-    EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchangeInit, KeySourceSet, Negotiated,
+    EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchange, KeyExchangeInit, KeySourceSet,
+    Negotiated,
 };
 mod named;
 use named::OutgoingNameList;
