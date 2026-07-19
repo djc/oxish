@@ -159,6 +159,23 @@ impl Default for ReadState {
     }
 }
 
+/// Wrapper for the write and encryption state of an SSH connection
+pub struct Encoder<'a> {
+    pub write: &'a mut WriteState,
+}
+
+impl Encoder<'_> {
+    /// Create a new encoder for the given write state
+    pub fn new(write: &mut WriteState) -> Encoder<'_> {
+        Encoder { write }
+    }
+
+    /// Encode and enqueue a packet for sending
+    pub fn enqueue(&mut self, payload: &impl Encode) -> Result<(), ProtoError> {
+        self.write.handle_packet(payload, None)
+    }
+}
+
 pub struct WriteState {
     /// Buffer for encoded but unencrypted packets
     buf: Vec<u8>,

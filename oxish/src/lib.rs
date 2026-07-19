@@ -8,7 +8,7 @@ use core::{
 use std::{io, str, task::ready};
 
 use proto::{
-    Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode,
+    Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, Encoder,
     EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification, IdentificationError,
     IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, MethodName, NewKeys,
     OutgoingNameList, PROTOCOL, Pretty, ProtoError, PublicKeyAlgorithm, ReadState, UserAuthFailure,
@@ -398,25 +398,6 @@ pub(crate) async fn receive<'a>(
                 return Err(());
             }
         }
-    }
-}
-
-pub(crate) struct Encoder<'a> {
-    write: &'a mut WriteState,
-}
-
-impl Encoder<'_> {
-    pub(crate) fn new(write: &mut WriteState) -> Encoder<'_> {
-        Encoder {
-            write,
-        }
-    }
-
-    pub(crate) fn enqueue(&mut self, payload: &impl Encode) -> Result<(), Error> {
-        self.write.handle_packet(payload, None).map_err(|error| {
-            error!(%error, ?payload, "failed to encode packet");
-            Error::from(error)
-        })
     }
 }
 
