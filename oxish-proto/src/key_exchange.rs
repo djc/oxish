@@ -656,4 +656,262 @@ mod tests {
         assert_eq!(value, key);
         assert!(next.is_empty());
     }
+
+    fn kex(alg: KeyExchangeAlgorithm<'static>) -> KeyExchangeAlgorithmOrExtensionId<'static> {
+        KeyExchangeAlgorithmOrExtensionId::KeyExchange(alg)
+    }
+
+    /// Build a `KeyExchangeInit` from just the fields negotiation cares about,
+    /// filling the rest with placeholder defaults.
+    fn init(
+        key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'static>>,
+        server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
+        encryption_client_to_server: Vec<EncryptionAlgorithm<'static>>,
+        encryption_server_to_client: Vec<EncryptionAlgorithm<'static>>,
+    ) -> KeyExchangeInit<'static> {
+        KeyExchangeInit {
+            cookie: [0; 16],
+            key_exchange_algorithms,
+            server_host_key_algorithms,
+            encryption_algorithms_client_to_server: encryption_client_to_server,
+            encryption_algorithms_server_to_client: encryption_server_to_client,
+            mac_algorithms_client_to_server: vec![MacAlgorithm::HmacSha2256],
+            mac_algorithms_server_to_client: vec![MacAlgorithm::HmacSha2256],
+            compression_algorithms_client_to_server: vec![CompressionAlgorithm::None],
+            compression_algorithms_server_to_client: vec![CompressionAlgorithm::None],
+            languages_client_to_server: vec![],
+            languages_server_to_client: vec![],
+            first_kex_packet_follows: false,
+            extended: 0,
+        }
+    }
+
+    #[test]
+    fn negotiation_selects_common_algorithms() {
+        let client = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+        let server = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+
+        let negotiated = Negotiated::choose(client, &server).unwrap();
+        assert_eq!(
+            negotiated.key_exchange,
+            KeyExchangeAlgorithm::MlKem768X25519Sha256
+        );
+        assert_eq!(negotiated.server_host_key, PublicKeyAlgorithm::Ed25519);
+        assert_eq!(
+            negotiated.encryption_client_to_server,
+            EncryptionAlgorithm::Aes128Gcm
+        );
+        assert_eq!(
+            negotiated.encryption_server_to_client,
+            EncryptionAlgorithm::Aes128Gcm
+        );
+        assert!(!negotiated.want_extension_info);
+        assert!(!negotiated.strict_key_exchange);
+    }
+
+    #[test]
+    fn negotiation_prefers_client_order() {
+        // RFC 4253 section 7.1: the chosen algorithm is the client's first
+        // preference that the server also offers, regardless of server order.
+        let a = KeyExchangeAlgorithm::MlKem768X25519Sha256;
+        let b = KeyExchangeAlgorithm::Unknown("curve25519-sha256");
+
+        let host = vec![PublicKeyAlgorithm::Ed25519];
+        let enc = vec![EncryptionAlgorithm::Aes128Gcm];
+
+        // Client prefers `b`; the server lists `a` first but must yield to the client.
+        let client = init(vec![kex(b), kex(a)], host.clone(), enc.clone(), enc.clone());
+        let server = init(vec![kex(a), kex(b)], host, enc.clone(), enc);
+
+        let negotiated = Negotiated::choose(client, &server).unwrap();
+        assert_eq!(negotiated.key_exchange, b);
+    }
+
+    #[test]
+    fn negotiation_without_common_key_exchange_fails() {
+        let client = init(
+            vec![kex(KeyExchangeAlgorithm::Unknown(
+                "diffie-hellman-group14-sha256",
+            ))],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+        let server = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+
+        assert_eq!(
+            Negotiated::choose(client, &server).unwrap_err(),
+            ProtoError::NoCommonAlgorithm("key exchange")
+        );
+    }
+
+    #[test]
+    fn negotiation_without_common_host_key_fails() {
+        let client = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+        let server = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::EcdsaSha2Nistp256],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+
+        assert_eq!(
+            Negotiated::choose(client, &server).unwrap_err(),
+            ProtoError::NoCommonAlgorithm("host key")
+        );
+    }
+
+    #[test]
+    fn negotiation_without_common_client_to_server_encryption_fails() {
+        let client = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Unknown(Cow::Borrowed(
+                "aes256-gcm@openssh.com",
+            ))],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+        let server = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+
+        assert_eq!(
+            Negotiated::choose(client, &server).unwrap_err(),
+            ProtoError::NoCommonAlgorithm("encryption (client to server)")
+        );
+    }
+
+    #[test]
+    fn negotiation_without_common_server_to_client_encryption_fails() {
+        let client = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Unknown(Cow::Borrowed(
+                "aes256-gcm@openssh.com",
+            ))],
+        );
+        let server = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+
+        assert_eq!(
+            Negotiated::choose(client, &server).unwrap_err(),
+            ProtoError::NoCommonAlgorithm("encryption (server to client)")
+        );
+    }
+
+    #[test]
+    fn negotiation_directions_are_independent() {
+        // The two encryption directions are negotiated separately, so they can
+        // land on different ciphers.
+        let other = EncryptionAlgorithm::Unknown(Cow::Borrowed("chacha20-poly1305@openssh.com"));
+        let client = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![other.clone()],
+        );
+        let server = init(
+            vec![kex(KeyExchangeAlgorithm::MlKem768X25519Sha256)],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm, other.clone()],
+            vec![EncryptionAlgorithm::Aes128Gcm, other.clone()],
+        );
+
+        let negotiated = Negotiated::choose(client, &server).unwrap();
+        assert_eq!(
+            negotiated.encryption_client_to_server,
+            EncryptionAlgorithm::Aes128Gcm
+        );
+        assert_eq!(negotiated.encryption_server_to_client, other);
+    }
+
+    #[test]
+    fn negotiation_reads_client_extensions() {
+        // Extension markers ride in the client's key exchange list. They must
+        // not be matched as key exchange algorithms, but they do drive the
+        // `want_extension_info` and `strict_key_exchange` flags.
+        let client = init(
+            vec![
+                kex(KeyExchangeAlgorithm::MlKem768X25519Sha256),
+                KeyExchangeAlgorithmOrExtensionId::Extension(ExtensionId::ExtInfoC),
+                KeyExchangeAlgorithmOrExtensionId::Extension(ExtensionId::StrictKexClient),
+            ],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+        let server = init(
+            vec![
+                kex(KeyExchangeAlgorithm::MlKem768X25519Sha256),
+                KeyExchangeAlgorithmOrExtensionId::Extension(ExtensionId::StrictKexServer),
+            ],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+
+        let negotiated = Negotiated::choose(client, &server).unwrap();
+        assert_eq!(
+            negotiated.key_exchange,
+            KeyExchangeAlgorithm::MlKem768X25519Sha256
+        );
+        assert!(negotiated.want_extension_info);
+        assert!(negotiated.strict_key_exchange);
+    }
+
+    #[test]
+    fn negotiation_ignores_extension_only_overlap() {
+        // A shared extension marker is not a shared key exchange algorithm.
+        let client = init(
+            vec![
+                kex(KeyExchangeAlgorithm::Unknown("sntrup761x25519-sha512")),
+                KeyExchangeAlgorithmOrExtensionId::Extension(ExtensionId::ExtInfoC),
+            ],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+        let server = init(
+            vec![
+                kex(KeyExchangeAlgorithm::MlKem768X25519Sha256),
+                KeyExchangeAlgorithmOrExtensionId::Extension(ExtensionId::ExtInfoC),
+            ],
+            vec![PublicKeyAlgorithm::Ed25519],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+            vec![EncryptionAlgorithm::Aes128Gcm],
+        );
+
+        assert_eq!(
+            Negotiated::choose(client, &server).unwrap_err(),
+            ProtoError::NoCommonAlgorithm("key exchange")
+        );
+    }
 }
