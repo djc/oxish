@@ -106,6 +106,13 @@ impl Auth {
         let mut cached_user = None::<User>;
         loop {
             let packet = receive(&mut conn.stream, &mut conn.read).await?;
+            if matches!(
+                packet.message_type,
+                MessageType::Ignore | MessageType::Debug
+            ) {
+                continue;
+            }
+
             let user_auth_request = match UserAuthRequest::try_from(packet) {
                 Ok(req) => req,
                 Err(error) => {
