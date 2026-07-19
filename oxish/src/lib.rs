@@ -54,12 +54,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
             tokio::select! {
                 result = receive(&mut self.io.stream, &mut self.io.read) => {
                     let packet = result?;
-                    if packet.message_type == MessageType::Disconnect {
-                        match Disconnect::try_from(packet) {
-                            Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
-                            Err(error) => warn!(%error, "failed to read disconnect packet"),
+                    match packet.message_type {
+                        MessageType::Ignore | MessageType::Debug => {
+                            trace!(?packet.message_type, "ignoring transport-layer message");
+                            continue;
                         }
-                        return Ok(());
+                        MessageType::Disconnect => {
+                            match Disconnect::try_from(packet) {
+                                Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
+                                Err(error) => warn!(%error, "failed to read disconnect packet"),
+                            }
+                            return Ok(());
+                        }
+                        _ => {}
                     }
 
                     let channel_message = match IncomingChannelMessage::try_from(packet) {
