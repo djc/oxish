@@ -19,7 +19,7 @@ use std::{
     sync::Arc,
 };
 
-use libc::{_SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY, getpwnam_r, sysconf};
+use libc::{_SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
     Decode, Decoded, Disconnect, DisconnectReason, MessageType, Method, Named, ProtoError,
     PublicKeyAlgorithm, ServiceAccept, ServiceName, ServiceRequest, Signature, SignatureData,
@@ -36,15 +36,20 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::{Connection, Error, receive};
 
 pub enum Auth {
-    /// Look up the requested user in the system database and read their
-    /// `authorized_keys` file.
+    /// Look up the requested user in the system database and read their `authorized_keys` file
     System,
-    /// Authorize against a fixed set of keys, ignoring the system database.
-    #[cfg(test)]
+    /// Authorize against a fixed user
     Fixed(User),
 }
 
 impl Auth {
+    pub fn for_id(uid: u32, provider: &dyn CryptoProvider) -> Result<Self, Error> {
+        Ok(match uid {
+            0 => Self::System,
+            _ => Self::Fixed(User::lookup(UserLookup::Id(uid), provider)?),
+        })
+    }
+
     /// Authenticate a user over the given SSH connection
     #[instrument(name = "authentication", skip(self, session_id, conn, provider), fields(addr = %conn.addr))]
     pub async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
@@ -229,14 +234,13 @@ impl Auth {
 
     pub(crate) fn resolve(&self, name: &str, provider: &dyn CryptoProvider) -> Option<User> {
         match self {
-            Self::System => match User::from_system(name, provider) {
-                Ok(new) => Some(new),
+            Self::System => match User::lookup(UserLookup::Name(name), provider) {
+                Ok(user) => Some(user),
                 Err(error) => {
                     error!(%error, "failed to get user information");
                     None
                 }
             },
-            #[cfg(test)]
             Self::Fixed(user) => match user.name == name {
                 true => Some(user.clone()),
                 false => {
@@ -255,10 +259,10 @@ impl Auth {
 #[derive(Clone, Debug)]
 pub struct User {
     pub(crate) name: String,
-    #[expect(dead_code)]
     pub(crate) id: u32,
-    #[expect(dead_code)]
+    pub(crate) gid: u32,
     pub(crate) home_dir: PathBuf,
+    pub(crate) shell: PathBuf,
     /// Cached authorized keys for the user
     ///
     /// Since finding the authorized keys can be somewhat expensive, prefer to cache them
@@ -267,8 +271,7 @@ pub struct User {
 }
 
 impl User {
-    fn from_system(name: &str, provider: &dyn CryptoProvider) -> Result<Self, Error> {
-        let c_name = CString::new(name).map_err(|_| Error::InvalidUsername)?;
+    fn lookup(by: UserLookup<'_>, provider: &dyn CryptoProvider) -> Result<Self, Error> {
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
             n => Ord::min(n as usize, 1_048_576),
@@ -278,46 +281,84 @@ impl User {
         let mut pwd = unsafe { core::mem::zeroed() };
         let mut result = core::ptr::null_mut();
 
-        let ret = unsafe {
-            getpwnam_r(
-                c_name.as_ptr(),
-                &mut pwd,
-                buf.as_mut_ptr().cast::<c_char>(),
-                buf_len,
-                &mut result,
-            )
+        let ret = match by {
+            UserLookup::Name(name) => {
+                let c_name = CString::new(name).map_err(|_| Error::InvalidUsername)?;
+                unsafe {
+                    getpwnam_r(
+                        c_name.as_ptr(),
+                        &mut pwd,
+                        buf.as_mut_ptr().cast::<c_char>(),
+                        buf_len,
+                        &mut result,
+                    )
+                }
+            }
+            UserLookup::Id(id) => unsafe {
+                getpwuid_r(
+                    id,
+                    &mut pwd,
+                    buf.as_mut_ptr().cast::<c_char>(),
+                    buf_len,
+                    &mut result,
+                )
+            },
         };
 
-        let home_dir = if ret != 0 {
-            let error = io::Error::from_raw_os_error(ret);
-            debug!(%error, %name, "failed to get user information");
-            Self::FAKE_HOME
-        } else if result.is_null() {
-            debug!(%name, "user not found");
-            Self::FAKE_HOME
-        } else {
-            debug!(user = %name, "found home dir");
-            pwd.pw_dir
-        };
-
-        // SAFETY: if `ret` is 0 (signifying success) and `result` is non-null, `pwd.pw_dir`
-        // was populated by `getpwnam_r`, the `pwd` struct and `buf` are still alive, so the
-        // pointer is valid; otherwise, `home_dir` is set to a static string. In either case,
-        // `home_dir` is a valid pointer to a null-terminated C string.
-        let home_dir = PathBuf::from(OsStr::from_bytes(
-            unsafe { CStr::from_ptr(home_dir) }.to_bytes(),
-        ));
+        let name = match (ret, result.is_null()) {
+            (0, false) => unsafe { CStr::from_ptr(pwd.pw_name) }
+                .to_str()
+                .map_err(|_| Error::InvalidUsername)?,
+            _ => "nobody",
+        }
+        .to_owned();
 
         let id = match (ret, result.is_null()) {
             (0, false) => pwd.pw_uid,
             _ => u32::MAX,
         };
 
+        let gid = match (ret, result.is_null()) {
+            (0, false) => pwd.pw_gid,
+            _ => u32::MAX,
+        };
+
+        let (home_dir, shell) = if ret != 0 {
+            let error = io::Error::from_raw_os_error(ret);
+            debug!(%error, ?by, "failed to get user information");
+            (Self::FAKE_HOME, Self::DEFAULT_SHELL)
+        } else if result.is_null() {
+            debug!(?by, "user not found");
+            (Self::FAKE_HOME, Self::DEFAULT_SHELL)
+        } else {
+            debug!(?by, "found home dir");
+            (pwd.pw_dir.cast_const(), pwd.pw_shell.cast_const())
+        };
+
+        // SAFETY: if `ret` is 0 (signifying success) and `result` is non-null, `pwd.pw_dir`
+        // and `pwd.pw_shell` were populated by `getpwnam_r`, the `pwd` struct and `buf` are
+        // still alive, so the pointers are valid; otherwise, `home_dir` and `shell` are set
+        // to static strings. In either case, both are valid pointers to null-terminated C
+        // strings.
+        let home_dir = PathBuf::from(OsStr::from_bytes(
+            unsafe { CStr::from_ptr(home_dir) }.to_bytes(),
+        ));
+
+        // An empty `pw_shell` means the system default shell.
+        let shell = match unsafe { CStr::from_ptr(shell) }.to_bytes() {
+            b"" => PathBuf::from(OsStr::from_bytes(
+                unsafe { CStr::from_ptr(Self::DEFAULT_SHELL) }.to_bytes(),
+            )),
+            bytes => PathBuf::from(OsStr::from_bytes(bytes)),
+        };
+
         Ok(Self {
-            name: name.to_owned(),
+            name,
             id,
+            gid,
             authorized_keys: authorized_keys(&home_dir, id, provider),
             home_dir,
+            shell,
         })
     }
 
@@ -328,18 +369,28 @@ impl User {
     pub(crate) fn new(
         name: String,
         id: u32,
+        gid: u32,
         home_dir: PathBuf,
         authorized_keys: Vec<AuthorizedKey>,
     ) -> Self {
         Self {
             name,
             id,
+            gid,
             home_dir,
+            shell: PathBuf::from("/bin/sh"),
             authorized_keys,
         }
     }
 
     const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
+    const DEFAULT_SHELL: *const c_char = c"/bin/sh".as_ptr().cast::<c_char>();
+}
+
+#[derive(Debug)]
+enum UserLookup<'a> {
+    Name(&'a str),
+    Id(u32),
 }
 
 /// Read and parse the `authorized_keys` file for a user

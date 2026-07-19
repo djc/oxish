@@ -6,10 +6,11 @@ use core::{
     str::{self, FromStr},
 };
 use std::{
+    ffi::CString,
     io::{self, IoSlice, IoSliceMut},
     os::{
         fd::{AsFd, OwnedFd},
-        unix::net::UnixStream,
+        unix::{ffi::OsStrExt, net::UnixStream},
     },
     path::Path,
     process::Stdio,
@@ -28,7 +29,13 @@ use tokio::{
     process::{Child, Command},
 };
 
-use crate::{Connection, Error};
+use crate::{Auth, Connection, Error, User};
+
+/// Element type of the group list passed to `getgrouplist()`, which differs by platform
+#[cfg(target_os = "macos")]
+type RawGroupId = libc::c_int;
+#[cfg(not(target_os = "macos"))]
+type RawGroupId = libc::gid_t;
 
 /// The state needed to resume an authenticated connection in a session process
 pub struct SessionState {
@@ -170,15 +177,104 @@ impl SessionState {
     /// Decomposes `conn` into a [`SessionState`] and the TCP stream, spawns `session_bin` with one end of a Unix socket pair as its stdin, and sends the serialized state plus the TCP
     /// socket's file descriptor (via `SCM_RIGHTS`) over the other end. The child reconstructs
     /// the connection with [`SessionState::from_fd()`] and [`SessionState::into_connection()`].
-    pub async fn spawn(self, stream: TcpStream, binary: &Path) -> Result<Child, Error> {
+    ///
+    /// When `auth` is [`Auth::System`], the child process drops its privileges to `user` and
+    /// changes into that user's home directory before `exec`, so the session (and any shell it
+    /// spawns) runs as the authenticated user. The caller sets this only when the server is
+    /// privileged enough to change the process owner; when it is not, authentication is already
+    /// restricted to the user the server runs as, so there's no need to drop privileges.
+    pub async fn spawn(
+        self,
+        stream: TcpStream,
+        binary: &Path,
+        user: User,
+        auth: &Auth,
+    ) -> Result<Child, Error> {
         let tcp = stream.into_std()?;
 
         let (parent, child_sock) = UnixStream::pair()?;
-        let child = Command::new(binary)
+        let mut command = Command::new(binary);
+        command
+            .env_clear()
+            .env("HOME", &user.home_dir)
+            .env("USER", &user.name)
+            .env("LOGNAME", &user.name)
+            .env("SHELL", &user.shell)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .stdin(Stdio::from(OwnedFd::from(child_sock)))
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stderr(Stdio::inherit());
+
+        if let Auth::System = auth {
+            let home = CString::new(user.home_dir.as_os_str().as_bytes())
+                .map_err(|_| Error::InvalidState("home directory path contains an interior NUL"))?;
+            let name = CString::new(user.name.as_bytes())
+                .map_err(|_| Error::InvalidState("user name contains an interior NUL"))?;
+
+            // Get the list of supplementary groups for the user, which we need to set
+            let mut count = 32;
+            let mut groups = vec![0; count as usize];
+            loop {
+                #[allow(trivial_numeric_casts)] // platform dependent
+                let ret = unsafe {
+                    libc::getgrouplist(
+                        name.as_ptr(),
+                        user.gid as RawGroupId,
+                        groups.as_mut_ptr(),
+                        &mut count,
+                    )
+                };
+
+                // -1 if the group list was too small; resize and try again.
+                if ret != -1 {
+                    break;
+                }
+
+                let new_len = Ord::max(count as usize, groups.len() * 2);
+                if new_len > 65_536 {
+                    return Err(Error::InvalidState("too many supplementary groups"));
+                }
+
+                count = new_len as libc::c_int;
+                groups = vec![0; new_len];
+            }
+
+            groups.truncate(count as usize);
+            #[allow(trivial_numeric_casts)] // platform dependent
+            let groups = groups
+                .into_iter()
+                .map(|gid| gid as libc::gid_t)
+                .collect::<Vec<_>>();
+
+            // SAFETY: the closure runs in the child between `fork` and `exec`. It only calls
+            // async-signal-safe libc functions and performs no allocation (the group list was
+            // allocated in the parent), so it is safe to run in that context even though the
+            // parent is multi-threaded.
+            unsafe {
+                command.pre_exec(move || {
+                    #[allow(trivial_numeric_casts)] // platform dependent
+                    if libc::setgroups(groups.len() as _, groups.as_ptr()) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+
+                    if libc::setgid(user.gid) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+
+                    if libc::setuid(user.id) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+
+                    if libc::chdir(home.as_ptr()) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+
+                    Ok(())
+                });
+            }
+        }
+
+        let child = command.spawn()?;
 
         // The `[u8]` encoding yields the `u32` length prefix followed by the state itself.
         let mut message = vec![0; 4];
