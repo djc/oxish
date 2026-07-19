@@ -118,19 +118,24 @@ impl Terminal {
     }
 
     /// Write data to the PTY (sends input to the shell)
-    pub(crate) async fn write(&self, data: &[u8]) -> io::Result<usize> {
-        loop {
+    pub(crate) async fn write(&self, data: &[u8]) -> io::Result<()> {
+        let mut rest = data;
+        while !rest.is_empty() {
             let mut guard = self.pty.writable().await?;
             let result = guard.try_io(|inner| {
-                write(inner.get_ref(), data)
+                write(inner.get_ref(), rest)
                     .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
             });
 
             match result {
-                Ok(result) => return result,
+                Ok(Ok(0)) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(Ok(written)) => rest = &rest[written..],
+                Ok(Err(error)) => return Err(error),
                 Err(_would_block) => continue,
             }
         }
+
+        Ok(())
     }
 
     /// Read data from the PTY (receives output from the shell)
