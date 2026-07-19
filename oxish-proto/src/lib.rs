@@ -17,7 +17,7 @@ pub use channels::{
 pub mod crypto;
 use crypto::CryptoError;
 mod io;
-pub use io::{ReadState, WriteState};
+pub use io::{Encoder, ReadState, WriteState};
 mod key_exchange;
 pub use key_exchange::{
     EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchangeInit, KeySourceSet, Negotiated,

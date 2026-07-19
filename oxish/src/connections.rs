@@ -13,11 +13,11 @@ use std::{
 use proto::{
     ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
     ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, ChannelType,
-    Encode, IncomingPacket, MessageType, ProtoError, PtyReq,
+    Encode, Encoder, IncomingPacket, MessageType, ProtoError, PtyReq,
 };
 use tracing::{debug, warn};
 
-use crate::{Encoder, Error, terminal::Terminal};
+use crate::{Error, terminal::Terminal};
 
 #[derive(Default)]
 pub(crate) struct Channels {
