@@ -10,7 +10,7 @@ use std::{io, str, task::ready};
 use proto::{
     Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode,
     EncryptionAlgorithm, ExtInfo, ExtensionId, ExtensionName, Identification, IdentificationError,
-    IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, MethodName, NewKeys,
+    Ignore, IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, MethodName, NewKeys,
     OutgoingNameList, PROTOCOL, Pretty, ProtoError, PublicKeyAlgorithm, ReadState, UserAuthFailure,
     WriteState,
     crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
@@ -234,7 +234,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             self.send(&ext_info).await?;
         }
 
-        self.send(&MessageType::Ignore).await?;
+        self.send(&Ignore::default()).await?;
         Ok(session_id)
     }
 
