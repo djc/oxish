@@ -9,10 +9,9 @@ use std::{io, str, sync::Arc, task::ready};
 
 use proto::{
     Completion, Decoded, Disconnect, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, Encoder,
-    ExtInfo, ExtensionId, ExtensionName, Identification, IdentificationError, Ignore,
-    IncomingPacket, KeyExchangeInit, KeySourceSet, MessageType, MethodName, NewKeys,
-    OutgoingNameList, PROTOCOL, Pretty, ProtoError, PublicKeyAlgorithm, ReadState, UserAuthFailure,
-    WriteState,
+    ExtensionId, Identification, IdentificationError, Ignore, IncomingPacket, KeyExchangeInit,
+    KeySourceSet, MessageType, MethodName, NewKeys, PROTOCOL, Pretty, ProtoError, ReadState,
+    UserAuthFailure, WriteState,
     crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
 };
 use thiserror::Error;
@@ -187,7 +186,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Receive and send key exchange init packets
 
         let packet = receive(&mut self.stream, &mut self.read).await?;
-        let (key_exchange_init, mut exchange, negotiated) = match KeyExchangeInit::peer(
+        let (key_exchange_init, mut exchange, negotiated, ext_info) = match KeyExchangeInit::peer(
             packet,
             exchange,
             host_keys
@@ -241,15 +240,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         self.update_keys(keys, negotiated.strict_key_exchange, provider)
             .await?;
         if negotiated.want_extension_info {
-            let ext_info = ExtInfo {
-                extensions: vec![(
-                    ExtensionName::ServerSigAlgs,
-                    &OutgoingNameList(&[
-                        PublicKeyAlgorithm::EcdsaSha2Nistp256,
-                        PublicKeyAlgorithm::Ed25519,
-                    ]),
-                )],
-            };
             self.send(&ext_info).await?;
         }
 
