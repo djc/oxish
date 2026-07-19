@@ -95,7 +95,13 @@ async fn handshake(
     let key = AuthorizedKey::from_str(&authorized_key, provider)
         .unwrap()
         .expect("failed to parse generated public key");
-    let user = User::new(USER.to_string(), 0, PathBuf::from("/var/empty"), vec![key]);
+    let user = User::new(
+        USER.to_string(),
+        0,
+        0,
+        PathBuf::from("/var/empty"),
+        vec![key],
+    );
 
     // Start the server on a loopback port and serve exactly one connection.
     let (host_key, _) = provider
@@ -119,10 +125,8 @@ async fn handshake(
             return Err(());
         };
 
-        let Ok(_user) = Auth::Fixed(user)
-            .authenticate(session_id, &mut conn, provider)
-            .await
-        else {
+        let auth = Auth::Fixed(user);
+        let Ok(user) = auth.authenticate(session_id, &mut conn, provider).await else {
             return Err(());
         };
 
@@ -132,7 +136,7 @@ async fn handshake(
 
         let (state, stream) = SessionState::from_connection(conn, keys).map_err(|_| ())?;
         let mut child = state
-            .spawn(stream, &session_bin)
+            .spawn(stream, &session_bin, user, &auth)
             .await
             .expect("failed to hand off connection");
 

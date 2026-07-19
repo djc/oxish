@@ -75,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(addr = %listener.local_addr()?, "listening for connections");
 
+    let auth = Arc::new(Auth::for_id(unsafe { libc::geteuid() }, provider)?);
     loop {
         let (stream, addr) = match listener.accept().await {
             Ok((stream, addr)) => (stream, addr),
@@ -84,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
+        let auth = auth.clone();
         let host_keys = host_keys.clone();
         let session_bin = session_bin.clone();
         tokio::spawn(async move {
@@ -97,15 +99,12 @@ async fn main() -> anyhow::Result<()> {
                 return Err(());
             };
 
-            let Ok(_user) = Auth::System
-                .authenticate(session_id, &mut conn, provider)
-                .await
-            else {
+            let Ok(user) = auth.authenticate(session_id, &mut conn, provider).await else {
                 return Err(());
             };
 
             let (state, stream) = SessionState::from_connection(conn, keys).map_err(|_| ())?;
-            let mut child = match state.spawn(stream, &session_bin).await {
+            let mut child = match state.spawn(stream, &session_bin, user, &auth).await {
                 Ok(child) => child,
                 Err(error) => {
                     warn!(%addr, %error, "failed to hand off connection to session process");
