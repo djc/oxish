@@ -1,5 +1,5 @@
 use core::fmt;
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 use tracing::debug;
 
@@ -251,9 +251,14 @@ impl EcdhKeyExchangeReply {
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         negotiated: &Negotiated,
         mut exchange: HandshakeHash,
-        host_key: &dyn SigningKey,
+        host_keys: &[Arc<dyn SigningKey>],
         provider: &dyn CryptoProvider,
     ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
+        let host_key = host_keys
+            .iter()
+            .find(|key| key.algorithm() == negotiated.server_host_key)
+            .ok_or(CryptoError::UnknownAlgorithm)?;
+
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
@@ -422,6 +427,7 @@ impl fmt::Debug for TaggedSignature<'_> {
 #[derive(Debug)]
 pub struct Negotiated {
     pub key_exchange: KeyExchangeAlgorithm<'static>,
+    pub server_host_key: PublicKeyAlgorithm<'static>,
     pub encryption_client_to_server: EncryptionAlgorithm<'static>,
     pub encryption_server_to_client: EncryptionAlgorithm<'static>,
     pub want_extension_info: bool,
@@ -449,6 +455,20 @@ impl Negotiated {
                     })
             })
             .ok_or(ProtoError::NoCommonAlgorithm("key exchange"))?;
+
+        let server_host_key = client
+            .server_host_key_algorithms
+            .iter()
+            .find_map(|client| {
+                server
+                    .server_host_key_algorithms
+                    .iter()
+                    .find_map(|server| match (client, server) {
+                        (client, server) if client == server => Some(server.clone()),
+                        _ => None,
+                    })
+            })
+            .ok_or(ProtoError::NoCommonAlgorithm("host key"))?;
 
         let encryption_client_to_server = client
             .encryption_algorithms_client_to_server
@@ -484,6 +504,7 @@ impl Negotiated {
 
         Ok(Self {
             key_exchange,
+            server_host_key,
             encryption_client_to_server,
             encryption_server_to_client,
             want_extension_info: client.has_extension(ExtensionId::ExtInfoC),
