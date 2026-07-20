@@ -45,8 +45,84 @@ pub struct Session<T> {
 
 impl Session<TcpStream> {
     pub fn new(source: &impl AsFd) -> Result<Self, Error> {
-        let (state, fd) = SessionState::from_fd(source)?;
-        debug!(?state, "received session state");
+        let mut length = None;
+        let mut received = Vec::new();
+        let mut tcp = None;
+        let mut space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];
+        let mut chunk = vec![0; 16_384];
+
+        loop {
+            let mut control = RecvAncillaryBuffer::new(&mut space);
+            let mut iov = [IoSliceMut::new(&mut chunk)];
+            let message = rustix::net::recvmsg(source, &mut iov, &mut control, RecvFlags::empty())
+                .map_err(io::Error::from)?;
+
+            let Some((buffered, _)) = chunk.split_at_checked(message.bytes) else {
+                return Err(Error::InvalidState("invalid message length received"));
+            };
+
+            if buffered.is_empty() {
+                return Err(Error::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "EOF while receiving handoff message",
+                )));
+            }
+
+            for ancillary in control.drain() {
+                if let RecvAncillaryMessage::ScmRights(fds) = ancillary {
+                    if tcp.is_none() {
+                        tcp = fds.into_iter().next();
+                    }
+                }
+            }
+
+            match length {
+                Some(len) => match (received.len() + buffered.len()).cmp(&len) {
+                    Ordering::Greater => {
+                        return Err(Error::InvalidState("received more bytes than expected"));
+                    }
+                    Ordering::Equal => {
+                        received.extend_from_slice(&chunk[..message.bytes]);
+                        break;
+                    }
+                    Ordering::Less => received.extend_from_slice(&chunk[..message.bytes]),
+                },
+                None => match buffered.split_first_chunk::<4>() {
+                    Some((len, rest)) => {
+                        let len = u32::from_be_bytes(*len) as usize;
+                        length = Some(len);
+                        received.extend_from_slice(rest);
+                        match received.len().cmp(&len) {
+                            Ordering::Greater => {
+                                return Err(Error::InvalidState(
+                                    "received more bytes than expected",
+                                ));
+                            }
+                            Ordering::Equal => break,
+                            Ordering::Less => continue,
+                        }
+                    }
+                    None => {
+                        return Err(Error::InvalidState(
+                            "received fewer than 4 bytes for length prefix",
+                        ));
+                    }
+                },
+            }
+        }
+
+        let Some(fd) = tcp else {
+            return Err(Error::InvalidState("no file descriptor received"));
+        };
+
+        let Decoded { value: state, next } = SessionState::decode(&received)?;
+        if !next.is_empty() {
+            return Err(Error::InvalidState("trailing bytes after message"));
+        }
+
+        // Acknowledge the handoff so the parent releases its copy of the descriptor
+        rustix::net::send(source, &[1], SendFlags::empty()).map_err(io::Error::from)?;
+        debug!(?state, "received session state, reconstructing connection");
 
         let SessionState {
             addr,
@@ -171,89 +247,6 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    /// Receive a [`SessionState`] and the connection's file descriptor from `source`
-    pub fn from_fd(source: &impl AsFd) -> Result<(Self, OwnedFd), Error> {
-        let mut length = None;
-        let mut received = Vec::new();
-        let mut tcp = None;
-        let mut space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];
-        let mut chunk = vec![0; 16_384];
-
-        loop {
-            let mut control = RecvAncillaryBuffer::new(&mut space);
-            let mut iov = [IoSliceMut::new(&mut chunk)];
-            let message = rustix::net::recvmsg(source, &mut iov, &mut control, RecvFlags::empty())
-                .map_err(io::Error::from)?;
-
-            let Some((buffered, _)) = chunk.split_at_checked(message.bytes) else {
-                return Err(Error::InvalidState("invalid message length received"));
-            };
-
-            if buffered.is_empty() {
-                return Err(Error::Io(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "EOF while receiving handoff message",
-                )));
-            }
-
-            for ancillary in control.drain() {
-                if let RecvAncillaryMessage::ScmRights(fds) = ancillary {
-                    if tcp.is_none() {
-                        tcp = fds.into_iter().next();
-                    }
-                }
-            }
-
-            match length {
-                Some(len) => match (received.len() + buffered.len()).cmp(&len) {
-                    Ordering::Greater => {
-                        return Err(Error::InvalidState("received more bytes than expected"));
-                    }
-                    Ordering::Equal => {
-                        received.extend_from_slice(&chunk[..message.bytes]);
-                        break;
-                    }
-                    Ordering::Less => received.extend_from_slice(&chunk[..message.bytes]),
-                },
-                None => match buffered.split_first_chunk::<4>() {
-                    Some((len, rest)) => {
-                        let len = u32::from_be_bytes(*len) as usize;
-                        length = Some(len);
-                        received.extend_from_slice(rest);
-                        match received.len().cmp(&len) {
-                            Ordering::Greater => {
-                                return Err(Error::InvalidState(
-                                    "received more bytes than expected",
-                                ));
-                            }
-                            Ordering::Equal => break,
-                            Ordering::Less => continue,
-                        }
-                    }
-                    None => {
-                        return Err(Error::InvalidState(
-                            "received fewer than 4 bytes for length prefix",
-                        ));
-                    }
-                },
-            }
-        }
-
-        let Some(fd) = tcp else {
-            return Err(Error::InvalidState("no file descriptor received"));
-        };
-
-        let Decoded { value: state, next } = Self::decode(&received)?;
-        if !next.is_empty() {
-            return Err(Error::InvalidState("trailing bytes after message"));
-        }
-
-        // Acknowledge the handoff so the parent releases its copy of the descriptor
-        rustix::net::send(source, &[1], SendFlags::empty()).map_err(io::Error::from)?;
-
-        Ok((state, fd))
-    }
-
     /// Construct a [`SessionState`] from a [`Connection`] and its [`KeySourceSet`]
     ///
     /// Fails if no keys were installed or the write buffer still holds unflushed bytes.

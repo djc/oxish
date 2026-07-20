@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
         host_keys,
         session_bin,
         provider,
-    ));
+    )?);
 
     loop {
         let (stream, addr) = match listener.accept().await {

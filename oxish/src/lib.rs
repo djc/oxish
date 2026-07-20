@@ -46,13 +46,17 @@ impl Server {
         host_keys: Vec<Arc<dyn SigningKey>>,
         session: PathBuf,
         provider: &'static dyn CryptoProvider,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        if host_keys.is_empty() {
+            return Err(anyhow::anyhow!("no host keys configured"));
+        }
+
+        Ok(Self {
             provider,
             host_keys,
             session,
             auth,
-        }
+        })
     }
 
     pub async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> Result<(), ()> {
@@ -141,11 +145,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         host_keys: &[Arc<dyn SigningKey>],
         provider: &dyn CryptoProvider,
     ) -> Result<(Digest, KeySourceSet), ()> {
-        if host_keys.is_empty() {
-            error!("no host keys configured");
-            return Err(());
-        }
-
         let exchange = match self.identify().await {
             Ok(exchange) => exchange,
             Err(error) => {
