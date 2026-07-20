@@ -8,6 +8,7 @@ license = "Apache-2.0 OR MIT"
 [features]
 default = ["graviola"]
 aws-lc = ["dep:aws-lc"]
+aws-lc-fips = ["aws-lc/fips"]
 graviola = ["dep:graviola"]
 
 [dependencies]

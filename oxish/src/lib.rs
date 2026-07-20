@@ -22,11 +22,19 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, trace, warn};
 
-#[cfg(feature = "aws-lc")]
+#[cfg(any(feature = "aws-lc", feature = "aws-lc-fips"))]
 pub use aws_lc::DEFAULT_PROVIDER;
-#[cfg(all(feature = "graviola", not(feature = "aws-lc")))]
+#[cfg(all(
+    feature = "graviola",
+    not(feature = "aws-lc"),
+    not(feature = "aws-lc-fips")
+))]
 pub use graviola::DEFAULT_PROVIDER;
-#[cfg(all(not(feature = "aws-lc"), not(feature = "graviola")))]
+#[cfg(all(
+    not(feature = "aws-lc"),
+    not(feature = "aws-lc-fips"),
+    not(feature = "graviola")
+))]
 compile_error!("no crypto providers enabled -- enable at least one to fix this error");
 
 mod authentication;
