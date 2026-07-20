@@ -203,7 +203,7 @@ impl KeyDerivation {
         KeySource {
             base,
             block_len: self.hash.output_len(),
-            session_id: self.session_id,
+            session_id: self.session_id.clone(),
             input,
         }
     }
@@ -323,7 +323,7 @@ pub trait HashContext: Send + Sync {
 }
 
 /// A hash output, stored inline
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Digest {
     buf: [u8; Self::MAX_LEN],
     used: usize,
