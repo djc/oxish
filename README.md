@@ -12,7 +12,7 @@ Please don't publicize this project at its current stage. Funding to advance its
 ## Features
 
 - Only support modern cryptography, including hybrid post-quantum key exchange
-- Support for FIPS-validated cryptography (via aws-lc-rs)
+- Support for FIPS-validated cryptography on Linux when compiled with `aws-lc-fips` crypto
 - Usable as server and library, including sans-I/O protocol implementation
 
 If any features you need are missing, please open an issue or submit a pull request.

@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0 OR MIT"
 
+[features]
+default = ["aws-lc-rs/default"]
+fips = ["aws-lc-rs/fips"]
+
 [dependencies]
 aws-lc-rs = { workspace = true }
 proto = { package = "oxish-proto", version = "0.1", path = "../oxish-proto" }
