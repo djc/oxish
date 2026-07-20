@@ -619,6 +619,48 @@ impl Encode for ChannelEof {
     }
 }
 
+/// `SSH_MSG_CHANNEL_WINDOW_ADJUST` (RFC 4254 section 5.2)
+///
+/// Grows the recipient's send window for the channel by `bytes_to_add`, letting it send that
+/// many more bytes of channel data before it must wait for further adjustments.
+#[derive(Debug)]
+pub struct ChannelWindowAdjust {
+    pub recipient_channel: u32,
+    pub bytes_to_add: u32,
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelWindowAdjust {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelWindowAdjust {
+            return Err(ProtoError::InvalidPacket(
+                "expected channel window adjust packet",
+            ));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        let Decoded {
+            value: bytes_to_add,
+            next,
+        } = u32::decode(next)?;
+
+        match next.is_empty() {
+            true => Ok(Self {
+                recipient_channel,
+                bytes_to_add,
+            }),
+            false => Err(ProtoError::InvalidPacket(
+                "extra data in channel window adjust packet",
+            )),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ChannelClose {
     pub recipient_channel: u32,
@@ -650,5 +692,45 @@ impl Encode for ChannelClose {
     fn encode(&self, buffer: &mut Vec<u8>) {
         MessageType::ChannelClose.encode(buffer);
         self.recipient_channel.encode(buffer);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn packet(message_type: MessageType, payload: &[u8]) -> IncomingPacket<'_> {
+        IncomingPacket {
+            sequence_number: 0,
+            message_type,
+            payload,
+        }
+    }
+
+    #[test]
+    fn window_adjust_decode() {
+        // recipient channel 1, grow the window by 0x0002_0000 bytes
+        let payload = [0, 0, 0, 1, 0, 2, 0, 0];
+        let adjust =
+            ChannelWindowAdjust::try_from(packet(MessageType::ChannelWindowAdjust, &payload))
+                .unwrap();
+        assert_eq!(adjust.recipient_channel, 1);
+        assert_eq!(adjust.bytes_to_add, 0x0002_0000);
+    }
+
+    #[test]
+    fn window_adjust_rejects_trailing_bytes() {
+        let payload = [0, 0, 0, 1, 0, 0, 0, 1, 0xff];
+        assert_eq!(
+            ChannelWindowAdjust::try_from(packet(MessageType::ChannelWindowAdjust, &payload))
+                .unwrap_err(),
+            ProtoError::InvalidPacket("extra data in channel window adjust packet"),
+        );
+    }
+
+    #[test]
+    fn window_adjust_rejects_wrong_type() {
+        let payload = [0, 0, 0, 1, 0, 0, 0, 1];
+        assert!(ChannelWindowAdjust::try_from(packet(MessageType::ChannelData, &payload)).is_err());
     }
 }

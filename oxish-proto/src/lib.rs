@@ -12,8 +12,8 @@ pub use base::{
 mod channels;
 pub use channels::{
     ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
-    ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, Env, Mode,
-    PtyReq, WindowChange,
+    ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType,
+    ChannelWindowAdjust, Env, Mode, PtyReq, WindowChange,
 };
 pub mod crypto;
 use crypto::CryptoError;

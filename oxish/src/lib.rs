@@ -98,6 +98,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                             Ok(None) => Ok(()),
                             Err(error) => Err(error.into()),
                         }
+                        IncomingChannelMessage::WindowAdjust(adjust) => self.channels.window_adjust(&adjust).map_err(Into::into),
                         IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
                         IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut encoder),
                     };
