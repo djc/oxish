@@ -6,13 +6,8 @@ use core::{
     str::{self, FromStr},
 };
 use std::{
-    ffi::CString,
-    io::{self, IoSlice, IoSliceMut},
-    os::{
-        fd::{AsFd, OwnedFd},
-        unix::{ffi::OsStrExt, net::UnixStream},
-    },
-    process::Stdio,
+    io::{self, IoSliceMut},
+    os::fd::AsFd,
 };
 
 use proto::{
@@ -20,18 +15,14 @@ use proto::{
     Pretty, ProtoError, ReadState, WriteState,
     crypto::{KeyLengths, KeySourceSide},
 };
-use rustix::net::{
-    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
-    SendAncillaryMessage, SendFlags,
-};
+use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
-    process::{Child, Command},
 };
 use tracing::{debug, info, instrument, trace, warn};
 
-use crate::{Auth, Connection, DEFAULT_PROVIDER, Error, Server, User, receive, send};
+use crate::{Connection, DEFAULT_PROVIDER, Error, receive, send};
 
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
@@ -273,151 +264,6 @@ impl SessionState {
             stream,
         ))
     }
-
-    /// Spawn a child process for the authenticated session
-    ///
-    /// Decomposes `conn` into a [`SessionState`] and the TCP stream, spawns `session_bin` with one end of a Unix socket pair as its stdin, and sends the serialized state plus the TCP
-    /// socket's file descriptor (via `SCM_RIGHTS`) over the other end. The child reconstructs
-    /// the connection with [`SessionState::from_fd()`] and [`SessionState::into_connection()`].
-    ///
-    /// When `auth` is [`Auth::System`], the child process drops its privileges to `user` and
-    /// changes into that user's home directory before `exec`, so the session (and any shell it
-    /// spawns) runs as the authenticated user. The caller sets this only when the server is
-    /// privileged enough to change the process owner; when it is not, authentication is already
-    /// restricted to the user the server runs as, so there's no need to drop privileges.
-    pub async fn spawn(
-        self,
-        stream: TcpStream,
-        user: User,
-        server: &Server,
-    ) -> Result<Child, Error> {
-        let tcp = stream.into_std()?;
-
-        let (parent, child_sock) = UnixStream::pair()?;
-        let mut command = Command::new(&server.session);
-        command
-            .env_clear()
-            .env("HOME", &user.home_dir)
-            .env("USER", &user.name)
-            .env("LOGNAME", &user.name)
-            .env("SHELL", &user.shell)
-            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-            .stdin(Stdio::from(OwnedFd::from(child_sock)))
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-
-        if let Auth::System = server.auth {
-            let home = CString::new(user.home_dir.as_os_str().as_bytes())
-                .map_err(|_| Error::InvalidState("home directory path contains an interior NUL"))?;
-            let name = CString::new(user.name.as_bytes())
-                .map_err(|_| Error::InvalidState("user name contains an interior NUL"))?;
-
-            // Get the list of supplementary groups for the user, which we need to set
-            let mut count = 32;
-            let mut groups = vec![0; count as usize];
-            loop {
-                #[allow(trivial_numeric_casts)] // platform dependent
-                let ret = unsafe {
-                    libc::getgrouplist(
-                        name.as_ptr(),
-                        user.gid as RawGroupId,
-                        groups.as_mut_ptr(),
-                        &mut count,
-                    )
-                };
-
-                // -1 if the group list was too small; resize and try again.
-                if ret != -1 {
-                    break;
-                }
-
-                let new_len = Ord::max(count as usize, groups.len() * 2);
-                if new_len > 65_536 {
-                    return Err(Error::InvalidState("too many supplementary groups"));
-                }
-
-                count = new_len as libc::c_int;
-                groups = vec![0; new_len];
-            }
-
-            groups.truncate(count as usize);
-            #[allow(trivial_numeric_casts)] // platform dependent
-            let groups = groups
-                .into_iter()
-                .map(|gid| gid as libc::gid_t)
-                .collect::<Vec<_>>();
-
-            // SAFETY: the closure runs in the child between `fork` and `exec`. It only calls
-            // async-signal-safe libc functions and performs no allocation (the group list was
-            // allocated in the parent), so it is safe to run in that context even though the
-            // parent is multi-threaded.
-            unsafe {
-                command.pre_exec(move || {
-                    #[allow(trivial_numeric_casts)] // platform dependent
-                    if libc::setgroups(groups.len() as _, groups.as_ptr()) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-
-                    if libc::setgid(user.gid) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-
-                    if libc::setuid(user.id) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-
-                    if libc::chdir(home.as_ptr()) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-
-                    Ok(())
-                });
-            }
-        }
-
-        let child = command.spawn()?;
-
-        // The `[u8]` encoding yields the `u32` length prefix followed by the state itself.
-        let mut message = vec![0; 4];
-        self.encode(&mut message);
-        let payload_len = (message.len() - 4) as u32;
-        message[..4].copy_from_slice(&payload_len.to_be_bytes());
-
-        let mut space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];
-        let mut control = SendAncillaryBuffer::new(&mut space);
-        let fds = [tcp.as_fd()];
-        control.push(SendAncillaryMessage::ScmRights(&fds));
-
-        // The file descriptor rides along with the first message; if the socket buffer cannot
-        // hold the full message, send the rest without ancillary data.
-        let mut sent = rustix::net::sendmsg(
-            &parent,
-            &[IoSlice::new(&message)],
-            &mut control,
-            SendFlags::empty(),
-        )
-        .map_err(io::Error::from)?;
-
-        while sent < message.len() {
-            sent += rustix::net::send(&parent, &message[sent..], SendFlags::empty())
-                .map_err(io::Error::from)?;
-        }
-
-        // Keep the connection's file descriptor open until the child acknowledges the
-        // handoff; observed on macOS: closing the parent's copy while the descriptor is
-        // still in flight tears down the connection.
-        let mut ack = [0];
-        let mut iov = [IoSliceMut::new(&mut ack)];
-        let mut control = RecvAncillaryBuffer::default();
-        let received = rustix::net::recvmsg(&parent, &mut iov, &mut control, RecvFlags::empty())
-            .map_err(io::Error::from)?;
-        match received.bytes {
-            0 => Err(Error::InvalidState(
-                "session process exited before acknowledging handoff",
-            )),
-            _ => Ok(child),
-        }
-    }
 }
 
 impl Encode for SessionState {
@@ -539,12 +385,6 @@ impl Decode<'_> for SideState {
         })
     }
 }
-
-/// Element type of the group list passed to `getgrouplist()`, which differs by platform
-#[cfg(target_os = "macos")]
-type RawGroupId = libc::c_int;
-#[cfg(not(target_os = "macos"))]
-type RawGroupId = libc::gid_t;
 
 #[cfg(test)]
 mod tests {
