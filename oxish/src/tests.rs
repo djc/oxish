@@ -90,7 +90,8 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         0,
         PathBuf::from("/var/empty"),
         vec![key],
-    );
+    )
+    .unwrap();
 
     // Start the server on a loopback port and serve exactly one connection.
     let (host_key, _) = provider
