@@ -77,16 +77,11 @@ impl Terminal {
                 let path = OsStr::from_bytes(user_path.as_bytes());
                 let user_fd = OpenOptions::new().read(true).write(true).open(path)?;
 
-                debug!("setting PTY window size");
                 termios::tcsetwinsize(&user_fd, winsize)?;
-
-                debug!("applying terminal modes");
                 apply_terminal_modes_inner(&user_fd, &terminal_modes)?;
-
                 setsid()?;
                 ioctl_tiocsctty(&user_fd)?;
 
-                // Dup to stdin/stdout/stderr
                 dup2_stdin(&user_fd)?;
                 dup2_stdout(&user_fd)?;
                 dup2_stderr(&user_fd)?;
