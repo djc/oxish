@@ -140,8 +140,8 @@ impl Server {
         command
             .env_clear()
             .env("HOME", &user.home_dir)
-            .env("USER", &user.name)
-            .env("LOGNAME", &user.name)
+            .env("USER", &*user.name)
+            .env("LOGNAME", &*user.name)
             .env("SHELL", &user.shell)
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .stdin(Stdio::from(OwnedFd::from(child_sock)))

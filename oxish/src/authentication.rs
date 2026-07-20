@@ -1,4 +1,9 @@
-use core::{ffi::c_char, fmt, ops::ControlFlow, time::Duration};
+use core::{
+    ffi::c_char,
+    fmt,
+    ops::{ControlFlow, Deref},
+    time::Duration,
+};
 #[cfg(target_vendor = "apple")]
 use std::os::darwin::fs::MetadataExt;
 #[cfg(target_os = "linux")]
@@ -138,14 +143,22 @@ impl Auth {
             };
 
             let user = match (&mut cached_user, self) {
-                (Some(user), _) if user.name == user_auth_request.user_name => user,
-                (_, auth) => match auth.resolve(user_auth_request.user_name, provider) {
-                    Some(user) => cached_user.insert(user),
-                    None => {
+                (Some(user), _) if &*user.name == user_auth_request.user_name => user,
+                (_, auth) => {
+                    let Ok(name) = Username::try_from(user_auth_request.user_name.to_owned())
+                    else {
                         conn.send_auth_failed().await?;
                         continue;
+                    };
+
+                    match auth.resolve(name, provider) {
+                        Some(user) => cached_user.insert(user),
+                        None => {
+                            conn.send_auth_failed().await?;
+                            continue;
+                        }
                     }
-                },
+                }
             };
 
             let authorized_key = user.authorized_keys.iter().find(|key| {
@@ -219,7 +232,7 @@ impl Auth {
         }
     }
 
-    pub(crate) fn resolve(&self, name: &str, provider: &dyn CryptoProvider) -> Option<User> {
+    pub(crate) fn resolve(&self, name: Username, provider: &dyn CryptoProvider) -> Option<User> {
         match self {
             Self::System => match User::lookup(UserLookup::Name(name), provider) {
                 Ok(user) => Some(user),
@@ -245,7 +258,7 @@ impl Auth {
 
 #[derive(Clone, Debug)]
 pub struct User {
-    pub(crate) name: String,
+    pub(crate) name: Username,
     pub(crate) id: u32,
     pub(crate) gid: u32,
     pub(crate) home_dir: PathBuf,
@@ -258,7 +271,7 @@ pub struct User {
 }
 
 impl User {
-    fn lookup(by: UserLookup<'_>, provider: &dyn CryptoProvider) -> Result<Self, Error> {
+    fn lookup(by: UserLookup, provider: &dyn CryptoProvider) -> Result<Self, Error> {
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
             n => Ord::min(n as usize, 1_048_576),
@@ -268,10 +281,11 @@ impl User {
         let mut pwd = unsafe { core::mem::zeroed() };
         let mut result = core::ptr::null_mut();
 
-        let ret = match by {
+        let (ret, name) = match by {
             UserLookup::Name(name) => {
-                let c_name = CString::new(name).map_err(|_| Error::InvalidUsername)?;
-                unsafe {
+                let c_name = CString::new(&*name).map_err(|_| Error::InvalidUsername)?;
+
+                let ret = unsafe {
                     getpwnam_r(
                         c_name.as_ptr(),
                         &mut pwd,
@@ -279,26 +293,29 @@ impl User {
                         buf_len,
                         &mut result,
                     )
-                }
-            }
-            UserLookup::Id(id) => unsafe {
-                getpwuid_r(
-                    id,
-                    &mut pwd,
-                    buf.as_mut_ptr().cast::<c_char>(),
-                    buf_len,
-                    &mut result,
-                )
-            },
-        };
+                };
 
-        let name = match (ret, result.is_null()) {
-            (0, false) => unsafe { CStr::from_ptr(pwd.pw_name) }
-                .to_str()
-                .map_err(|_| Error::InvalidUsername)?,
-            _ => "nobody",
-        }
-        .to_owned();
+                (ret, name)
+            }
+            UserLookup::Id(id) => {
+                let ret = unsafe {
+                    getpwuid_r(
+                        id,
+                        &mut pwd,
+                        buf.as_mut_ptr().cast::<c_char>(),
+                        buf_len,
+                        &mut result,
+                    )
+                };
+
+                let name = match (ret, result.is_null()) {
+                    (0, false) => Username::try_from(unsafe { CStr::from_ptr(pwd.pw_name) })?,
+                    _ => Username::nobody(),
+                };
+
+                (ret, name)
+            }
+        };
 
         let id = match (ret, result.is_null()) {
             (0, false) => pwd.pw_uid,
@@ -312,13 +329,13 @@ impl User {
 
         let (home_dir, shell) = if ret != 0 {
             let error = io::Error::from_raw_os_error(ret);
-            debug!(%error, ?by, "failed to get user information");
+            debug!(%error, %name, "failed to get user information");
             (Self::FAKE_HOME, Self::DEFAULT_SHELL)
         } else if result.is_null() {
-            debug!(?by, "user not found");
+            debug!(%name, "user not found");
             (Self::FAKE_HOME, Self::DEFAULT_SHELL)
         } else {
-            debug!(?by, "found home dir");
+            debug!(%name, "found home dir");
             (pwd.pw_dir.cast_const(), pwd.pw_shell.cast_const())
         };
 
@@ -359,24 +376,70 @@ impl User {
         gid: u32,
         home_dir: PathBuf,
         authorized_keys: Vec<AuthorizedKey>,
-    ) -> Self {
-        Self {
-            name,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            name: Username::try_from(name)?,
             id,
             gid,
             home_dir,
             shell: PathBuf::from("/bin/sh"),
             authorized_keys,
-        }
+        })
     }
 
     const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
     const DEFAULT_SHELL: *const c_char = c"/bin/sh".as_ptr().cast::<c_char>();
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Username(String);
+
+impl Username {
+    fn nobody() -> Self {
+        Self("nobody".to_owned())
+    }
+}
+
+impl TryFrom<&CStr> for Username {
+    type Error = Error;
+
+    fn try_from(value: &CStr) -> Result<Self, Self::Error> {
+        let Ok(name) = value.to_str() else {
+            return Err(Error::InvalidUsername);
+        };
+
+        Self::try_from(name.to_owned())
+    }
+}
+
+impl TryFrom<String> for Username {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.chars().any(|c| c.is_control() || c == '/') {
+            true => Err(Error::InvalidUsername),
+            false => Ok(Self(value)),
+        }
+    }
+}
+
+impl Deref for Username {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Display for Username {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[derive(Debug)]
-enum UserLookup<'a> {
-    Name(&'a str),
+enum UserLookup {
+    Name(Username),
     Id(u32),
 }
 
