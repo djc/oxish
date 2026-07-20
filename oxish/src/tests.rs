@@ -1,11 +1,18 @@
-use core::{net::Ipv4Addr, time::Duration};
+use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
 use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
-use proto::{PublicKeyAlgorithm, crypto::CryptoProvider};
+use proto::{
+    Decode, Decoded, Encode, EncryptionAlgorithm, PublicKeyAlgorithm,
+    crypto::{CryptoProvider, KeySourceSide},
+};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
-use crate::{Auth, Server, User, authentication::AuthorizedKey};
+use crate::{
+    SessionState, SideState,
+    authentication::{Auth, AuthorizedKey, User},
+    server::Server,
+};
 
 /// Exercise a full handshake and session against the aws-lc-rs provider
 #[cfg(feature = "aws-lc")]
@@ -191,6 +198,60 @@ async fn verify_keys() {
                 .expect_err("signature over a different message must not verify");
         }
     }
+}
+
+#[test]
+fn session_state_round_trip() {
+    let state = SessionState {
+        addr: SocketAddr::from(([192, 0, 2, 7], 22022)),
+        read: SideState {
+            source: KeySourceSide {
+                algorithm: EncryptionAlgorithm::Aes128Gcm,
+                initial_iv: vec![2; 12],
+                encryption_key: vec![1; 16],
+            },
+            counter: 42,
+            sequence_number: 17,
+        },
+        write: SideState {
+            source: KeySourceSide {
+                algorithm: EncryptionAlgorithm::Aes128Gcm,
+                initial_iv: vec![4; 12],
+                encryption_key: vec![3; 16],
+            },
+            counter: 7,
+            sequence_number: 23,
+        },
+        read_buf: b"pipelined".to_vec(),
+    };
+
+    let mut buf = Vec::new();
+    state.encode(&mut buf);
+
+    let Decoded {
+        value: decoded,
+        next,
+    } = SessionState::decode(&buf).unwrap();
+    assert!(next.is_empty());
+
+    assert_eq!(decoded.addr, state.addr);
+    assert_eq!(decoded.read_buf, state.read_buf);
+    assert_eq!(
+        decoded.read.source.algorithm,
+        EncryptionAlgorithm::Aes128Gcm
+    );
+    assert_eq!(decoded.read.source.encryption_key, [1; 16]);
+    assert_eq!(decoded.read.source.initial_iv, [2; 12]);
+    assert_eq!(
+        decoded.write.source.algorithm,
+        EncryptionAlgorithm::Aes128Gcm
+    );
+    assert_eq!(decoded.write.source.encryption_key, [3; 16]);
+    assert_eq!(decoded.write.source.initial_iv, [4; 12]);
+    assert_eq!(decoded.read.counter, 42);
+    assert_eq!(decoded.read.sequence_number, 17);
+    assert_eq!(decoded.write.counter, 7);
+    assert_eq!(decoded.write.sequence_number, 23);
 }
 
 /// Build and locate the `oxish-session` binary

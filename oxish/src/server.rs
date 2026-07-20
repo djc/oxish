@@ -26,9 +26,8 @@ use tokio::{
 };
 use tracing::{debug, instrument};
 
-use crate::authentication::Auth;
-use crate::session::SessionState;
-use crate::{Connection, Error, User};
+use crate::authentication::{Auth, User};
+use crate::{Connection, Error, SessionState};
 
 pub struct Server {
     pub(crate) provider: &'static dyn CryptoProvider,

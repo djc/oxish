@@ -1,17 +1,22 @@
 use core::{
-    future,
+    fmt, future,
     net::SocketAddr,
     pin::Pin,
+    str::FromStr,
     task::{Context, Poll},
 };
 use std::{io, str, sync::Arc, task::ready};
 
 use anyhow::Context as _;
 use proto::{
-    Completion, Decoded, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, ExtensionId,
-    Identification, IdentificationError, Ignore, IncomingPacket, KeyExchange, KeySourceSet,
-    MethodName, NewKeys, PROTOCOL, ProtoError, ReadState, UserAuthFailure, WriteState,
-    crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
+    Completion, Decode, Decoded, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode,
+    EncryptionAlgorithm, ExtensionId, Identification, IdentificationError, Ignore, IncomingPacket,
+    KeyExchange, KeySourceSet, MethodName, NewKeys, PROTOCOL, ProtoError, ReadState,
+    UserAuthFailure, WriteState,
+    crypto::{
+        CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyLengths,
+        KeySourceSide, SigningKey,
+    },
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -27,7 +32,7 @@ compile_error!("no crypto providers enabled -- enable at least one to fix this e
 mod authentication;
 pub use authentication::{Auth, User};
 mod session;
-pub use session::{Session, SessionState};
+pub use session::Session;
 mod server;
 pub use server::Server;
 
@@ -194,6 +199,182 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             })?;
 
         future::poll_fn(|cx| send(&mut self.stream, &mut self.write, cx)).await
+    }
+}
+
+/// The state needed to resume an authenticated connection in a session process
+struct SessionState {
+    addr: SocketAddr,
+    read: SideState,
+    write: SideState,
+    /// Residual inbound bytes already drained from the socket (pipelined packets)
+    read_buf: Vec<u8>,
+}
+
+impl SessionState {
+    /// Construct a [`SessionState`] from a [`Connection`] and its [`KeySourceSet`]
+    ///
+    /// Fails if no keys were installed or the write buffer still holds unflushed bytes.
+    pub(crate) fn from_connection<T>(
+        conn: Connection<T>,
+        keys: KeySourceSet,
+    ) -> Result<(Self, T), Error> {
+        let Connection {
+            stream,
+            addr,
+            mut read,
+            write,
+        } = conn;
+
+        if !write.buffered().is_empty() {
+            return Err(Error::InvalidState("unflushed bytes in write buffer"));
+        }
+
+        // Compact the bytes of the last decoded packet, which are still at the front of
+        // the buffer (they are usually dropped at the start of the next `poll_packet()`).
+        if read.last_length > 0 {
+            read.buf.copy_within(read.last_length.., 0);
+            read.buf.truncate(read.buf.len() - read.last_length);
+            read.last_length = 0;
+        }
+
+        Ok((
+            Self {
+                addr,
+                read: SideState {
+                    source: keys.client_to_server,
+                    counter: read.opener.as_ref().map_or(0, |opener| opener.counter()),
+                    sequence_number: read.sequence_number,
+                },
+                write: SideState {
+                    source: keys.server_to_client,
+                    counter: write.sealer.as_ref().map_or(0, |sealer| sealer.counter()),
+                    sequence_number: write.sequence_number,
+                },
+                read_buf: read.buf,
+            },
+            stream,
+        ))
+    }
+}
+
+impl Encode for SessionState {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.addr.to_string().as_bytes().encode(buf);
+        self.read.encode(buf);
+        self.write.encode(buf);
+        self.read_buf.encode(buf);
+    }
+}
+
+impl Decode<'_> for SessionState {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded { value: addr, next } = <&[u8]>::decode(bytes)?;
+        let Ok(addr) = str::from_utf8(addr) else {
+            return Err(ProtoError::InvalidPacket("invalid UTF-8 in peer address"));
+        };
+
+        let Ok(addr) = SocketAddr::from_str(addr) else {
+            return Err(ProtoError::InvalidPacket("invalid peer address"));
+        };
+
+        let Decoded { value: read, next } = SideState::decode(next)?;
+        let Decoded { value: write, next } = SideState::decode(next)?;
+        let Decoded {
+            value: read_buf,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        Ok(Decoded {
+            value: Self {
+                addr,
+                read,
+                write,
+                read_buf: read_buf.to_vec(),
+            },
+            next,
+        })
+    }
+}
+
+impl fmt::Debug for SessionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionState")
+            .field("addr", &self.addr)
+            .field("read", &self.read)
+            .field("write", &self.write)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+struct SideState {
+    source: KeySourceSide,
+    counter: u64,
+    sequence_number: u32,
+}
+
+impl Encode for SideState {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.source.algorithm.encode(buf);
+        self.source.encryption_key.encode(buf);
+        self.source.initial_iv.encode(buf);
+        self.counter.encode(buf);
+        self.sequence_number.encode(buf);
+    }
+}
+
+impl Decode<'_> for SideState {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded {
+            value: algorithm,
+            next,
+        } = EncryptionAlgorithm::decode(bytes)?;
+
+        let Some(KeyLengths { key_len, iv_len }) = algorithm.lengths() else {
+            return Err(ProtoError::InvalidPacket(
+                "unsupported encryption algorithm",
+            ));
+        };
+
+        let Decoded {
+            value: encryption_key,
+            next,
+        } = <&[u8]>::decode(next)?;
+        if encryption_key.len() != key_len {
+            return Err(ProtoError::InvalidPacket("invalid encryption key length"));
+        }
+
+        let Decoded {
+            value: initial_iv,
+            next,
+        } = <&[u8]>::decode(next)?;
+        if initial_iv.len() != iv_len {
+            return Err(ProtoError::InvalidPacket("invalid IV length"));
+        }
+
+        let Decoded {
+            value: counter,
+            next,
+        } = u64::decode(next)?;
+
+        let Decoded {
+            value: sequence_number,
+            next,
+        } = u32::decode(next)?;
+
+        Ok(Decoded {
+            value: Self {
+                source: KeySourceSide {
+                    algorithm: algorithm.to_owned(),
+                    initial_iv: initial_iv.to_owned(),
+                    encryption_key: encryption_key.to_owned(),
+                },
+                counter,
+                sequence_number,
+            },
+            next,
+        })
     }
 }
 
