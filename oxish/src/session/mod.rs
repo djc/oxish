@@ -31,7 +31,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::{Auth, Connection, Error, Server, User, receive, send};
+use crate::{Auth, Connection, DEFAULT_PROVIDER, Error, Server, User, receive, send};
 
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
@@ -43,19 +43,25 @@ pub struct Session<T> {
     channels: Channels,
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
-    /// Create a new [`Connection`]
-    pub fn new(conn: Connection<T>) -> Self {
-        Self {
-            conn,
-            channels: Channels::default(),
-        }
-    }
+impl Session<TcpStream> {
+    pub fn new(source: &impl AsFd) -> Result<Self, Error> {
+        let (state, fd) = SessionState::from_fd(source)?;
+        debug!(?state, "received session state");
 
+        let stream = std::net::TcpStream::from(fd);
+        stream.set_nonblocking(true)?;
+
+        Ok(Self {
+            conn: state.into_connection(TcpStream::from_std(stream)?, DEFAULT_PROVIDER)?,
+            channels: Channels::default(),
+        })
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.conn.addr))]
     pub async fn run(mut self) -> Result<(), ()> {
-        // Main loop for handling channel messages
         loop {
             tokio::select! {
                 result = receive(&mut self.conn.stream, &mut self.conn.read) => {
@@ -225,7 +231,7 @@ impl SessionState {
     /// Construct a [`SessionState`] from a [`Connection`] and its [`KeySourceSet`]
     ///
     /// Fails if no keys were installed or the write buffer still holds unflushed bytes.
-    pub fn from_connection<T>(conn: Connection<T>, keys: KeySourceSet) -> Result<(Self, T), Error> {
+    pub(crate) fn from_connection<T>(conn: Connection<T>, keys: KeySourceSet) -> Result<(Self, T), Error> {
         let Connection {
             stream,
             addr,
@@ -410,7 +416,7 @@ impl SessionState {
     }
 
     /// Rebuild an authenticated connection from a decoded [`SessionState`]
-    pub fn into_connection<T>(
+    fn into_connection<T>(
         self,
         stream: T,
         provider: &dyn CryptoProvider,

@@ -102,7 +102,7 @@ impl Server {
 mod tests;
 
 /// Core connection state and logic for an SSH session
-pub struct Connection<T> {
+struct Connection<T> {
     stream: T,
     addr: SocketAddr,
     read: ReadState,

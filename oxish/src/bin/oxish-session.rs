@@ -1,7 +1,4 @@
-use std::net::TcpStream;
-
-use oxish::{DEFAULT_PROVIDER, Session, SessionState};
-use tracing::debug;
+use oxish::Session;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -11,15 +8,8 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let (state, fd) = SessionState::from_fd(&rustix::stdio::stdin())?;
-    debug!(?state, "received session state");
-
-    let stream = TcpStream::from(fd);
-    stream.set_nonblocking(true)?;
-    let stream = tokio::net::TcpStream::from_std(stream)?;
-    let conn = state.into_connection(stream, DEFAULT_PROVIDER)?;
-
-    match Session::new(conn).run().await {
+    let session = Session::new(&rustix::stdio::stdin())?;
+    match session.run().await {
         Ok(()) => Ok(()),
         Err(()) => Err(anyhow::anyhow!("session ended with error")),
     }
