@@ -9,8 +9,5 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let session = Session::new(&rustix::stdio::stdin())?;
-    match session.run().await {
-        Ok(()) => Ok(()),
-        Err(()) => Err(anyhow::anyhow!("session ended with error")),
-    }
+    Ok(session.run().await?)
 }

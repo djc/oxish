@@ -29,7 +29,7 @@ use tokio::{
     net::TcpStream,
     process::{Child, Command},
 };
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 use crate::{Auth, Connection, DEFAULT_PROVIDER, Error, Server, User, receive, send};
 
@@ -163,7 +163,7 @@ impl Session<TcpStream> {
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
     /// Drive the connection forward
     #[instrument(name = "connection", skip(self), fields(addr = %self.conn.addr))]
-    pub async fn run(mut self) -> Result<(), ()> {
+    pub async fn run(mut self) -> Result<(), Error> {
         loop {
             tokio::select! {
                 result = receive(&mut self.conn.stream, &mut self.conn.read) => {
@@ -183,17 +183,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         _ => {}
                     }
 
-                    let channel_message = match IncomingChannelMessage::try_from(packet) {
-                        Ok(req) => req,
-                        Err(error) => {
-                            error!(%error, "failed to read channel message");
-                            return Err(());
-                        }
-                    };
-
+                    let channel_message = IncomingChannelMessage::try_from(packet)?;
                     debug!(message = %Pretty(&channel_message), "handling channel message");
                     let mut encoder = Encoder::new(&mut self.conn.write);
-                    let result = match channel_message {
+                    match channel_message {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
                         IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),
                         IncomingChannelMessage::Data(data) => match self.channels.data(&data) {
@@ -206,18 +199,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         }
                         IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
                         IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut encoder),
-                    };
-
-                    if let Err(error) = result {
-                        error!(%error, "failed to handle channel message");
-                        return Err(());
-                    }
+                    }?;
 
                     future::poll_fn(|cx| send(&mut self.conn.stream, encoder.write, cx))
-                        .await
-                        .map_err(|error| {
-                            error!(%error, "failed to write queued packets to stream");
-                        })?;
+                        .await?;
                 }
                 result = TerminalsFuture::new(self.channels.channels_mut()) => {
                     match result {
@@ -226,10 +211,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                             self.conn.send(&outgoing).await?;
                         }
                         Ok(None) => {}
-                        Err(error) => {
-                            error!(%error, "failed to poll sessions");
-                            return Err(());
-                        }
+                        Err(error) => return Err(error),
                     }
                 }
             }

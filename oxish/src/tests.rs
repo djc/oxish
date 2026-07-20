@@ -97,7 +97,8 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         vec![host_key],
         session_binary().await,
         provider,
-    ).unwrap();
+    )
+    .unwrap();
 
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();

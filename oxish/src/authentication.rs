@@ -57,7 +57,7 @@ impl Auth {
         session_id: Digest,
         conn: &mut Connection<T>,
         provider: &dyn CryptoProvider,
-    ) -> Result<User, ()> {
+    ) -> Result<User, Error> {
         let future = self.inner(session_id, conn, provider);
         if let Ok(result) = timeout(Duration::from_secs(60), future).await {
             return result;
@@ -70,7 +70,7 @@ impl Auth {
         };
 
         let _ = timeout(Duration::from_secs(1), conn.send(&disconnect)).await;
-        Err(())
+        Err(Error::Io(io::Error::from(io::ErrorKind::TimedOut)))
     }
 
     async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
@@ -78,16 +78,9 @@ impl Auth {
         session_id: Digest,
         conn: &mut Connection<T>,
         provider: &dyn CryptoProvider,
-    ) -> Result<User, ()> {
+    ) -> Result<User, Error> {
         let packet = receive(&mut conn.stream, &mut conn.read).await?;
-        let service_request = match ServiceRequest::try_from(packet) {
-            Ok(req) => req,
-            Err(error) => {
-                error!(%error, "failed to read service request");
-                return Err(());
-            }
-        };
-
+        let service_request = ServiceRequest::try_from(packet)?;
         if service_request.service_name != ServiceName::UserAuth {
             error!(
                 service_name = ?service_request.service_name,
@@ -100,7 +93,7 @@ impl Auth {
             };
 
             conn.send(&disconnect).await?;
-            return Err(());
+            return Err(Error::InvalidState("unsupported service requested"));
         }
 
         let service_accept = ServiceAccept {
@@ -118,14 +111,7 @@ impl Auth {
                 continue;
             }
 
-            let user_auth_request = match UserAuthRequest::try_from(packet) {
-                Ok(req) => req,
-                Err(error) => {
-                    error!(%error, "failed to read user auth request");
-                    return Err(());
-                }
-            };
-
+            let user_auth_request = UserAuthRequest::try_from(packet)?;
             debug!(?user_auth_request, "received user auth request");
             if user_auth_request.service_name != ServiceName::Connection {
                 error!(
@@ -137,8 +123,9 @@ impl Auth {
                     reason_code: DisconnectReason::ServiceNotAvailable,
                     description: "only connection service is supported",
                 };
+
                 conn.send(&disconnect).await?;
-                return Err(());
+                return Err(Error::InvalidState("unsupported service requested"));
             }
 
             let Method::PublicKey(public_key) = user_auth_request.method else {
@@ -217,7 +204,7 @@ impl Auth {
             match authorized_key.verify(message, sig).await {
                 Ok(()) => {
                     let Some(user) = cached_user else {
-                        return Err(());
+                        return Err(ProtoError::Unreachable("must have cached user").into());
                     };
 
                     info!(user = %user.name, "authentication successful");
