@@ -20,7 +20,7 @@ use tokio::{
     net::TcpStream,
     time::timeout,
 };
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 #[cfg(feature = "aws-lc")]
 pub use aws_lc::DEFAULT_PROVIDER;
@@ -60,45 +60,30 @@ impl Server {
         })
     }
 
-    pub async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> Result<(), ()> {
-        let future = Connection::accept(stream, addr, self);
-        let Ok((mut conn, session_id, keys)) = future.await else {
-            return Err(());
-        };
+    pub async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> anyhow::Result<()> {
+        let (mut conn, session_id, keys) = Connection::accept(stream, addr, self)
+            .await
+            .context("key exchange failed")?;
 
-        let Ok(user) = self
+        let user = self
             .auth
             .authenticate(session_id, &mut conn, self.provider)
             .await
-        else {
-            return Err(());
-        };
+            .context("authentication failed")?;
 
-        let Ok((state, stream)) = SessionState::from_connection(conn, keys) else {
-            return Err(());
-        };
-
-        let mut child = match state.spawn(stream, user, self).await {
-            Ok(child) => child,
-            Err(error) => {
-                warn!(%addr, %error, "failed to hand off connection to session process");
-                return Err(());
-            }
-        };
+        let (state, stream) = SessionState::from_connection(conn, keys)?;
+        let mut child = state
+            .spawn(stream, user, self)
+            .await
+            .context("failed to spawn session process")?;
 
         match child.wait().await {
             Ok(status) if status.success() => {
-                info!(%addr, %status, "session process exited");
+                debug!(%addr, %status, "session process exited");
                 Ok(())
             }
-            Ok(status) => {
-                warn!(%addr, %status, "session process exited with error");
-                Err(())
-            }
-            Err(error) => {
-                warn!(%addr, %error, "failed to wait for session process");
-                Err(())
-            }
+            Ok(status) => Err(anyhow::anyhow!("session process exited with {status}")),
+            Err(error) => Err(error).context("failed to wait for session process"),
         }
     }
 }
