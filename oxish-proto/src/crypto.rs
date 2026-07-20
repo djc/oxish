@@ -1,6 +1,8 @@
 use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
+use zeroize::Zeroize;
+
 use crate::{
     MacAlgorithm,
     named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm},
@@ -164,6 +166,13 @@ impl KeySourceSide {
                 .key(KeyInput::EncryptionKeyServerToClient)
                 .derive(key_len),
         })
+    }
+}
+
+impl Drop for KeySourceSide {
+    fn drop(&mut self) {
+        self.initial_iv.zeroize();
+        self.encryption_key.zeroize();
     }
 }
 
@@ -345,6 +354,12 @@ impl Digest {
     pub const MAX_LEN: usize = 64;
 }
 
+impl Drop for Digest {
+    fn drop(&mut self) {
+        self.buf.zeroize();
+    }
+}
+
 impl AsRef<[u8]> for Digest {
     fn as_ref(&self) -> &[u8] {
         &self.buf[..self.used]
@@ -401,6 +416,12 @@ pub struct SharedSecret(Vec<u8>);
 impl SharedSecret {
     pub fn secret_bytes(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl Drop for SharedSecret {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 

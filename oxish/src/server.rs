@@ -1,4 +1,8 @@
-use core::{mem::MaybeUninit, net::SocketAddr, time::Duration};
+use core::{
+    mem::{self, MaybeUninit},
+    net::SocketAddr,
+    time::Duration,
+};
 #[cfg(coverage)]
 use std::env;
 use std::{
@@ -23,6 +27,7 @@ use tokio::{
     time::timeout,
 };
 use tracing::{debug, instrument};
+use zeroize::Zeroizing;
 
 use crate::{Connection, Error, SessionState};
 use crate::{
@@ -104,7 +109,7 @@ impl Server {
                 counter: write.sealer.as_ref().map_or(0, |sealer| sealer.counter()),
                 sequence_number: write.sequence_number,
             },
-            read_buf: read.buf,
+            read_buf: mem::take(&mut read.buf),
         };
 
         let mut child = self
@@ -227,7 +232,7 @@ impl Server {
         let child = command.spawn()?;
 
         // The `[u8]` encoding yields the `u32` length prefix followed by the state itself.
-        let mut message = vec![0; 4];
+        let mut message = Zeroizing::new(vec![0; 4]);
         state.encode(&mut message);
         let payload_len = (message.len() - 4) as u32;
         message[..4].copy_from_slice(&payload_len.to_be_bytes());

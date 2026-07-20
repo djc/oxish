@@ -11,6 +11,7 @@ use tokio::{
     net::TcpStream,
 };
 use tracing::{debug, info, instrument, trace, warn};
+use zeroize::Zeroizing;
 
 use crate::{Connection, DEFAULT_PROVIDER, Error, SessionState, receive, send};
 
@@ -27,7 +28,7 @@ pub struct Session<T> {
 impl Session<TcpStream> {
     pub fn new(source: &impl AsFd) -> Result<Self, Error> {
         let mut length = None;
-        let mut received = Vec::new();
+        let mut received = Zeroizing::new(Vec::new());
         let mut tcp = None;
         let mut space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];
         let mut chunk = vec![0; 16_384];
