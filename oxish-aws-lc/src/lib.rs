@@ -28,7 +28,7 @@ impl CryptoProvider for Provider {
     fn generate_signing_key(
         &self,
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<(Arc<dyn SigningKey>, Vec<u8>), CryptoError> {
+    ) -> Result<(Box<dyn SigningKey>, Vec<u8>), CryptoError> {
         match algorithm {
             PublicKeyAlgorithm::Ed25519 => {
                 let key_pair =
@@ -40,7 +40,7 @@ impl CryptoProvider for Provider {
                     .as_ref()
                     .to_vec();
 
-                Ok((Arc::new(Ed25519SigningKey::new(key_pair)), pkcs8))
+                Ok((Box::new(Ed25519SigningKey::new(key_pair)), pkcs8))
             }
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
                 let key_pair = EcdsaKeyPair::generate(&signature::ECDSA_P256_SHA256_FIXED_SIGNING)
@@ -52,22 +52,22 @@ impl CryptoProvider for Provider {
                     .as_ref()
                     .to_vec();
 
-                Ok((Arc::new(EcdsaP256SigningKey::new(key_pair)), pkcs8))
+                Ok((Box::new(EcdsaP256SigningKey::new(key_pair)), pkcs8))
             }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
-    fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Arc<dyn SigningKey>, CryptoError> {
+    fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Box<dyn SigningKey>, CryptoError> {
         // The PKCS#8 algorithm identifier distinguishes the key type; each loader
         // validates it, so try Ed25519 first and fall back to ECDSA P-256.
         if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(pkcs8) {
-            return Ok(Arc::new(Ed25519SigningKey::new(key_pair)));
+            return Ok(Box::new(Ed25519SigningKey::new(key_pair)));
         }
 
         let key_pair = EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8)
             .map_err(|_| CryptoError::KeyRejected)?;
-        Ok(Arc::new(EcdsaP256SigningKey::new(key_pair)))
+        Ok(Box::new(EcdsaP256SigningKey::new(key_pair)))
     }
 
     fn verifying_key(

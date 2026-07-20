@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{borrow::Cow, sync::Arc};
+use std::borrow::Cow;
 
 use tracing::debug;
 
@@ -267,7 +267,7 @@ impl EcdhKeyExchangeReply {
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         negotiated: &Negotiated,
         mut exchange: HandshakeHash,
-        host_keys: &[Arc<dyn SigningKey>],
+        host_keys: &[Box<dyn SigningKey>],
         provider: &dyn CryptoProvider,
     ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
         let host_key = host_keys

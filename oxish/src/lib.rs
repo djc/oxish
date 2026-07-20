@@ -5,7 +5,7 @@ use core::{
     str::FromStr,
     task::{Context, Poll},
 };
-use std::{io, str, sync::Arc, task::ready};
+use std::{io, str, task::ready};
 
 use anyhow::Context as _;
 use proto::{
@@ -51,7 +51,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Perform the SSH handshake and key exchange, returning the session ID
     async fn exchange_keys(
         &mut self,
-        host_keys: &[Arc<dyn SigningKey>],
+        host_keys: &[Box<dyn SigningKey>],
         provider: &dyn CryptoProvider,
     ) -> anyhow::Result<(Digest, KeySourceSet)> {
         let exchange = self.identify().await.context("identification failed")?;

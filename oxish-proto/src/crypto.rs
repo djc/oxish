@@ -15,10 +15,10 @@ pub trait CryptoProvider: Send + Sync {
     fn generate_signing_key(
         &self,
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<(Arc<dyn SigningKey>, Vec<u8>), CryptoError>;
+    ) -> Result<(Box<dyn SigningKey>, Vec<u8>), CryptoError>;
 
     /// Load a signing key from its PKCS#8 serialization
-    fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Arc<dyn SigningKey>, CryptoError>;
+    fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Box<dyn SigningKey>, CryptoError>;
 
     /// Build a public key that can verify signatures for `algorithm`
     ///
