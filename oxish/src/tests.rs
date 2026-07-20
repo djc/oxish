@@ -86,8 +86,8 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         .expect("failed to parse generated public key");
     let user = User::new(
         USER.to_string(),
-        0,
-        0,
+        1000,
+        1000,
         PathBuf::from("/var/empty"),
         vec![key],
     )

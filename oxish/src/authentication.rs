@@ -322,6 +322,10 @@ impl User {
             _ => u32::MAX,
         };
 
+        if id == 0 {
+            return Err(Error::InvalidState("refusing to authenticate root user"));
+        }
+
         let gid = match (ret, result.is_null()) {
             (0, false) => pwd.pw_gid,
             _ => u32::MAX,
