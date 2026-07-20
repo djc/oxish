@@ -189,7 +189,7 @@ pub struct KeyLengths {
 pub(crate) struct KeyDerivation {
     pub(crate) hash: &'static dyn Hash,
     /// The shared secret `K`, encoded exactly as fed into the exchange hash
-    pub(crate) shared_secret: Vec<u8>,
+    pub(crate) shared_secret: SharedSecret,
     pub(crate) exchange_hash: Digest,
     pub(crate) session_id: Digest,
 }
@@ -197,7 +197,7 @@ pub(crate) struct KeyDerivation {
 impl KeyDerivation {
     fn key(&self, input: KeyInput) -> KeySource {
         let mut base = self.hash.start();
-        base.update(&self.shared_secret);
+        base.update(self.shared_secret.secret_bytes());
         base.update(self.exchange_hash.as_ref());
 
         KeySource {
@@ -571,7 +571,7 @@ mod tests {
                 hash,
                 // `vector.k` is already the shared secret as an mpint (with its length
                 // prefix), which is exactly the encoded form fed into the KDF.
-                shared_secret: vector.k.to_vec(),
+                shared_secret: SharedSecret(vector.k.to_vec()),
                 exchange_hash: Digest::new(vector.h),
                 session_id: Digest::new(vector.session_id),
             };

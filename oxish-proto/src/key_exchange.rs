@@ -8,7 +8,7 @@ use crate::{
     ProtoError, PublicKeyAlgorithm,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyDerivation,
-        KeySourceSide, SigningKey,
+        KeySourceSide, SharedSecret, SigningKey,
     },
     named::{
         CompressionAlgorithm, EncryptionAlgorithm, ExtensionId, ExtensionName, IncomingNameList,
@@ -358,7 +358,7 @@ impl HostKeys {
 
         let exchange_hash = exchange.finish();
         Ok(KeyExchangeOutput {
-            shared_secret,
+            shared_secret: SharedSecret::from(shared_secret),
             exchange_hash,
             reply: EcdhKeyExchangeReply {
                 server_public_host_key: TaggedPublicKey {
@@ -392,7 +392,7 @@ impl TryFrom<Vec<Box<dyn SigningKey>>> for HostKeys {
 }
 
 struct KeyExchangeOutput {
-    shared_secret: Vec<u8>,
+    shared_secret: SharedSecret,
     exchange_hash: Digest,
     reply: EcdhKeyExchangeReply,
 }
