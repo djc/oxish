@@ -9,7 +9,7 @@ use std::{
 
 use clap::Parser;
 use listenfd::ListenFd;
-use oxish::{Auth, Connection, DEFAULT_PROVIDER, SessionState};
+use oxish::{Auth, DEFAULT_PROVIDER, Server};
 use proto::{Named, PublicKeyAlgorithm};
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
         let Ok(host_key) = provider.signing_key_from_pkcs8(&fs::read(args.host_key_file)?) else {
             anyhow::bail!("failed to load host key");
         };
-        Arc::new([host_key])
+        vec![host_key]
     };
 
     let session_bin = match args.session_bin {
@@ -75,7 +75,13 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(addr = %listener.local_addr()?, "listening for connections");
 
-    let auth = Arc::new(Auth::for_id(unsafe { libc::geteuid() }, provider)?);
+    let server = Arc::new(Server::new(
+        Auth::for_id(unsafe { libc::geteuid() }, provider)?,
+        host_keys,
+        session_bin,
+        provider,
+    ));
+
     loop {
         let (stream, addr) = match listener.accept().await {
             Ok((stream, addr)) => (stream, addr),
@@ -85,39 +91,14 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        let auth = auth.clone();
-        let host_keys = host_keys.clone();
-        let session_bin = session_bin.clone();
+        let server = server.clone();
         tokio::spawn(async move {
             debug!(%addr, "accepted connection");
             if let Err(err) = stream.set_nodelay(true) {
                 warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
             }
 
-            let future = Connection::accept(stream, addr, &*host_keys, provider);
-            let Ok((mut conn, session_id, keys)) = future.await else {
-                return Err(());
-            };
-
-            let Ok(user) = auth.authenticate(session_id, &mut conn, provider).await else {
-                return Err(());
-            };
-
-            let (state, stream) = SessionState::from_connection(conn, keys).map_err(|_| ())?;
-            let mut child = match state.spawn(stream, &session_bin, user, &auth).await {
-                Ok(child) => child,
-                Err(error) => {
-                    warn!(%addr, %error, "failed to hand off connection to session process");
-                    return Err(());
-                }
-            };
-
-            match child.wait().await {
-                Ok(status) => info!(%addr, %status, "session process exited"),
-                Err(error) => warn!(%addr, %error, "failed to wait for session process"),
-            }
-
-            Ok(())
+            let _ = server.accept(stream, addr).await;
         });
     }
 }

@@ -52,7 +52,7 @@ impl Auth {
 
     /// Authenticate a user over the given SSH connection
     #[instrument(name = "authentication", skip(self, session_id, conn, provider), fields(addr = %conn.addr))]
-    pub async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
+    pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
         &self,
         session_id: Digest,
         conn: &mut Connection<T>,

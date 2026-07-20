@@ -5,7 +5,7 @@ use core::{
     task::{Context, Poll},
     time::Duration,
 };
-use std::{io, str, sync::Arc, task::ready};
+use std::{io, path::PathBuf, str, sync::Arc, task::ready};
 
 use proto::{
     Completion, Decoded, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode, ExtensionId,
@@ -16,9 +16,10 @@ use proto::{
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
     time::timeout,
 };
-use tracing::{debug, error, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[cfg(feature = "aws-lc")]
 pub use aws_lc::DEFAULT_PROVIDER;
@@ -31,6 +32,71 @@ mod authentication;
 pub use authentication::{Auth, User};
 mod session;
 pub use session::{Session, SessionState};
+
+pub struct Server {
+    provider: &'static dyn CryptoProvider,
+    host_keys: Vec<Arc<dyn SigningKey>>,
+    session: PathBuf,
+    auth: Auth,
+}
+
+impl Server {
+    pub fn new(
+        auth: Auth,
+        host_keys: Vec<Arc<dyn SigningKey>>,
+        session: PathBuf,
+        provider: &'static dyn CryptoProvider,
+    ) -> Self {
+        Self {
+            provider,
+            host_keys,
+            session,
+            auth,
+        }
+    }
+
+    pub async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> Result<(), ()> {
+        let future = Connection::accept(stream, addr, self);
+        let Ok((mut conn, session_id, keys)) = future.await else {
+            return Err(());
+        };
+
+        let Ok(user) = self
+            .auth
+            .authenticate(session_id, &mut conn, self.provider)
+            .await
+        else {
+            return Err(());
+        };
+
+        let Ok((state, stream)) = SessionState::from_connection(conn, keys) else {
+            return Err(());
+        };
+
+        let mut child = match state.spawn(stream, user, self).await {
+            Ok(child) => child,
+            Err(error) => {
+                warn!(%addr, %error, "failed to hand off connection to session process");
+                return Err(());
+            }
+        };
+
+        match child.wait().await {
+            Ok(status) if status.success() => {
+                info!(%addr, %status, "session process exited");
+                Ok(())
+            }
+            Ok(status) => {
+                warn!(%addr, %status, "session process exited with error");
+                Err(())
+            }
+            Err(error) => {
+                warn!(%addr, %error, "failed to wait for session process");
+                Err(())
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;
@@ -45,21 +111,20 @@ pub struct Connection<T> {
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Create a new [`Connection`] and perform key exchange
-    #[instrument(name = "handshake", skip(stream, addr, host_keys, provider), fields(addr = %addr))]
-    pub async fn accept(
+    #[instrument(name = "handshake", skip(stream, addr, server), fields(addr = %addr))]
+    async fn accept(
         stream: T,
         addr: SocketAddr,
-        host_keys: &[Arc<dyn SigningKey>],
-        provider: &dyn CryptoProvider,
+        server: &Server,
     ) -> Result<(Self, Digest, KeySourceSet), ()> {
         let mut new = Self {
             stream,
             addr,
             read: ReadState::default(),
-            write: WriteState::new(provider.secure_random()),
+            write: WriteState::new(server.provider.secure_random()),
         };
 
-        let future = new.exchange_keys(host_keys, provider);
+        let future = new.exchange_keys(&server.host_keys, server.provider);
         match timeout(Duration::from_secs(30), future).await {
             Ok(Ok((session_id, keys))) => Ok((new, session_id, keys)),
             Ok(Err(())) => Err(()),
@@ -276,7 +341,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 }
 
-pub(crate) async fn receive<'a>(
+async fn receive<'a>(
     stream: &mut (impl AsyncRead + Unpin),
     state: &'a mut ReadState,
 ) -> Result<IncomingPacket<'a>, ()> {
@@ -313,7 +378,7 @@ pub(crate) async fn receive<'a>(
     }
 }
 
-pub(crate) fn send(
+fn send(
     stream: &mut (impl AsyncWrite + Unpin),
     state: &mut WriteState,
     cx: &mut Context<'_>,
@@ -327,7 +392,7 @@ pub(crate) fn send(
     Pin::new(stream).poll_flush(cx).map_err(Error::from)
 }
 
-pub(crate) async fn buffer<'a>(
+async fn buffer<'a>(
     stream: &mut (impl AsyncRead + Unpin),
     state: &'a mut ReadState,
 ) -> Result<&'a [u8], Error> {

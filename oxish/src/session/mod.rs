@@ -12,7 +12,6 @@ use std::{
         fd::{AsFd, OwnedFd},
         unix::{ffi::OsStrExt, net::UnixStream},
     },
-    path::Path,
     process::Stdio,
 };
 
@@ -32,7 +31,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::{Auth, Connection, Error, User, receive, send};
+use crate::{Auth, Connection, Error, Server, User, receive, send};
 
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
@@ -279,14 +278,13 @@ impl SessionState {
     pub async fn spawn(
         self,
         stream: TcpStream,
-        binary: &Path,
         user: User,
-        auth: &Auth,
+        server: &Server,
     ) -> Result<Child, Error> {
         let tcp = stream.into_std()?;
 
         let (parent, child_sock) = UnixStream::pair()?;
-        let mut command = Command::new(binary);
+        let mut command = Command::new(&server.session);
         command
             .env_clear()
             .env("HOME", &user.home_dir)
@@ -298,7 +296,7 @@ impl SessionState {
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
 
-        if let Auth::System = auth {
+        if let Auth::System = server.auth {
             let home = CString::new(user.home_dir.as_os_str().as_bytes())
                 .map_err(|_| Error::InvalidState("home directory path contains an interior NUL"))?;
             let name = CString::new(user.name.as_bytes())
