@@ -1,6 +1,7 @@
 # OxiSH: SSH server written in Rust
 
 [![Build status](https://github.com/djc/oxish/workflows/CI/badge.svg)](https://github.com/djc/oxish/actions?query=workflow%3ACI)
+[![codecov](https://codecov.io/gh/djc/oxish/branch/main/graph/badge.svg)](https://codecov.io/gh/djc/oxish)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
 
