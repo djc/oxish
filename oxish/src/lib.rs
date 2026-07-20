@@ -5,7 +5,7 @@ use core::{
     task::{Context, Poll},
     time::Duration,
 };
-use std::{io, path::PathBuf, str, sync::Arc, task::ready};
+use std::{io, str, sync::Arc, task::ready};
 
 use anyhow::Context as _;
 use proto::{
@@ -17,7 +17,6 @@ use proto::{
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::TcpStream,
     time::timeout,
 };
 use tracing::{debug, error, instrument, trace, warn};
@@ -33,60 +32,8 @@ mod authentication;
 pub use authentication::{Auth, User};
 mod session;
 pub use session::{Session, SessionState};
-
-pub struct Server {
-    provider: &'static dyn CryptoProvider,
-    host_keys: Vec<Arc<dyn SigningKey>>,
-    session: PathBuf,
-    auth: Auth,
-}
-
-impl Server {
-    pub fn new(
-        auth: Auth,
-        host_keys: Vec<Arc<dyn SigningKey>>,
-        session: PathBuf,
-        provider: &'static dyn CryptoProvider,
-    ) -> anyhow::Result<Self> {
-        if host_keys.is_empty() {
-            return Err(anyhow::anyhow!("no host keys configured"));
-        }
-
-        Ok(Self {
-            provider,
-            host_keys,
-            session,
-            auth,
-        })
-    }
-
-    pub async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> anyhow::Result<()> {
-        let (mut conn, session_id, keys) = Connection::accept(stream, addr, self)
-            .await
-            .context("key exchange failed")?;
-
-        let user = self
-            .auth
-            .authenticate(session_id, &mut conn, self.provider)
-            .await
-            .context("authentication failed")?;
-
-        let (state, stream) = SessionState::from_connection(conn, keys)?;
-        let mut child = state
-            .spawn(stream, user, self)
-            .await
-            .context("failed to spawn session process")?;
-
-        match child.wait().await {
-            Ok(status) if status.success() => {
-                debug!(%addr, %status, "session process exited");
-                Ok(())
-            }
-            Ok(status) => Err(anyhow::anyhow!("session process exited with {status}")),
-            Err(error) => Err(error).context("failed to wait for session process"),
-        }
-    }
-}
+mod server;
+pub use server::Server;
 
 #[cfg(test)]
 mod tests;
