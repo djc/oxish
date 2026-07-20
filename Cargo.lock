@@ -540,6 +540,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -556,6 +557,7 @@ version = "0.1.0"
 dependencies = [
  "graviola",
  "oxish-proto",
+ "zeroize",
 ]
 
 [[package]]
@@ -566,6 +568,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

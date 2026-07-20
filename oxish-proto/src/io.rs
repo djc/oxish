@@ -1,6 +1,8 @@
 use core::iter;
 use std::io;
 
+use zeroize::Zeroize;
+
 use crate::{
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
     ProtoError,
@@ -144,6 +146,12 @@ impl ReadState {
     /// As required by strict key exchange after receiving `SSH_MSG_NEWKEYS`.
     pub fn reset_sequence_number(&mut self) {
         self.sequence_number = 0;
+    }
+}
+
+impl Drop for ReadState {
+    fn drop(&mut self) {
+        self.buf.zeroize();
     }
 }
 
@@ -331,5 +339,11 @@ impl WriteState {
 
     pub fn buffered(&self) -> &[u8] {
         &self.buf[self.written..]
+    }
+}
+
+impl Drop for WriteState {
+    fn drop(&mut self) {
+        self.buf.zeroize();
     }
 }

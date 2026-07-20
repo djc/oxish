@@ -8,6 +8,7 @@ license = "Apache-2.0 OR MIT"
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 sha1 = { workspace = true }

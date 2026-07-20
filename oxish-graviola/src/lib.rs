@@ -18,6 +18,7 @@ use proto::{
         SupportedAlgorithms, VerifyingKey,
     },
 };
+use zeroize::Zeroizing;
 
 pub const DEFAULT_PROVIDER: &'static dyn CryptoProvider = &Provider;
 
@@ -37,9 +38,9 @@ impl CryptoProvider for Provider {
 
                 // An Ed25519 PKCS#8 v2 document (with the embedded public key) is
                 // well under 128 bytes.
-                let mut buf = [0u8; 128];
+                let mut buf = Zeroizing::new([0u8; 128]);
                 let pkcs8 = key
-                    .to_pkcs8_der(&mut buf)
+                    .to_pkcs8_der(&mut *buf)
                     .map_err(|_| CryptoError::Unspecified)?
                     .to_vec();
 

@@ -13,6 +13,7 @@ use oxish::{Auth, DEFAULT_PROVIDER, Server};
 use proto::{HostKeys, Named, PublicKeyAlgorithm};
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
+use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,7 +31,10 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 // FIXME ensure the host key is only readable by the ssh server user
-                host_key_file.write_all(&pkcs8)?;
+                let pkcs8 = Zeroizing::new(pkcs8);
+                let result = host_key_file.write_all(&pkcs8);
+                result?;
+
                 eprintln!("generated host key at {}", args.host_key_file);
                 return Ok(());
             }
@@ -40,10 +44,9 @@ async fn main() -> anyhow::Result<()> {
             Err(err) => return Err(err.into()),
         }
     } else {
-        let Ok(host_key) = provider.signing_key_from_pkcs8(&fs::read(args.host_key_file)?) else {
-            anyhow::bail!("failed to load host key");
-        };
-        HostKeys::try_from(vec![host_key])?
+        let pkcs8 = Zeroizing::new(fs::read(&args.host_key_file)?);
+        let result = provider.signing_key_from_pkcs8(&pkcs8);
+        HostKeys::try_from(vec![result?])?
     };
 
     let session_bin = match args.session_bin {
