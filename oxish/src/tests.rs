@@ -1,21 +1,11 @@
 use core::{net::Ipv4Addr, time::Duration};
-use std::{
-    fs,
-    panic::resume_unwind,
-    path::PathBuf,
-    process::Stdio,
-    sync::{Arc, Once},
-};
+use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
 use proto::{PublicKeyAlgorithm, crypto::CryptoProvider};
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
-use crate::{
-    Auth, Connection, User,
-    authentication::AuthorizedKey,
-    session::{Session, SessionState},
-};
+use crate::{Auth, Server, User, authentication::AuthorizedKey};
 
 /// Exercise a full handshake and session against the aws-lc-rs provider
 #[cfg(feature = "aws-lc")]
@@ -24,7 +14,6 @@ async fn handshake_ecdsa_aws_lc() {
     handshake(
         aws_lc::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        false,
     )
     .await;
 }
@@ -36,7 +25,6 @@ async fn handshake_ecdsa_graviola() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        false,
     )
     .await;
 }
@@ -45,19 +33,14 @@ async fn handshake_ecdsa_graviola() {
 #[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ed25519_aws_lc() {
-    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519, false).await;
+    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
 }
 
 /// Exercise an ssh-ed25519 client key against the graviola provider
 #[cfg(feature = "graviola")]
 #[tokio::test]
 async fn handshake_ed25519_graviola() {
-    handshake(
-        graviola::DEFAULT_PROVIDER,
-        PublicKeyAlgorithm::Ed25519,
-        false,
-    )
-    .await;
+    handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
 }
 
 #[cfg(feature = "graviola")]
@@ -66,16 +49,11 @@ async fn handshake_ecdsa_graviola_split() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        true,
     )
     .await;
 }
 
-async fn handshake(
-    provider: &'static dyn CryptoProvider,
-    algorithm: PublicKeyAlgorithm<'_>,
-    split: bool,
-) {
+async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAlgorithm<'_>) {
     subscribe();
 
     let dir = TempDir::new().unwrap();
@@ -114,47 +92,17 @@ async fn handshake(
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let host_keys = Arc::new([host_key]);
-    let session_bin = match split {
-        true => Some(session_binary().await),
-        false => None,
-    };
+    let server = Server::new(
+        Auth::Fixed(user),
+        vec![host_key],
+        session_binary().await,
+        provider,
+    );
 
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept().await.unwrap();
         stream.set_nodelay(true).ok();
-
-        let future = Connection::accept(stream, peer, &*host_keys, provider);
-        let Ok((mut conn, session_id, keys)) = future.await else {
-            return Err(());
-        };
-
-        let auth = Auth::Fixed(user);
-        let Ok(user) = auth.authenticate(session_id, &mut conn, provider).await else {
-            return Err(());
-        };
-
-        let Some(session_bin) = session_bin else {
-            return Session::new(conn).run().await;
-        };
-
-        let (state, stream) = SessionState::from_connection(conn, keys).map_err(|_| ())?;
-        let mut child = state
-            .spawn(stream, &session_bin, user, &auth)
-            .await
-            .expect("failed to hand off connection");
-
-        match child.wait().await {
-            Ok(status) if status.success() => Ok(()),
-            Ok(status) => {
-                println!("session process exited with {status}");
-                Err(())
-            }
-            Err(error) => {
-                println!("failed to wait for session process: {error}");
-                Err(())
-            }
-        }
+        server.accept(stream, peer).await
     });
 
     let mut child = Command::new("ssh")
