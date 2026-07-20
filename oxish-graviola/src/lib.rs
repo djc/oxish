@@ -305,12 +305,11 @@ impl ActiveKeyExchange for Mlkem768X25519KeyExchange {
         let shared = x25519_private
             .diffie_hellman(&peer)
             .map_err(|_| CryptoError::KeyAgreementFailed)?;
-        let classic_secret = shared.as_bytes().to_vec();
 
         // K = SHA256(K_PQ || K_CL)
         let mut context = GSha256::new();
         context.update(pq_secret.as_ref());
-        context.update(&classic_secret);
+        context.update(&shared.as_bytes());
         let shared_secret = SharedSecret::from(context.finish().as_ref().to_vec());
 
         // `S_REPLY` = ML-KEM-768 ciphertext || X25519 public key

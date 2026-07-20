@@ -305,18 +305,20 @@ impl ActiveKeyExchange for Mlkem768X25519KeyExchange {
             .as_ref()
             .to_vec();
 
+        let mut context = digest::Context::new(&digest::SHA256);
+        context.update(pq_secret.as_ref());
+
         let peer = agreement::UnparsedPublicKey::new(&X25519, peer_x25519);
-        let classic_secret = agreement::agree_ephemeral(
+        agreement::agree_ephemeral(
             private_key,
             peer,
             CryptoError::KeyAgreementFailed,
-            |shared_secret| Ok(shared_secret.to_vec()),
+            |shared_secret| {
+                context.update(shared_secret);
+                Ok(())
+            },
         )?;
 
-        // K = SHA256(K_PQ || K_CL)
-        let mut context = digest::Context::new(&digest::SHA256);
-        context.update(pq_secret.as_ref());
-        context.update(&classic_secret);
         let shared_secret = SharedSecret::from(context.finish().as_ref().to_vec());
 
         // `S_REPLY` = ML-KEM-768 ciphertext || X25519 public key
