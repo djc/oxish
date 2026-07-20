@@ -20,7 +20,7 @@ async fn handshake_ecdsa_aws_lc() {
     handshake(
         aws_lc::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        false,
+        Scenario::default(),
     )
     .await;
 }
@@ -32,7 +32,7 @@ async fn handshake_ecdsa_graviola() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        false,
+        Scenario::default(),
     )
     .await;
 }
@@ -41,7 +41,12 @@ async fn handshake_ecdsa_graviola() {
 #[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ed25519_aws_lc() {
-    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519, false).await;
+    handshake(
+        aws_lc::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::Ed25519,
+        Scenario::default(),
+    )
+    .await;
 }
 
 /// Exercise an ssh-ed25519 client key against the graviola provider
@@ -51,7 +56,7 @@ async fn handshake_ed25519_graviola() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::Ed25519,
-        false,
+        Scenario::default(),
     )
     .await;
 }
@@ -62,16 +67,59 @@ async fn handshake_ecdsa_graviola_split() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        true,
+        Scenario {
+            split: true,
+            ..Scenario::default()
+        },
     )
     .await;
+}
+
+/// Stream more output than a channel window holds, exercising `SSH_MSG_CHANNEL_WINDOW_ADJUST`
+#[cfg(feature = "aws-lc")]
+#[tokio::test]
+async fn bulk_output_aws_lc() {
+    handshake(
+        aws_lc::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::Ed25519,
+        Scenario {
+            bulk: true,
+            ..Scenario::default()
+        },
+    )
+    .await;
+}
+
+/// The same, across the session subprocess handoff
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn bulk_output_graviola_split() {
+    handshake(
+        graviola::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::Ed25519,
+        Scenario {
+            split: true,
+            bulk: true,
+        },
+    )
+    .await;
+}
+
+/// Knobs for a single [`handshake`] run
+#[derive(Clone, Copy, Default)]
+struct Scenario {
+    /// Hand the authenticated connection off to a session subprocess
+    split: bool,
+    /// Emit far more output than one channel window, forcing repeated window adjustments
+    bulk: bool,
 }
 
 async fn handshake(
     provider: &'static dyn CryptoProvider,
     algorithm: PublicKeyAlgorithm<'_>,
-    split: bool,
+    scenario: Scenario,
 ) {
+    let Scenario { split, bulk } = scenario;
     subscribe();
 
     let dir = TempDir::new().unwrap();
@@ -172,11 +220,23 @@ async fn handshake(
         .spawn()
         .expect("failed to spawn ssh");
 
+    // In the bulk scenario, emit well over a channel window's worth of output (the client
+    // advertises ~1-2 MiB) before the sentinel, so the whole transfer only completes if the
+    // server honors the window adjustments the client sends as it drains the data.
+    let command = match bulk {
+        true => b"seq 1 400000\necho OXISH-$((6*7))\nexit\n".to_vec(),
+        false => COMMAND.to_vec(),
+    };
+
     let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(COMMAND).await.unwrap();
+    stdin.write_all(&command).await.unwrap();
     drop(stdin); // close stdin so the session ends after `exit`
 
-    let output = timeout(Duration::from_secs(10), child.wait_with_output())
+    let client_timeout = match bulk {
+        true => Duration::from_secs(30),
+        false => Duration::from_secs(10),
+    };
+    let output = timeout(client_timeout, child.wait_with_output())
         .await
         .expect("ssh client timed out")
         .expect("failed to wait for ssh");

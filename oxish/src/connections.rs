@@ -13,7 +13,7 @@ use std::{
 use proto::{
     ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
     ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, ChannelType,
-    Encode, Encoder, IncomingPacket, MessageType, ProtoError, PtyReq,
+    ChannelWindowAdjust, Encode, Encoder, IncomingPacket, MessageType, ProtoError, PtyReq,
 };
 use tracing::{debug, warn};
 
@@ -49,6 +49,7 @@ impl Channels {
         let channel = entry.insert(Channel {
             remote_id: open.sender_channel,
             window_size: open.initial_window_size,
+            send_window: open.initial_window_size,
             maximum_packet_size: open.maximum_packet_size,
             env: Vec::new(),
             terminal: None,
@@ -117,6 +118,26 @@ impl Channels {
             Some(TerminalState::Running(terminal)) => Some((terminal, &data.data)),
             _ => None,
         })
+    }
+
+    pub(crate) fn window_adjust(&mut self, adjust: &ChannelWindowAdjust) -> Result<(), ProtoError> {
+        let Some(channel) = self.channels.get_mut(&adjust.recipient_channel) else {
+            return Err(ProtoError::InvalidPacket(
+                "channel window adjust for unknown channel ID",
+            ));
+        };
+
+        // Saturating rather than wrapping: a peer that overflows our window is misbehaving, but
+        // clamping keeps us from shrinking it (RFC 4254 section 5.2 caps windows at 2^32 - 1).
+        channel.send_window = channel.send_window.saturating_add(adjust.bytes_to_add);
+        debug!(
+            channel_id = %adjust.recipient_channel,
+            added = %adjust.bytes_to_add,
+            window = %channel.send_window,
+            "grew channel send window",
+        );
+
+        Ok(())
     }
 
     pub(crate) fn eof(&mut self, eof: &ChannelEof) -> Result<(), ProtoError> {
@@ -201,8 +222,19 @@ impl<'a> Future for TerminalsFuture<'a> {
                 }
             };
 
+            // Respect the peer's window: never send more than it has room for, nor a single
+            // packet larger than it will accept (RFC 4254 section 5.2). A window-blocked channel
+            // is skipped here and resumes once a window adjust arrives on the receive path.
             let mut buf = [0u8; 4096];
-            match terminal.poll_read(&mut buf, cx) {
+            let limit = channel
+                .send_window
+                .min(channel.maximum_packet_size)
+                .min(buf.len() as u32) as usize;
+            if limit == 0 {
+                continue;
+            }
+
+            match terminal.poll_read(&mut buf[..limit], cx) {
                 Poll::Ready(result @ Ok(0)) | Poll::Ready(result @ Err(_)) => {
                     if let TerminalState::Running(terminal) =
                         mem::replace(state, TerminalState::Closing)
@@ -224,6 +256,8 @@ impl<'a> Future for TerminalsFuture<'a> {
                     });
                 }
                 Poll::Ready(Ok(n)) => {
+                    // `limit` bounded the read to the window, so this cannot underflow.
+                    channel.send_window -= n as u32;
                     return Poll::Ready(Ok(Some(OutgoingChannelMessage::Data(ChannelData {
                         recipient_channel: channel.remote_id,
                         data: Cow::Owned(buf[..n].to_vec()),
@@ -241,6 +275,11 @@ impl<'a> Future for TerminalsFuture<'a> {
 pub(crate) struct Channel {
     remote_id: u32,
     window_size: u32,
+    /// Bytes we may still send to the peer before it must grow our window
+    ///
+    /// Seeded from the peer's initial window and replenished by
+    /// `SSH_MSG_CHANNEL_WINDOW_ADJUST` (RFC 4254 section 5.2).
+    send_window: u32,
     maximum_packet_size: u32,
     env: Vec<(String, String)>,
     terminal: Option<TerminalState>,
@@ -308,6 +347,7 @@ pub(crate) enum IncomingChannelMessage<'a> {
     Open(ChannelOpen<'a>),
     Request(ChannelRequest<'a>),
     Data(ChannelData<'a>),
+    WindowAdjust(ChannelWindowAdjust),
     Eof(ChannelEof),
     Close(ChannelClose),
 }
@@ -326,6 +366,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
             MessageType::ChannelData => {
                 Ok(IncomingChannelMessage::Data(ChannelData::try_from(packet)?))
             }
+            MessageType::ChannelWindowAdjust => Ok(IncomingChannelMessage::WindowAdjust(
+                ChannelWindowAdjust::try_from(packet)?,
+            )),
             MessageType::ChannelEof => {
                 Ok(IncomingChannelMessage::Eof(ChannelEof::try_from(packet)?))
             }
