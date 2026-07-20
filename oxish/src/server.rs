@@ -11,10 +11,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-use proto::{
-    Encode, ReadState, WriteState,
-    crypto::{CryptoProvider, SigningKey},
-};
+use proto::{Encode, HostKeys, ReadState, WriteState, crypto::CryptoProvider};
 use rustix::net::{
     RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
 };
@@ -33,7 +30,7 @@ use crate::{
 
 pub struct Server {
     pub(crate) provider: &'static dyn CryptoProvider,
-    pub(crate) host_keys: Vec<Box<dyn SigningKey>>,
+    pub(crate) host_keys: HostKeys,
     pub(crate) session: PathBuf,
     pub(crate) auth: Auth,
 }
@@ -41,14 +38,10 @@ pub struct Server {
 impl Server {
     pub fn new(
         auth: Auth,
-        host_keys: Vec<Box<dyn SigningKey>>,
+        host_keys: HostKeys,
         session: PathBuf,
         provider: &'static dyn CryptoProvider,
     ) -> anyhow::Result<Self> {
-        if host_keys.is_empty() {
-            return Err(anyhow::anyhow!("no host keys configured"));
-        }
-
         Ok(Self {
             provider,
             host_keys,

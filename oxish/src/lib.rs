@@ -10,12 +10,12 @@ use std::{io, str, task::ready};
 use anyhow::Context as _;
 use proto::{
     Completion, Decode, Decoded, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode,
-    EncryptionAlgorithm, ExtensionId, Identification, IdentificationError, Ignore, IncomingPacket,
-    KeyExchange, KeySourceSet, MethodName, NewKeys, PROTOCOL, ProtoError, ReadState,
-    UserAuthFailure, WriteState,
+    EncryptionAlgorithm, ExtensionId, HostKeys, Identification, IdentificationError, Ignore,
+    IncomingPacket, KeyExchange, KeySourceSet, MethodName, NewKeys, PROTOCOL, ProtoError,
+    ReadState, UserAuthFailure, WriteState,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyLengths,
-        KeySourceSide, SigningKey,
+        KeySourceSide,
     },
 };
 use thiserror::Error;
@@ -51,7 +51,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Perform the SSH handshake and key exchange, returning the session ID
     async fn exchange_keys(
         &mut self,
-        host_keys: &[Box<dyn SigningKey>],
+        host_keys: &HostKeys,
         provider: &dyn CryptoProvider,
     ) -> anyhow::Result<(Digest, KeySourceSet)> {
         let exchange = self.identify().await.context("identification failed")?;
@@ -62,10 +62,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let mut kx = KeyExchange::start(
             packet,
             exchange,
-            host_keys
-                .iter()
-                .map(|key| key.algorithm())
-                .collect::<Vec<_>>(),
+            host_keys.algorithms().collect(),
             [ExtensionId::StrictKexServer].into_iter(),
             provider,
         )?;
