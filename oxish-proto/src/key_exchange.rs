@@ -285,8 +285,8 @@ impl EcdhKeyExchangeReply {
         let derivation = KeyDerivation {
             hash: provider.hash(&negotiated.key_exchange)?,
             shared_secret,
-            exchange_hash,
-            session_id: exchange_hash,
+            exchange_hash: exchange_hash.clone(),
+            session_id: exchange_hash.clone(),
         };
 
         Ok((
@@ -359,7 +359,6 @@ impl HostKeys {
         let exchange_hash = exchange.finish();
         Ok(KeyExchangeOutput {
             shared_secret: SharedSecret::from(shared_secret),
-            exchange_hash,
             reply: EcdhKeyExchangeReply {
                 server_public_host_key: TaggedPublicKey {
                     algorithm: host_key.algorithm(),
@@ -371,6 +370,7 @@ impl HostKeys {
                     signature: host_key.sign(exchange_hash.as_ref()),
                 },
             },
+            exchange_hash,
         })
     }
 
