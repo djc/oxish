@@ -3,7 +3,6 @@ use core::{
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
-    time::Duration,
 };
 use std::{io, str, sync::Arc, task::ready};
 
@@ -15,11 +14,8 @@ use proto::{
     crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, SigningKey},
 };
 use thiserror::Error;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    time::timeout,
-};
-use tracing::{debug, error, instrument, trace, warn};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tracing::{debug, error, trace, warn};
 
 #[cfg(feature = "aws-lc")]
 pub use aws_lc::DEFAULT_PROVIDER;
@@ -47,27 +43,6 @@ struct Connection<T> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
-    /// Create a new [`Connection`] and perform key exchange
-    #[instrument(name = "handshake", skip(stream, addr, server), fields(addr = %addr))]
-    async fn accept(
-        stream: T,
-        addr: SocketAddr,
-        server: &Server,
-    ) -> anyhow::Result<(Self, Digest, KeySourceSet)> {
-        let mut new = Self {
-            stream,
-            addr,
-            read: ReadState::default(),
-            write: WriteState::new(server.provider.secure_random()),
-        };
-
-        let future = new.exchange_keys(&server.host_keys, server.provider);
-        match timeout(Duration::from_secs(30), future).await {
-            Ok(result) => result.map(|(session_id, keys)| (new, session_id, keys)),
-            Err(_) => Err(anyhow::anyhow!("key exchange timed out")),
-        }
-    }
-
     /// Perform the SSH handshake and key exchange, returning the session ID
     async fn exchange_keys(
         &mut self,

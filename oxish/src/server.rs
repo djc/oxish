@@ -1,10 +1,13 @@
-use core::net::SocketAddr;
+use core::{net::SocketAddr, time::Duration};
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context as _;
-use proto::crypto::{CryptoProvider, SigningKey};
-use tokio::net::TcpStream;
-use tracing::debug;
+use proto::{
+    ReadState, WriteState,
+    crypto::{CryptoProvider, SigningKey},
+};
+use tokio::{net::TcpStream, time::timeout};
+use tracing::{debug, instrument};
 
 use crate::Connection;
 use crate::authentication::Auth;
@@ -36,10 +39,20 @@ impl Server {
         })
     }
 
+    #[instrument(name = "handshake", skip(self, stream, addr), fields(addr = %addr))]
     pub async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> anyhow::Result<()> {
-        let (mut conn, session_id, keys) = Connection::accept(stream, addr, self)
-            .await
-            .context("key exchange failed")?;
+        let mut conn = Connection {
+            stream,
+            addr,
+            read: ReadState::default(),
+            write: WriteState::new(self.provider.secure_random()),
+        };
+
+        let future = conn.exchange_keys(&self.host_keys, self.provider);
+        let (session_id, keys) = match timeout(Duration::from_secs(30), future).await {
+            Ok(result) => result.context("key exchange failed")?,
+            Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
+        };
 
         let user = self
             .auth
