@@ -21,6 +21,7 @@ use proto::{
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, trace, warn};
+use zeroize::Zeroizing;
 
 #[cfg(any(feature = "aws-lc", feature = "aws-lc-fips"))]
 pub use aws_lc::DEFAULT_PROVIDER;
@@ -56,13 +57,18 @@ struct Connection<T> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
-    /// Perform the SSH handshake and key exchange, returning the session ID
+    /// Perform the SSH handshake and key exchange
+    ///
+    /// Returns the session id, the derived key material, and the client's (`V_C`) and our
+    /// (`V_S`) identification strings, which a later client-initiated rekey needs to rebuild
+    /// the exchange hash.
     async fn exchange_keys(
         &mut self,
         host_keys: &HostKeys,
         provider: &dyn CryptoProvider,
-    ) -> anyhow::Result<(Digest, KeySourceSet)> {
-        let exchange = self.identify().await.context("identification failed")?;
+    ) -> anyhow::Result<(Digest, KeySourceSet, Vec<u8>, Vec<u8>)> {
+        let (exchange, client_ident, server_ident) =
+            self.identify().await.context("identification failed")?;
 
         // Receive and send key exchange init packets
 
@@ -88,6 +94,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             kx.exchange,
             host_keys,
             provider,
+            None,
         )?;
 
         self.send(&key_exchange_reply).await?;
@@ -101,7 +108,49 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         self.send(&Ignore::default()).await?;
-        Ok((session_id, keys))
+        Ok((session_id, keys, client_ident, server_ident))
+    }
+
+    /// Complete a client-initiated rekey after its `SSH_MSG_KEXINIT` has been parsed
+    ///
+    /// Sends our own `SSH_MSG_KEXINIT`, runs a fresh ECDH exchange keeping the original
+    /// `session_id`, swaps `SSH_MSG_NEWKEYS`, and installs the new key material. Unlike the
+    /// initial handshake this neither resets sequence numbers (strict key exchange governs
+    /// only the first exchange) nor sends `SSH_MSG_EXT_INFO`.
+    async fn rekey_exchange(
+        &mut self,
+        mut kx: KeyExchange,
+        host_keys: &HostKeys,
+        session_id: Digest,
+        provider: &dyn CryptoProvider,
+    ) -> Result<(), Error> {
+        debug!("starting client-initiated rekey");
+
+        self.send_handshake(&kx.local, Some(&mut kx.exchange))
+            .await?;
+
+        let packet = receive(&mut self.stream, &mut self.read).await?;
+        let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
+        let (key_exchange_reply, _exchange_hash, keys) = EcdhKeyExchangeReply::new(
+            ecdh_key_exchange_init,
+            &kx.negotiated,
+            kx.exchange,
+            host_keys,
+            provider,
+            Some(session_id),
+        )?;
+
+        self.send(&key_exchange_reply).await?;
+
+        // Swap new keys packets and install the freshly derived keys.
+        let packet = receive(&mut self.stream, &mut self.read).await?;
+        NewKeys::try_from(packet)?;
+        self.send(&NewKeys).await?;
+
+        self.read.opener = Some(provider.opening_key(0, &keys.client_to_server)?);
+        self.write.sealer = Some(provider.sealing_key(0, &keys.server_to_client)?);
+        debug!("completed client-initiated rekey");
+        Ok(())
     }
 
     async fn update_keys(
@@ -129,7 +178,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         Ok(())
     }
 
-    async fn identify(&mut self) -> Result<HandshakeBuffer, Error> {
+    /// Exchange identification strings, returning the handshake hash seed and the client's
+    /// (`V_C`) and our (`V_S`) identification strings, which seed every later exchange hash
+    async fn identify(&mut self) -> Result<(HandshakeBuffer, Vec<u8>, Vec<u8>), Error> {
         let (buf, Decoded { value: ident, next }) = loop {
             let bytes = buffer(&mut self.stream, &mut self.read).await?;
             match Identification::decode(bytes) {
@@ -151,9 +202,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let mut exchange = HandshakeBuffer::default();
         let rest = next.len();
         let v_c_len = buf.len() - rest - 2;
-        if let Some(v_c) = buf.get(..v_c_len) {
-            exchange.prefixed(v_c);
-        }
+        let client_ident = buf.get(..v_c_len).unwrap_or_default().to_vec();
+        exchange.prefixed(&client_ident);
 
         let ident = Identification {
             protocol: PROTOCOL,
@@ -168,16 +218,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         let v_s_len = server_ident_bytes.len() - 2;
-        if let Some(v_s) = server_ident_bytes.get(..v_s_len) {
-            exchange.prefixed(v_s);
-        }
+        let server_ident = server_ident_bytes
+            .get(..v_s_len)
+            .unwrap_or_default()
+            .to_vec();
+        exchange.prefixed(&server_ident);
 
         // The ident was written to the stream directly, so drop it from the outgoing buffer
         self.write.clear();
 
         let last_length = buf.len() - rest;
         self.read.set_last_length(last_length);
-        Ok(exchange)
+        Ok((exchange, client_ident, server_ident))
     }
 
     async fn send_auth_failed(&mut self) -> Result<(), Error> {
@@ -207,6 +259,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     }
 }
 
+/// Upper bound on host keys carried in a serialized [`SessionState`]
+///
+/// Comfortably above any realistic host key set, while bounding work done on a malformed count.
+const MAX_HOST_KEYS: u32 = 16;
+
 /// The state needed to resume an authenticated connection in a session process
 struct SessionState {
     addr: SocketAddr,
@@ -214,6 +271,15 @@ struct SessionState {
     write: SideState,
     /// Residual inbound bytes already drained from the socket (pipelined packets)
     read_buf: Vec<u8>,
+    /// Session identifier, fixed at the first key exchange (RFC 4253 section 7.2)
+    session_id: Digest,
+    /// The client's and our identification strings (`V_C`, `V_S`), which seed every exchange hash
+    client_ident: Vec<u8>,
+    server_ident: Vec<u8>,
+    /// PKCS#8 serializations of the host keys, so the session process can sign a rekey's
+    /// exchange hash. Note the tradeoff: when the session process drops to the authenticated
+    /// user (`Auth::System`), this places the host private key in that user's process.
+    host_keys_pkcs8: Vec<Zeroizing<Vec<u8>>>,
 }
 
 impl Encode for SessionState {
@@ -222,6 +288,13 @@ impl Encode for SessionState {
         self.read.encode(buf);
         self.write.encode(buf);
         self.read_buf.encode(buf);
+        self.session_id.as_ref().encode(buf);
+        self.client_ident.encode(buf);
+        self.server_ident.encode(buf);
+        (self.host_keys_pkcs8.len() as u32).encode(buf);
+        for pkcs8 in &self.host_keys_pkcs8 {
+            pkcs8.as_slice().encode(buf);
+        }
     }
 }
 
@@ -243,12 +316,52 @@ impl Decode<'_> for SessionState {
             next,
         } = <&[u8]>::decode(next)?;
 
+        let Decoded {
+            value: session_id,
+            next,
+        } = <&[u8]>::decode(next)?;
+        if session_id.len() > Digest::MAX_LEN {
+            return Err(ProtoError::InvalidPacket("session id too long"));
+        }
+
+        let Decoded {
+            value: client_ident,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        let Decoded {
+            value: server_ident,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        let Decoded {
+            value: host_key_count,
+            mut next,
+        } = u32::decode(next)?;
+
+        // A resumed session always carries at least one host key (rekeying needs one to sign)
+        // and never a large number; reject anything outside that range before iterating.
+        if host_key_count == 0 || host_key_count > MAX_HOST_KEYS {
+            return Err(ProtoError::InvalidPacket("invalid host key count"));
+        }
+
+        let mut host_keys_pkcs8 = Vec::with_capacity(host_key_count as usize);
+        for _ in 0..host_key_count {
+            let Decoded { value, next: rest } = <&[u8]>::decode(next)?;
+            host_keys_pkcs8.push(Zeroizing::new(value.to_vec()));
+            next = rest;
+        }
+
         Ok(Decoded {
             value: Self {
                 addr,
                 read,
                 write,
                 read_buf: read_buf.to_vec(),
+                session_id: Digest::new(session_id),
+                client_ident: client_ident.to_vec(),
+                server_ident: server_ident.to_vec(),
+                host_keys_pkcs8,
             },
             next,
         })

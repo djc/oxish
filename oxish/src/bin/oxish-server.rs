@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     let provider = DEFAULT_PROVIDER;
     let args = Args::parse();
-    let host_keys = if args.generate_host_key {
+    let (host_keys, host_keys_pkcs8) = if args.generate_host_key {
         match File::create_new(&args.host_key_file) {
             Ok(mut host_key_file) => {
                 let Ok((_, pkcs8)) = provider.generate_signing_key(&args.host_key_type) else {
@@ -44,9 +44,10 @@ async fn main() -> anyhow::Result<()> {
             Err(err) => return Err(err.into()),
         }
     } else {
+        // Keep the PKCS#8 bytes so each session process can sign a client-initiated rekey.
         let pkcs8 = Zeroizing::new(fs::read(&args.host_key_file)?);
         let result = provider.signing_key_from_pkcs8(&pkcs8);
-        HostKeys::try_from(vec![result?])?
+        (HostKeys::try_from(vec![result?])?, vec![pkcs8])
     };
 
     let session_bin = match args.session_bin {
@@ -81,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
     let server = Arc::new(Server::new(
         Auth::for_id(unsafe { libc::geteuid() }, provider)?,
         host_keys,
+        host_keys_pkcs8,
         session_bin,
         provider,
     )?);

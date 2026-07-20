@@ -263,12 +263,18 @@ pub struct EcdhKeyExchangeReply {
 }
 
 impl EcdhKeyExchangeReply {
+    /// Complete an ECDH key exchange and derive fresh key material
+    ///
+    /// `session_id` carries the session identifier from an earlier exchange when this is a
+    /// rekey; pass `None` for the initial exchange, where the exchange hash doubles as the
+    /// session identifier (RFC 4253 section 7.2).
     pub fn new(
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         negotiated: &Negotiated,
         exchange: HandshakeHash,
         host_keys: &HostKeys,
         provider: &dyn CryptoProvider,
+        session_id: Option<Digest>,
     ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
         let KeyExchangeOutput {
             shared_secret,
@@ -281,12 +287,12 @@ impl EcdhKeyExchangeReply {
             provider,
         )?;
 
-        // The first exchange hash is used as session id.
+        // The first exchange hash doubles as the session id; a rekey keeps the original one.
         let derivation = KeyDerivation {
             hash: provider.hash(&negotiated.key_exchange)?,
             shared_secret,
             exchange_hash: exchange_hash.clone(),
-            session_id: exchange_hash.clone(),
+            session_id: session_id.unwrap_or_else(|| exchange_hash.clone()),
         };
 
         Ok((

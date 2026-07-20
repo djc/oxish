@@ -4,7 +4,11 @@ use std::{
     os::fd::AsFd,
 };
 
-use proto::{Decode, Decoded, Disconnect, Encoder, MessageType, Pretty, ReadState, WriteState};
+use proto::{
+    Decode, Decoded, Disconnect, Encoder, ExtensionId, HostKeys, IncomingPacket, KeyExchange,
+    MessageType, Pretty, ProtoError, ReadState, WriteState,
+    crypto::{CryptoProvider, Digest, HandshakeBuffer},
+};
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -23,6 +27,46 @@ mod terminal;
 pub struct Session<T> {
     conn: Connection<T>,
     channels: Channels,
+    rekey: Rekey,
+}
+
+/// The state a session needs to honor a client-initiated rekey
+///
+/// A rekey reuses the identification strings and session identifier from the initial
+/// handshake, but performs a fresh key exchange (which requires a host key to sign the
+/// new exchange hash) and derives new key material from it.
+struct Rekey {
+    host_keys: HostKeys,
+    /// Session identifier, fixed at the first key exchange (RFC 4253 section 7.2)
+    session_id: Digest,
+    /// The client's identification string (`V_C`), fed into every exchange hash
+    client_ident: Vec<u8>,
+    /// Our identification string (`V_S`), fed into every exchange hash
+    server_ident: Vec<u8>,
+}
+
+impl Rekey {
+    /// Process the client's `SSH_MSG_KEXINIT` and negotiate the new algorithms
+    fn start(
+        &self,
+        packet: IncomingPacket<'_>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<KeyExchange, ProtoError> {
+        // Every exchange hash starts with `V_C` and `V_S` (RFC 4253 section 8).
+        let mut exchange = HandshakeBuffer::default();
+        exchange.prefixed(&self.client_ident);
+        exchange.prefixed(&self.server_ident);
+
+        // A rekey advertises no extensions: the strict key exchange and ext-info markers
+        // are only valid in the first key exchange (RFC 8308, OpenSSH strict kex).
+        KeyExchange::start(
+            packet,
+            exchange,
+            self.host_keys.algorithms().collect(),
+            core::iter::empty::<ExtensionId<'static>>(),
+            provider,
+        )
+    }
 }
 
 impl Session<TcpStream> {
@@ -111,11 +155,22 @@ impl Session<TcpStream> {
             read,
             write,
             read_buf,
+            session_id,
+            client_ident,
+            server_ident,
+            host_keys_pkcs8,
         } = state;
 
         let provider = DEFAULT_PROVIDER;
         let opener = provider.opening_key(read.counter, &read.source)?;
         let sealer = provider.sealing_key(write.counter, &write.source)?;
+
+        // Rebuild the host keys so the session can sign a client-initiated rekey.
+        let host_keys = host_keys_pkcs8
+            .iter()
+            .map(|pkcs8| provider.signing_key_from_pkcs8(pkcs8))
+            .collect::<Result<Vec<_>, _>>()?;
+        let host_keys = HostKeys::try_from(host_keys)?;
 
         let mut write_state = WriteState::new(provider.secure_random());
         write_state.sequence_number = write.sequence_number;
@@ -138,6 +193,12 @@ impl Session<TcpStream> {
                 write: write_state,
             },
             channels: Channels::default(),
+            rekey: Rekey {
+                host_keys,
+                session_id,
+                client_ident,
+                server_ident,
+            },
         })
     }
 }
@@ -161,6 +222,20 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                                 Err(error) => warn!(%error, "failed to read disconnect packet"),
                             }
                             return Ok(());
+                        }
+                        // The client can start a rekey at any point by sending a fresh
+                        // key exchange init (RFC 4253 section 9).
+                        MessageType::KeyExchangeInit => {
+                            let kx = self.rekey.start(packet, DEFAULT_PROVIDER)?;
+                            self.conn
+                                .rekey_exchange(
+                                    kx,
+                                    &self.rekey.host_keys,
+                                    self.rekey.session_id.clone(),
+                                    DEFAULT_PROVIDER,
+                                )
+                                .await?;
+                            continue;
                         }
                         _ => {}
                     }
