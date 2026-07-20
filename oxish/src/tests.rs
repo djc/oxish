@@ -2,7 +2,7 @@ use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
 use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
 use proto::{
-    Decode, Decoded, Encode, EncryptionAlgorithm, PublicKeyAlgorithm,
+    Decode, Decoded, Encode, EncryptionAlgorithm, HostKeys, PublicKeyAlgorithm,
     crypto::{CryptoProvider, KeySourceSide},
 };
 use tempfile::TempDir;
@@ -101,7 +101,7 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
 
     let server = Server::new(
         Auth::Fixed(user),
-        vec![host_key],
+        HostKeys::try_from(vec![host_key]).unwrap(),
         session_binary().await,
         provider,
     )

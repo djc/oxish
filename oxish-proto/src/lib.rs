@@ -21,8 +21,8 @@ mod io;
 pub use io::{Encoder, ReadState, WriteState};
 mod key_exchange;
 pub use key_exchange::{
-    EcdhKeyExchangeInit, EcdhKeyExchangeReply, KeyExchange, KeyExchangeInit, KeySourceSet,
-    Negotiated,
+    EcdhKeyExchangeInit, EcdhKeyExchangeReply, HostKeys, KeyExchange, KeyExchangeInit,
+    KeySourceSet, Negotiated,
 };
 mod named;
 use named::OutgoingNameList;
@@ -515,6 +515,8 @@ pub enum ProtoError {
     Incomplete(Option<usize>),
     #[error("invalid packet: {0}")]
     InvalidPacket(&'static str),
+    #[error("no host keys found or specified")]
+    NoHostKeys,
     #[error("no common {0} algorithms")]
     NoCommonAlgorithm(&'static str),
     #[error("unreachable code: {0}")]

@@ -10,7 +10,7 @@ use std::{
 use clap::Parser;
 use listenfd::ListenFd;
 use oxish::{Auth, DEFAULT_PROVIDER, Server};
-use proto::{Named, PublicKeyAlgorithm};
+use proto::{HostKeys, Named, PublicKeyAlgorithm};
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
         let Ok(host_key) = provider.signing_key_from_pkcs8(&fs::read(args.host_key_file)?) else {
             anyhow::bail!("failed to load host key");
         };
-        vec![host_key]
+        HostKeys::try_from(vec![host_key])?
     };
 
     let session_bin = match args.session_bin {
