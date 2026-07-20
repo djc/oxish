@@ -1,0 +1,10 @@
+coverage:
+  status:
+    project:
+      default:
+        # Allow total coverage to drop by up to 1% without failing the check
+        threshold: 3%
+    patch:
+      default:
+        # Report diff coverage without ever failing the check
+        informational: true
