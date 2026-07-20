@@ -211,53 +211,6 @@ struct SessionState {
     read_buf: Vec<u8>,
 }
 
-impl SessionState {
-    /// Construct a [`SessionState`] from a [`Connection`] and its [`KeySourceSet`]
-    ///
-    /// Fails if no keys were installed or the write buffer still holds unflushed bytes.
-    pub(crate) fn from_connection<T>(
-        conn: Connection<T>,
-        keys: KeySourceSet,
-    ) -> Result<(Self, T), Error> {
-        let Connection {
-            stream,
-            addr,
-            mut read,
-            write,
-        } = conn;
-
-        if !write.buffered().is_empty() {
-            return Err(Error::InvalidState("unflushed bytes in write buffer"));
-        }
-
-        // Compact the bytes of the last decoded packet, which are still at the front of
-        // the buffer (they are usually dropped at the start of the next `poll_packet()`).
-        if read.last_length > 0 {
-            read.buf.copy_within(read.last_length.., 0);
-            read.buf.truncate(read.buf.len() - read.last_length);
-            read.last_length = 0;
-        }
-
-        Ok((
-            Self {
-                addr,
-                read: SideState {
-                    source: keys.client_to_server,
-                    counter: read.opener.as_ref().map_or(0, |opener| opener.counter()),
-                    sequence_number: read.sequence_number,
-                },
-                write: SideState {
-                    source: keys.server_to_client,
-                    counter: write.sealer.as_ref().map_or(0, |sealer| sealer.counter()),
-                    sequence_number: write.sequence_number,
-                },
-                read_buf: read.buf,
-            },
-            stream,
-        ))
-    }
-}
-
 impl Encode for SessionState {
     fn encode(&self, buf: &mut Vec<u8>) {
         self.addr.to_string().as_bytes().encode(buf);

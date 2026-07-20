@@ -26,8 +26,11 @@ use tokio::{
 };
 use tracing::{debug, instrument};
 
-use crate::authentication::{Auth, User};
 use crate::{Connection, Error, SessionState};
+use crate::{
+    SideState,
+    authentication::{Auth, User},
+};
 
 pub struct Server {
     pub(crate) provider: &'static dyn CryptoProvider,
@@ -76,7 +79,40 @@ impl Server {
             .await
             .context("authentication failed")?;
 
-        let (state, stream) = SessionState::from_connection(conn, keys)?;
+        let Connection {
+            stream,
+            addr,
+            mut read,
+            write,
+        } = conn;
+
+        if !write.buffered().is_empty() {
+            return Err(Error::InvalidState("unflushed bytes in write buffer").into());
+        }
+
+        // Compact the bytes of the last decoded packet, which are still at the front of
+        // the buffer (they are usually dropped at the start of the next `poll_packet()`).
+        if read.last_length > 0 {
+            read.buf.copy_within(read.last_length.., 0);
+            read.buf.truncate(read.buf.len() - read.last_length);
+            read.last_length = 0;
+        }
+
+        let state = SessionState {
+            addr,
+            read: SideState {
+                source: keys.client_to_server,
+                counter: read.opener.as_ref().map_or(0, |opener| opener.counter()),
+                sequence_number: read.sequence_number,
+            },
+            write: SideState {
+                source: keys.server_to_client,
+                counter: write.sealer.as_ref().map_or(0, |sealer| sealer.counter()),
+                sequence_number: write.sequence_number,
+            },
+            read_buf: read.buf,
+        };
+
         let mut child = self
             .spawn(state, stream, user)
             .await
