@@ -1,4 +1,6 @@
 use core::{mem::MaybeUninit, net::SocketAddr, time::Duration};
+#[cfg(coverage)]
+use std::env;
 use std::{
     ffi::CString,
     io::{self, IoSlice, IoSliceMut},
@@ -147,6 +149,11 @@ impl Server {
             .stdin(Stdio::from(OwnedFd::from(child_sock)))
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
+
+        #[cfg(coverage)]
+        if let Some(file) = env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", file);
+        }
 
         if let Auth::System = self.auth {
             let home = CString::new(user.home_dir.as_os_str().as_bytes())
