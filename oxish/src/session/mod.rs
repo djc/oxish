@@ -18,7 +18,7 @@ use std::{
 use proto::{
     Decode, Decoded, Disconnect, Encode, Encoder, EncryptionAlgorithm, KeySourceSet, MessageType,
     Pretty, ProtoError, ReadState, WriteState,
-    crypto::{CryptoProvider, KeyLengths, KeySourceSide},
+    crypto::{KeyLengths, KeySourceSide},
 };
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
@@ -48,11 +48,37 @@ impl Session<TcpStream> {
         let (state, fd) = SessionState::from_fd(source)?;
         debug!(?state, "received session state");
 
+        let SessionState {
+            addr,
+            read,
+            write,
+            read_buf,
+        } = state;
+
+        let provider = DEFAULT_PROVIDER;
+        let opener = provider.opening_key(read.counter, &read.source)?;
+        let sealer = provider.sealing_key(write.counter, &write.source)?;
+
+        let mut write_state = WriteState::new(provider.secure_random());
+        write_state.sequence_number = write.sequence_number;
+        write_state.sealer = Some(sealer);
+
         let stream = std::net::TcpStream::from(fd);
         stream.set_nonblocking(true)?;
+        let stream = TcpStream::from_std(stream)?;
 
         Ok(Self {
-            conn: state.into_connection(TcpStream::from_std(stream)?, DEFAULT_PROVIDER)?,
+            conn: Connection {
+                stream,
+                addr,
+                read: ReadState {
+                    buf: read_buf,
+                    last_length: 0,
+                    sequence_number: read.sequence_number,
+                    opener: Some(opener),
+                },
+                write: write_state,
+            },
             channels: Channels::default(),
         })
     }
@@ -231,7 +257,10 @@ impl SessionState {
     /// Construct a [`SessionState`] from a [`Connection`] and its [`KeySourceSet`]
     ///
     /// Fails if no keys were installed or the write buffer still holds unflushed bytes.
-    pub(crate) fn from_connection<T>(conn: Connection<T>, keys: KeySourceSet) -> Result<(Self, T), Error> {
+    pub(crate) fn from_connection<T>(
+        conn: Connection<T>,
+        keys: KeySourceSet,
+    ) -> Result<(Self, T), Error> {
         let Connection {
             stream,
             addr,
@@ -413,39 +442,6 @@ impl SessionState {
             )),
             _ => Ok(child),
         }
-    }
-
-    /// Rebuild an authenticated connection from a decoded [`SessionState`]
-    fn into_connection<T>(
-        self,
-        stream: T,
-        provider: &dyn CryptoProvider,
-    ) -> Result<Connection<T>, Error> {
-        let Self {
-            addr: peer_addr,
-            read,
-            write,
-            read_buf,
-        } = self;
-
-        let opener = provider.opening_key(read.counter, &read.source)?;
-        let sealer = provider.sealing_key(write.counter, &write.source)?;
-
-        let mut write_state = WriteState::new(provider.secure_random());
-        write_state.sequence_number = write.sequence_number;
-        write_state.sealer = Some(sealer);
-
-        Ok(Connection {
-            stream,
-            addr: peer_addr,
-            read: ReadState {
-                buf: read_buf,
-                last_length: 0,
-                sequence_number: read.sequence_number,
-                opener: Some(opener),
-            },
-            write: write_state,
-        })
     }
 }
 
