@@ -1,5 +1,5 @@
 use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
-use std::{fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
+use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
 use proto::{
     Decode, Decoded, Encode, EncryptionAlgorithm, HostKeys, PublicKeyAlgorithm,
@@ -260,12 +260,15 @@ fn session_state_round_trip() {
 /// binary here (a no-op when fresh). Unit tests run from `target/<profile>/deps/`, while
 /// cargo places the binary in `target/<profile>/`.
 async fn session_binary() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
+    let exe = env::current_exe().unwrap();
     let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
 
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command.args(["build", "-p", "oxish", "--bin", "oxish-session"]);
+    command
+        .arg("--target-dir")
+        .arg(profile_dir.parent().unwrap());
     if profile_dir
         .file_name()
         .is_some_and(|name| name == "release")
