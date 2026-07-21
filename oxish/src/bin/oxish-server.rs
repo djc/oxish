@@ -7,9 +7,9 @@ use std::{
     sync::Arc,
 };
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use listenfd::ListenFd;
-use oxish::{Auth, DEFAULT_PROVIDER, Server};
+use oxish::{Auth, Config, DEFAULT_PROVIDER, Server};
 use proto::{HostKeys, Named, PublicKeyAlgorithm};
 use tokio::net::TcpListener;
 use tracing::info;
@@ -78,12 +78,21 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(addr = %listener.local_addr()?, "listening for connections");
 
-    Arc::new(Server::new(
-        Auth::for_id(unsafe { libc::geteuid() }, provider)?,
-        host_keys,
-        session_bin,
-        provider,
-    )?)
+    let mut config = Config::default();
+    #[cfg(debug_assertions)]
+    {
+        config.spawn = args.spawn;
+    }
+
+    Arc::new(
+        Server::new(
+            Auth::for_id(unsafe { libc::geteuid() }, provider)?,
+            host_keys,
+            session_bin,
+            provider,
+        )?
+        .with_config(config),
+    )
     .run(listener)
     .await
 }
@@ -101,6 +110,9 @@ struct Args {
     /// Path to the `oxish-session` binary (defaults to a sibling of this executable)
     #[clap(long)]
     session_bin: Option<PathBuf>,
+    #[cfg(debug_assertions)]
+    #[clap(long, action = ArgAction::Set, default_value_t = true)]
+    spawn: bool,
 }
 
 fn host_key_type(name: &str) -> Result<PublicKeyAlgorithm<'static>, String> {

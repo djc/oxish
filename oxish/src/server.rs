@@ -31,7 +31,7 @@ use tokio::{
 use tracing::{debug, instrument, warn};
 use zeroize::Zeroizing;
 
-use crate::{Connection, Error, SessionState};
+use crate::{Connection, Error, Session, SessionState};
 use crate::{
     SideState,
     authentication::{Auth, User},
@@ -43,6 +43,7 @@ pub struct Server {
     pub(crate) session: PathBuf,
     pub(crate) auth: Auth,
     pub(crate) authenticating: Semaphore,
+    config: Config,
 }
 
 impl Server {
@@ -58,7 +59,13 @@ impl Server {
             session,
             auth,
             authenticating: Semaphore::new(32),
+            config: Config::default(),
         })
+    }
+
+    pub fn with_config(mut self, config: Config) -> Self {
+        self.config = config;
+        self
     }
 
     pub async fn run(self: &Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
@@ -117,6 +124,11 @@ impl Server {
             .context("authentication failed")?;
 
         drop(authenticating);
+        if !self.config.spawn {
+            let session = Session::from(conn);
+            return session.run().await.context("session failed");
+        }
+
         let Connection {
             stream,
             addr,
@@ -310,6 +322,18 @@ impl Server {
             )),
             _ => Ok(child),
         }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct Config {
+    pub spawn: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { spawn: true }
     }
 }
 
