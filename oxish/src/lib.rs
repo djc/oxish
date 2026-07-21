@@ -42,7 +42,7 @@ pub use authentication::{Auth, User};
 mod session;
 pub use session::Session;
 mod server;
-pub use server::Server;
+pub use server::{Config, Server};
 
 #[cfg(test)]
 mod tests;

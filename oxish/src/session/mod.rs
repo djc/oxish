@@ -200,3 +200,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
         }
     }
 }
+
+impl<T> From<Connection<T>> for Session<T> {
+    fn from(conn: Connection<T>) -> Self {
+        Self {
+            conn,
+            channels: Channels::default(),
+        }
+    }
+}
