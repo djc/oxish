@@ -12,7 +12,7 @@ use listenfd::ListenFd;
 use oxish::{Auth, DEFAULT_PROVIDER, Server};
 use proto::{HostKeys, Named, PublicKeyAlgorithm};
 use tokio::net::TcpListener;
-use tracing::{debug, info, warn};
+use tracing::info;
 use zeroize::Zeroizing;
 
 #[tokio::main]
@@ -78,32 +78,14 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(addr = %listener.local_addr()?, "listening for connections");
 
-    let server = Arc::new(Server::new(
+    Arc::new(Server::new(
         Auth::for_id(unsafe { libc::geteuid() }, provider)?,
         host_keys,
         session_bin,
         provider,
-    )?);
-
-    loop {
-        let (stream, addr) = match listener.accept().await {
-            Ok((stream, addr)) => (stream, addr),
-            Err(error) => {
-                warn!(%error, "failed to accept connection");
-                continue;
-            }
-        };
-
-        let server = server.clone();
-        tokio::spawn(async move {
-            debug!(%addr, "accepted connection");
-            if let Err(err) = stream.set_nodelay(true) {
-                warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
-            }
-
-            let _ = server.accept(stream, addr).await;
-        });
-    }
+    )?)
+    .run(listener)
+    .await
 }
 
 #[derive(Debug, Parser)]
