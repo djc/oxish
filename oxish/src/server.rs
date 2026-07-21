@@ -24,9 +24,10 @@ use rustix::net::{
 use tokio::{
     net::TcpStream,
     process::{Child, Command},
+    sync::{Semaphore, TryAcquireError},
     time::timeout,
 };
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 use zeroize::Zeroizing;
 
 use crate::{Connection, Error, SessionState};
@@ -40,6 +41,7 @@ pub struct Server {
     pub(crate) host_keys: HostKeys,
     pub(crate) session: PathBuf,
     pub(crate) auth: Auth,
+    pub(crate) authenticating: Semaphore,
 }
 
 impl Server {
@@ -54,11 +56,24 @@ impl Server {
             host_keys,
             session,
             auth,
+            authenticating: Semaphore::new(32),
         })
     }
 
     #[instrument(name = "handshake", skip(self, stream, addr), fields(addr = %addr))]
     pub async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> anyhow::Result<()> {
+        let authenticating = match self.authenticating.try_acquire() {
+            Ok(permit) => permit,
+            Err(TryAcquireError::NoPermits) => {
+                warn!(%addr, "too many concurrent authentications; rejecting connection");
+                return Err(anyhow::anyhow!("too many concurrent authentications"));
+            }
+            Err(TryAcquireError::Closed) => {
+                warn!(%addr, "server is shutting down; rejecting connection");
+                return Err(anyhow::anyhow!("server is shutting down"));
+            }
+        };
+
         let mut conn = Connection {
             stream,
             addr,
@@ -78,6 +93,7 @@ impl Server {
             .await
             .context("authentication failed")?;
 
+        drop(authenticating);
         let Connection {
             stream,
             addr,
