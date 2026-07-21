@@ -523,10 +523,9 @@ impl Encode for ChannelRequestSuccess {
     }
 }
 
-#[expect(dead_code)]
 #[derive(Debug)]
-pub(crate) struct ChannelRequestFailure {
-    recipient_channel: u32,
+pub struct ChannelRequestFailure {
+    pub recipient_channel: u32,
 }
 
 impl Encode for ChannelRequestFailure {
