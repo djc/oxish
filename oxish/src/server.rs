@@ -39,6 +39,9 @@ use crate::{
 pub struct Server {
     pub(crate) provider: &'static dyn CryptoProvider,
     pub(crate) host_keys: HostKeys,
+    /// PKCS#8 serializations of `host_keys`, handed to each session process so it can sign a
+    /// client-initiated rekey's exchange hash (see [`crate::SessionState`] for the tradeoff)
+    pub(crate) host_keys_pkcs8: Vec<Zeroizing<Vec<u8>>>,
     pub(crate) session: PathBuf,
     pub(crate) auth: Auth,
     pub(crate) authenticating: Semaphore,
@@ -48,12 +51,14 @@ impl Server {
     pub fn new(
         auth: Auth,
         host_keys: HostKeys,
+        host_keys_pkcs8: Vec<Zeroizing<Vec<u8>>>,
         session: PathBuf,
         provider: &'static dyn CryptoProvider,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             provider,
             host_keys,
+            host_keys_pkcs8,
             session,
             auth,
             authenticating: Semaphore::new(32),
@@ -82,14 +87,15 @@ impl Server {
         };
 
         let future = conn.exchange_keys(&self.host_keys, self.provider);
-        let (session_id, keys) = match timeout(Duration::from_secs(30), future).await {
-            Ok(result) => result.context("key exchange failed")?,
-            Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
-        };
+        let (session_id, keys, client_ident, server_ident) =
+            match timeout(Duration::from_secs(30), future).await {
+                Ok(result) => result.context("key exchange failed")?,
+                Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
+            };
 
         let user = self
             .auth
-            .authenticate(session_id, &mut conn, self.provider)
+            .authenticate(session_id.clone(), &mut conn, self.provider)
             .await
             .context("authentication failed")?;
 
@@ -126,6 +132,10 @@ impl Server {
                 sequence_number: write.sequence_number,
             },
             read_buf: mem::take(&mut read.buf),
+            session_id,
+            client_ident,
+            server_ident,
+            host_keys_pkcs8: self.host_keys_pkcs8.clone(),
         };
 
         let mut child = self

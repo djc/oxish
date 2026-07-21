@@ -3,10 +3,11 @@ use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::On
 
 use proto::{
     Decode, Decoded, Encode, EncryptionAlgorithm, HostKeys, PublicKeyAlgorithm,
-    crypto::{CryptoProvider, KeySourceSide},
+    crypto::{CryptoProvider, Digest, KeySourceSide},
 };
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
+use zeroize::Zeroizing;
 
 use crate::{
     SessionState, SideState,
@@ -21,6 +22,7 @@ async fn handshake_ecdsa_aws_lc() {
     handshake(
         aws_lc::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        false,
     )
     .await;
 }
@@ -32,6 +34,7 @@ async fn handshake_ecdsa_graviola() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        false,
     )
     .await;
 }
@@ -40,14 +43,19 @@ async fn handshake_ecdsa_graviola() {
 #[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ed25519_aws_lc() {
-    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519, false).await;
 }
 
 /// Exercise an ssh-ed25519 client key against the graviola provider
 #[cfg(feature = "graviola")]
 #[tokio::test]
 async fn handshake_ed25519_graviola() {
-    handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+    handshake(
+        graviola::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::Ed25519,
+        false,
+    )
+    .await;
 }
 
 #[cfg(feature = "graviola")]
@@ -56,11 +64,35 @@ async fn handshake_ecdsa_graviola_split() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        false,
     )
     .await;
 }
 
-async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAlgorithm<'_>) {
+/// Exercise a client-initiated rekey against the aws-lc-rs provider
+#[cfg(feature = "aws-lc")]
+#[tokio::test]
+async fn rekey_aws_lc() {
+    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519, true).await;
+}
+
+/// Exercise a client-initiated rekey against the graviola provider
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn rekey_graviola() {
+    handshake(
+        graviola::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::Ed25519,
+        true,
+    )
+    .await;
+}
+
+async fn handshake(
+    provider: &'static dyn CryptoProvider,
+    algorithm: PublicKeyAlgorithm<'_>,
+    rekey: bool,
+) {
     subscribe();
 
     let dir = TempDir::new().unwrap();
@@ -94,7 +126,7 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
     .unwrap();
 
     // Start the server on a loopback port and serve exactly one connection.
-    let (host_key, _) = provider
+    let (host_key, host_key_pkcs8) = provider
         .generate_signing_key(&algorithm)
         .expect("failed to generate host key");
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -103,6 +135,7 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
     let server = Server::new(
         Auth::Fixed(user),
         HostKeys::try_from(vec![host_key]).unwrap(),
+        vec![Zeroizing::new(host_key_pkcs8)],
         session_binary().await,
         provider,
     )
@@ -114,8 +147,8 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         server.accept(stream, peer).await
     });
 
-    let mut child = Command::new("ssh")
-        .arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
+    let mut ssh = Command::new("ssh");
+    ssh.arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
         .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
         .args(["-p", &addr.port().to_string()]) // port to connect to
         .arg("-i") // identity (private key) file to authenticate with
@@ -124,7 +157,17 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         .args(["-o", "UserKnownHostsFile=/dev/null"])
         .args(["-o", "GlobalKnownHostsFile=/dev/null"]) // ignore system known hosts
         .args(["-o", "IdentitiesOnly=yes"]) // don't offer agent keys
-        .args(["-o", "LogLevel=DEBUG3"]) // verbose client diagnostics, captured on stderr for failure triage
+        .args(["-o", "LogLevel=DEBUG3"]); // verbose client diagnostics, captured on stderr for failure triage
+
+    // A short time-based rekey interval makes the client send a fresh SSH_MSG_KEXINIT every
+    // couple of seconds, exercising client-initiated rekeying. A time trigger keeps the
+    // session near-idle, avoiding the data volume (and channel window management) a
+    // byte-based trigger would need.
+    if rekey {
+        ssh.args(["-o", "RekeyLimit=default 2"]);
+    }
+
+    let mut child = ssh
         .arg(format!("{USER}@{}", addr.ip()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -133,11 +176,22 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         .spawn()
         .expect("failed to spawn ssh");
 
+    // In the rekey scenario, keep the session open long enough for several rekeys before the
+    // sentinel; it only arrives if the session survived them.
+    let command = match rekey {
+        true => b"sleep 10\necho OXISH-$((6*7))\nexit\n".to_vec(),
+        false => COMMAND.to_vec(),
+    };
+
     let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(COMMAND).await.unwrap();
+    stdin.write_all(&command).await.unwrap();
     drop(stdin); // close stdin so the session ends after `exit`
 
-    let output = timeout(Duration::from_secs(10), child.wait_with_output())
+    let client_timeout = match rekey {
+        true => Duration::from_secs(30),
+        false => Duration::from_secs(10),
+    };
+    let output = timeout(client_timeout, child.wait_with_output())
         .await
         .expect("ssh client timed out")
         .expect("failed to wait for ssh");
@@ -167,6 +221,19 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         stdout_len = output.stdout.len(),
         stderr_len = output.stderr.len(),
     );
+
+    // The client logs "SSH2_MSG_KEXINIT received" once per key exchange it observes from the
+    // server: once for the initial handshake, then once for each rekey the server answered.
+    // More than one proves the server handled a client-initiated rekey.
+    if rekey {
+        let key_exchanges = stderr.matches("SSH2_MSG_KEXINIT received").count();
+        assert!(
+            key_exchanges >= 2,
+            "expected at least one rekey, saw {key_exchanges} key exchange(s).\n\
+             --- stderr ({stderr_len} bytes) ---\n{stderr}",
+            stderr_len = output.stderr.len(),
+        );
+    }
 }
 
 #[tokio::test]
@@ -224,6 +291,10 @@ fn session_state_round_trip() {
             sequence_number: 23,
         },
         read_buf: b"pipelined".to_vec(),
+        session_id: Digest::new(&[9; 32]),
+        client_ident: b"SSH-2.0-client".to_vec(),
+        server_ident: b"SSH-2.0-OxiSH".to_vec(),
+        host_keys_pkcs8: vec![Zeroizing::new(vec![5; 48]), Zeroizing::new(vec![6; 64])],
     };
 
     let mut buf = Vec::new();
@@ -237,6 +308,10 @@ fn session_state_round_trip() {
 
     assert_eq!(decoded.addr, state.addr);
     assert_eq!(decoded.read_buf, state.read_buf);
+    assert_eq!(decoded.session_id.as_ref(), state.session_id.as_ref());
+    assert_eq!(decoded.client_ident, state.client_ident);
+    assert_eq!(decoded.server_ident, state.server_ident);
+    assert_eq!(decoded.host_keys_pkcs8, state.host_keys_pkcs8);
     assert_eq!(
         decoded.read.source.algorithm,
         EncryptionAlgorithm::Aes128Gcm
