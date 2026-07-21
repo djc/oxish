@@ -12,8 +12,9 @@ use std::{
 
 use proto::{
     ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
-    ChannelOpenFailure, ChannelRequest, ChannelRequestSuccess, ChannelRequestType, ChannelType,
-    Encode, Encoder, IncomingPacket, MessageType, ProtoError, PtyReq,
+    ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
+    ChannelRequestType, ChannelType, Encode, Encoder, IncomingPacket, MessageType, ProtoError,
+    PtyReq,
 };
 use tracing::{debug, warn};
 
@@ -74,9 +75,19 @@ impl Channels {
                 channel.terminal = Some(TerminalState::Requested(pty_req.into_owned()));
             }
             ChannelRequestType::Env(env) => {
-                channel
-                    .env
-                    .push((env.name.to_owned(), env.value.to_owned()));
+                const ALLOW_ENV: &[&str] = &["TZ", "LANG"];
+                match ALLOW_ENV.contains(&env.name) || env.name.starts_with("LC_") {
+                    true if channel.env.len() < 32 => channel
+                        .env
+                        .push((env.name.to_owned(), env.value.to_owned())),
+                    _ => {
+                        debug!(name = env.name, "ignoring environment variable request");
+                        if request.want_reply {
+                            encoder.enqueue(&channel.failure())?;
+                        }
+                        return Ok(());
+                    }
+                }
             }
             ChannelRequestType::Shell => {
                 let Some(TerminalState::Requested(pty_req)) = channel.terminal.take() else {
@@ -260,6 +271,12 @@ impl Channel {
 
     fn success(&self) -> ChannelRequestSuccess {
         ChannelRequestSuccess {
+            recipient_channel: self.remote_id,
+        }
+    }
+
+    fn failure(&self) -> ChannelRequestFailure {
+        ChannelRequestFailure {
             recipient_channel: self.remote_id,
         }
     }

@@ -17,6 +17,7 @@ use std::{
 };
 
 use bitflags::Flags;
+use proto::{Mode, PtyReq, WindowChange};
 use rustix::{
     fs::OFlags,
     io::{read, write},
@@ -33,8 +34,6 @@ use tokio::{
     process::{Child, Command},
 };
 use tracing::{debug, trace};
-
-use proto::{Mode, PtyReq, WindowChange};
 
 pub(crate) struct Terminal {
     pty: AsyncFd<OwnedFd>,
