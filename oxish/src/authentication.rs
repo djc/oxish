@@ -107,7 +107,20 @@ impl Auth {
         conn.send(&service_accept).await?;
 
         let mut cached_user = None::<User>;
+        let mut attempts = 6;
         loop {
+            attempts -= 1;
+            if attempts == 0 {
+                error!("too many authentication attempts");
+                let disconnect = Disconnect {
+                    reason_code: DisconnectReason::ProtocolError,
+                    description: "too many authentication attempts",
+                };
+
+                conn.send(&disconnect).await?;
+                return Err(Error::InvalidState("too many authentication attempts"));
+            }
+
             let packet = receive(&mut conn.stream, &mut conn.read).await?;
             if matches!(
                 packet.message_type,
