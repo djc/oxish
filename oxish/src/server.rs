@@ -14,6 +14,7 @@ use std::{
     },
     path::PathBuf,
     process::Stdio,
+    sync::Arc,
 };
 
 use anyhow::Context as _;
@@ -22,7 +23,7 @@ use rustix::net::{
     RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
 };
 use tokio::{
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     process::{Child, Command},
     sync::{Semaphore, TryAcquireError},
     time::timeout,
@@ -60,8 +61,30 @@ impl Server {
         })
     }
 
+    pub async fn run(self: &Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
+        loop {
+            let (stream, addr) = match listener.accept().await {
+                Ok((stream, addr)) => (stream, addr),
+                Err(error) => {
+                    warn!(%error, "failed to accept connection");
+                    continue;
+                }
+            };
+
+            let server = self.clone();
+            tokio::spawn(async move {
+                debug!(%addr, "accepted connection");
+                if let Err(err) = stream.set_nodelay(true) {
+                    warn!(%addr, %err, "failed to set TCP_NODELAY on connection");
+                }
+
+                let _ = server.accept(stream, addr).await;
+            });
+        }
+    }
+
     #[instrument(name = "handshake", skip(self, stream, addr), fields(addr = %addr))]
-    pub async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> anyhow::Result<()> {
+    pub(crate) async fn accept(&self, stream: TcpStream, addr: SocketAddr) -> anyhow::Result<()> {
         let authenticating = match self.authenticating.try_acquire() {
             Ok(permit) => permit,
             Err(TryAcquireError::NoPermits) => {
