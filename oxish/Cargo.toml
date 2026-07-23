@@ -21,6 +21,7 @@ graviola = { package = "oxish-graviola", version = "0.1.0", path = "../oxish-gra
 libc = { workspace = true }
 listenfd = { workspace = true }
 proto = { package = "oxish-proto", version = "0.1", path = "../oxish-proto" }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -31,8 +32,6 @@ zeroize = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true }
 
-[dev-dependencies]
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

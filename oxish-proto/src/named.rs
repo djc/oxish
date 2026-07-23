@@ -100,6 +100,10 @@ impl<'a> Named<'a> for ExtensionName<'a> {
 #[derive(Debug, PartialEq)]
 pub enum ChannelType<'a> {
     Session,
+    /// auth-agent@openssh.com, used for agent forwarding connections
+    ///
+    /// <https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.agent>
+    AuthAgent,
     Unknown(&'a str),
 }
 
@@ -107,6 +111,7 @@ impl<'a> Named<'a> for ChannelType<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
             "session" => Self::Session,
+            "auth-agent@openssh.com" => Self::AuthAgent,
             _ => Self::Unknown(name),
         }
     }
@@ -114,6 +119,7 @@ impl<'a> Named<'a> for ChannelType<'a> {
     fn name(&self) -> &str {
         match self {
             Self::Session => "session",
+            Self::AuthAgent => "auth-agent@openssh.com",
             Self::Unknown(name) => name,
         }
     }
