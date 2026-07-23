@@ -46,7 +46,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
         } = u32::decode(next)?;
 
         match r#type {
-            ChannelType::Session => match next.is_empty() {
+            ChannelType::Session | ChannelType::AuthAgent => match next.is_empty() {
                 true => {}
                 false => {
                     return Err(ProtoError::InvalidPacket(
@@ -63,6 +63,16 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
             initial_window_size,
             maximum_packet_size,
         })
+    }
+}
+
+impl Encode for ChannelOpen<'_> {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelOpen.encode(buffer);
+        self.r#type.encode(buffer);
+        self.sender_channel.encode(buffer);
+        self.initial_window_size.encode(buffer);
+        self.maximum_packet_size.encode(buffer);
     }
 }
 
@@ -84,11 +94,56 @@ impl Encode for ChannelOpenConfirmation {
     }
 }
 
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpenConfirmation {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelOpenConfirmation {
+            return Err(ProtoError::InvalidPacket(
+                "expected channel open confirmation packet",
+            ));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        let Decoded {
+            value: sender_channel,
+            next,
+        } = u32::decode(next)?;
+
+        let Decoded {
+            value: initial_window_size,
+            next,
+        } = u32::decode(next)?;
+
+        let Decoded {
+            value: maximum_packet_size,
+            next,
+        } = u32::decode(next)?;
+
+        // Channel types opened by the server carry no type-specific data
+        match next.is_empty() {
+            true => Ok(Self {
+                recipient_channel,
+                sender_channel,
+                initial_window_size,
+                maximum_packet_size,
+            }),
+            false => Err(ProtoError::InvalidPacket(
+                "extra data in channel open confirmation packet",
+            )),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ChannelOpenFailure<'a> {
-    recipient_channel: u32,
-    reason_code: ChannelOpenFailureReason,
-    description: &'a str,
+    pub recipient_channel: u32,
+    pub reason_code: ChannelOpenFailureReason,
+    pub description: &'a str,
 }
 
 impl ChannelOpenFailure<'static> {
@@ -119,14 +174,77 @@ impl Encode for ChannelOpenFailure<'_> {
     }
 }
 
-#[expect(dead_code)]
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpenFailure<'a> {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelOpenFailure {
+            return Err(ProtoError::InvalidPacket(
+                "expected channel open failure packet",
+            ));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        let Decoded {
+            value: reason_code,
+            next,
+        } = u32::decode(next)?;
+
+        let Decoded {
+            value: description,
+            next,
+        } = <&[u8]>::decode(next)?;
+        let description = str::from_utf8(description).map_err(|_| {
+            ProtoError::InvalidPacket("invalid UTF-8 in channel open failure description")
+        })?;
+
+        let Decoded {
+            value: _, // language tag
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        match next.is_empty() {
+            true => Ok(Self {
+                recipient_channel,
+                reason_code: ChannelOpenFailureReason::try_from(reason_code)?,
+                description,
+            }),
+            false => Err(ProtoError::InvalidPacket(
+                "extra data in channel open failure packet",
+            )),
+        }
+    }
+}
+
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
-enum ChannelOpenFailureReason {
+pub enum ChannelOpenFailureReason {
     AdministrativelyProhibited = 1,
     ConnectFailed = 2,
     UnknownChannelType = 3,
     ResourceShortage = 4,
+}
+
+impl TryFrom<u32> for ChannelOpenFailureReason {
+    type Error = ProtoError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(match value {
+            1 => Self::AdministrativelyProhibited,
+            2 => Self::ConnectFailed,
+            3 => Self::UnknownChannelType,
+            4 => Self::ResourceShortage,
+            _ => {
+                return Err(ProtoError::InvalidPacket(
+                    "unknown channel open failure reason code",
+                ));
+            }
+        })
+    }
 }
 
 impl Encode for ChannelOpenFailureReason {
@@ -196,6 +314,14 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     ));
                 }
             },
+            b"auth-agent-req@openssh.com" => match next.is_empty() {
+                true => ChannelRequestType::AuthAgentReq,
+                false => {
+                    return Err(ProtoError::InvalidPacket(
+                        "extra data in auth-agent-req channel request",
+                    ));
+                }
+            },
             b"window-change" => {
                 let Decoded { value, next } = WindowChange::decode(next)?;
                 match next.is_empty() {
@@ -231,6 +357,10 @@ pub enum ChannelRequestType<'a> {
     Env(Env<'a>),
     Shell,
     WindowChange(WindowChange),
+    /// auth-agent-req@openssh.com, requests agent forwarding for the session
+    ///
+    /// <https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.agent>
+    AuthAgentReq,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -581,6 +711,44 @@ impl fmt::Debug for ChannelData<'_> {
             .field("recipient_channel", &self.recipient_channel)
             .field("data", &format_args!("[{} bytes]", self.data.len()))
             .finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct ChannelWindowAdjust {
+    pub recipient_channel: u32,
+    pub bytes_to_add: u32,
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelWindowAdjust {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelWindowAdjust {
+            return Err(ProtoError::InvalidPacket(
+                "expected channel window adjust packet",
+            ));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        let Decoded {
+            value: bytes_to_add,
+            next,
+        } = u32::decode(next)?;
+
+        match next.is_empty() {
+            true => Ok(Self {
+                recipient_channel,
+                bytes_to_add,
+            }),
+            false => Err(ProtoError::InvalidPacket(
+                "extra data in channel window adjust packet",
+            )),
+        }
     }
 }
 

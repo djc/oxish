@@ -7,7 +7,7 @@ use std::{
 use proto::{Decode, Decoded, Disconnect, Encoder, MessageType, Pretty, ReadState, WriteState};
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
 };
 use tracing::{debug, info, instrument, trace, warn};
@@ -15,8 +15,9 @@ use zeroize::Zeroizing;
 
 use crate::{Connection, DEFAULT_PROVIDER, Error, SessionState, receive, send};
 
+mod agent;
 mod connections;
-use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
+use connections::{ChannelEvent, Channels, ChannelsFuture, DataTarget, IncomingChannelMessage};
 mod terminal;
 
 /// A single SSH connection
@@ -170,27 +171,58 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                     let mut encoder = Encoder::new(&mut self.conn.write);
                     match channel_message {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
+                        IncomingChannelMessage::OpenConfirmation(confirmation) => {
+                            self.channels.confirmation(&confirmation).map_err(Into::into)
+                        }
+                        IncomingChannelMessage::OpenFailure(failure) => {
+                            self.channels.open_failure(&failure).map_err(Into::into)
+                        }
                         IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),
+                        IncomingChannelMessage::WindowAdjust(adjust) => {
+                            self.channels.window_adjust(&adjust).map_err(Into::into)
+                        }
                         IncomingChannelMessage::Data(data) => match self.channels.data(&data) {
-                            Ok(Some((session, data))) => match session.write(data).await {
+                            Ok(Some((DataTarget::Terminal(terminal), data))) => match terminal.write(data).await {
+                                Ok(_) => Ok(()),
+                                Err(error) => Err(error.into()),
+                            },
+                            Ok(Some((DataTarget::Agent(stream), data))) => match stream.write_all(data).await {
                                 Ok(_) => Ok(()),
                                 Err(error) => Err(error.into()),
                             },
                             Ok(None) => Ok(()),
                             Err(error) => Err(error.into()),
                         }
-                        IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
+                        IncomingChannelMessage::Eof(eof) => match self.channels.eof(&eof) {
+                            Ok(Some(stream)) => {
+                                // The client is done sending; shut down the write side of the
+                                // agent connection so the local client sees end-of-file.
+                                if let Err(error) = stream.shutdown().await {
+                                    debug!(%error, "failed to shut down agent connection");
+                                }
+                                Ok(())
+                            }
+                            Ok(None) => Ok(()),
+                            Err(error) => Err(error.into()),
+                        }
                         IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut encoder),
                     }?;
 
                     future::poll_fn(|cx| send(&mut self.conn.stream, encoder.write, cx))
                         .await?;
                 }
-                result = TerminalsFuture::new(self.channels.channels_mut()) => {
+                result = ChannelsFuture::new(self.channels.channels_mut()) => {
                     match result {
-                        Ok(Some(outgoing)) => {
+                        Ok(Some(ChannelEvent::Outgoing(outgoing))) => {
                             debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
                             self.conn.send(&outgoing).await?;
+                        }
+                        Ok(Some(ChannelEvent::AgentConnection(stream))) => {
+                            debug!("accepted agent connection; opening channel to client");
+                            let mut encoder = Encoder::new(&mut self.conn.write);
+                            self.channels.agent_connection(stream, &mut encoder)?;
+                            future::poll_fn(|cx| send(&mut self.conn.stream, encoder.write, cx))
+                                .await?;
                         }
                         Ok(None) => {}
                         Err(error) => return Err(error),
