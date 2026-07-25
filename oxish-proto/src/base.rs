@@ -166,7 +166,10 @@ pub struct PacketLength(pub u32);
 impl Decode<'_> for PacketLength {
     fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
         let Decoded { value, next } = u32::decode(bytes)?;
-        if value > 256 * 1024 {
+
+        // We pick a maximum packet length of 64 KiB. Must be at least 32 KiB per
+        // <https://datatracker.ietf.org/doc/html/rfc4253#section-6.1>.
+        if value > 64 * 1024 {
             return Err(ProtoError::InvalidPacket("packet too large"));
         }
 
