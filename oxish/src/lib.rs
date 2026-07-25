@@ -341,6 +341,7 @@ async fn receive<'a>(
     state: &'a mut ReadState,
 ) -> Result<IncomingPacket<'a>, Error> {
     loop {
+        // `PacketLength` enforces a reasonable maximum packet length.
         let (sequence_number, packet_length) = match state.poll_packet() {
             Ok(Completion::Complete((sequence_number, packet_length))) => {
                 (sequence_number, packet_length)
@@ -351,10 +352,6 @@ async fn receive<'a>(
             }
             Err(error) => return Err(error.into()),
         };
-
-        if packet_length.0 > 64 * 1024 {
-            return Err(Error::Proto(ProtoError::InvalidPacket("packet too large")));
-        }
 
         return Ok(state.decode_packet(sequence_number, packet_length)?);
     }
