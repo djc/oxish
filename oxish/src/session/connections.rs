@@ -14,7 +14,7 @@ use proto::{
     ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
     ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
     ChannelRequestType, ChannelType, ChannelWindowAdjust, Encode, Encoder, IncomingPacket,
-    MessageType, ProtoError, PtyReq,
+    MAX_PACKET_LEN, MessageType, ProtoError, PtyReq,
 };
 use tracing::{debug, warn};
 
@@ -229,7 +229,14 @@ impl<'a> Future for TerminalsFuture<'a> {
             };
 
             let mut buf = [0u8; 4096];
-            match terminal.poll_read(&mut buf, cx) {
+            let limit = Ord::min(channel.maximum_packet_size, channel.send_window) as usize;
+            let writable = match limit {
+                0 => continue,
+                _ if limit < buf.len() => &mut buf[..limit],
+                _ => &mut buf,
+            };
+
+            match terminal.poll_read(writable, cx) {
                 Poll::Ready(result @ Ok(0)) | Poll::Ready(result @ Err(_)) => {
                     if let TerminalState::Running(terminal) =
                         mem::replace(state, TerminalState::Closing)
@@ -281,7 +288,7 @@ impl Channel {
             recipient_channel: self.remote_id,
             sender_channel: local_id,
             initial_window_size: self.send_window,
-            maximum_packet_size: self.maximum_packet_size,
+            maximum_packet_size: MAX_PACKET_LEN - 64, // Leave some room for packet overhead
         }
     }
 
