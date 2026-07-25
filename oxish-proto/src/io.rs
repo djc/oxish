@@ -47,7 +47,7 @@ impl ReadState {
             assert!(next.is_empty());
 
             let tag_len = opener.tag_len();
-            let end = 4 + packet_length.0 as usize;
+            let end = 4 + usize::from(packet_length);
             let Some((length_data, rest)) = self.buf.split_at_mut_checked(end) else {
                 return Ok(Completion::Incomplete(Some(end + tag_len - self.buf.len())));
             };
@@ -67,9 +67,9 @@ impl ReadState {
                 next,
             } = PacketLength::decode(&self.buf)?;
 
-            if next.len() < packet_length.0 as usize {
+            if next.len() < usize::from(packet_length) {
                 return Ok(Completion::Incomplete(Some(
-                    packet_length.0 as usize - next.len(),
+                    usize::from(packet_length) - next.len(),
                 )));
             }
 
@@ -80,7 +80,7 @@ impl ReadState {
         // this async function is cancel-safe
         let sequence_number = self.sequence_number;
         self.sequence_number = self.sequence_number.wrapping_add(1);
-        self.last_length = 4 + packet_length.0 as usize + tag_len;
+        self.last_length = 4 + usize::from(packet_length) + tag_len;
         Ok(Completion::Complete((sequence_number, packet_length)))
     }
 
@@ -98,8 +98,7 @@ impl ReadState {
             next,
         } = PaddingLength::decode(next)?;
 
-        let payload_len = packet_length
-            .0
+        let payload_len = u32::from(packet_length)
             .checked_sub(1) // padding length
             .and_then(|len| len.checked_sub(padding_length.0 as u32)) // padding
             .ok_or(ProtoError::InvalidPacket(

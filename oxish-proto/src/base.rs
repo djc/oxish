@@ -160,8 +160,8 @@ impl From<MessageType> for u8 {
     }
 }
 
-#[derive(Debug)]
-pub struct PacketLength(pub u32);
+#[derive(Clone, Copy, Debug)]
+pub struct PacketLength(u32);
 
 impl Decode<'_> for PacketLength {
     fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
@@ -177,6 +177,18 @@ impl Decode<'_> for PacketLength {
             value: Self(value),
             next,
         })
+    }
+}
+
+impl From<PacketLength> for usize {
+    fn from(len: PacketLength) -> Self {
+        len.0 as Self
+    }
+}
+
+impl From<PacketLength> for u32 {
+    fn from(len: PacketLength) -> Self {
+        len.0
     }
 }
 
