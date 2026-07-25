@@ -1,6 +1,6 @@
 use core::fmt;
 
-use crate::ProtoError;
+use crate::{MAX_PACKET_LEN, ProtoError};
 
 #[derive(Debug, Default)]
 pub struct Ignore<'a>(pub &'a [u8]);
@@ -167,9 +167,7 @@ impl Decode<'_> for PacketLength {
     fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
         let Decoded { value, next } = u32::decode(bytes)?;
 
-        // We pick a maximum packet length of 64 KiB. Must be at least 32 KiB per
-        // <https://datatracker.ietf.org/doc/html/rfc4253#section-6.1>.
-        if value > 64 * 1024 {
+        if value > MAX_PACKET_LEN {
             return Err(ProtoError::InvalidPacket("packet too large"));
         }
 
