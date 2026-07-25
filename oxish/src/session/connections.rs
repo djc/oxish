@@ -50,7 +50,7 @@ impl Channels {
 
         let channel = entry.insert(Channel {
             remote_id: open.sender_channel,
-            window_size: open.initial_window_size,
+            send_window: open.initial_window_size,
             maximum_packet_size: open.maximum_packet_size,
             env: Vec::new(),
             terminal: None,
@@ -252,7 +252,7 @@ impl<'a> Future for TerminalsFuture<'a> {
 #[derive(Debug)]
 pub(crate) struct Channel {
     remote_id: u32,
-    window_size: u32,
+    send_window: u32,
     maximum_packet_size: u32,
     env: Vec<(String, String)>,
     terminal: Option<TerminalState>,
@@ -264,7 +264,7 @@ impl Channel {
         ChannelOpenConfirmation {
             recipient_channel: self.remote_id,
             sender_channel: local_id,
-            initial_window_size: self.window_size,
+            initial_window_size: self.send_window,
             maximum_packet_size: self.maximum_packet_size,
         }
     }
