@@ -545,4 +545,10 @@ impl<T: fmt::Debug> fmt::Display for Pretty<T> {
     }
 }
 
+/// Maximum packet length in bytes
+///
+/// Must be at least 35 kB per
+/// <https://datatracker.ietf.org/doc/html/rfc4253#section-6.1>.
+pub const MAX_PACKET_LEN: u32 = 64 * 1024;
+
 pub const PROTOCOL: &str = "2.0";
