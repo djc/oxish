@@ -236,6 +236,7 @@ impl<'a> Future for TerminalsFuture<'a> {
                     });
                 }
                 Poll::Ready(Ok(n)) => {
+                    channel.send_window = channel.send_window.saturating_sub(n as u32);
                     return Poll::Ready(Ok(Some(OutgoingChannelMessage::Data(ChannelData {
                         recipient_channel: channel.remote_id,
                         data: Cow::Owned(buf[..n].to_vec()),
