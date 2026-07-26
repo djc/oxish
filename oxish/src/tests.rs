@@ -2,8 +2,10 @@ use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
 use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
 use proto::{
-    Decode, Decoded, Encode, EncryptionAlgorithm, HostKeys, PublicKeyAlgorithm,
+    Decode, Decoded, Encode,
     crypto::{CryptoProvider, KeySourceSide},
+    key_exchange::HostKeys,
+    named::{EncryptionAlgorithm, PublicKeyAlgorithm},
 };
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};

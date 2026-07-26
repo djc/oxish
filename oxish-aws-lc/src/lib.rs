@@ -10,12 +10,12 @@ use ::aws_lc_rs::{
 };
 use aws_lc_rs::kem::EncapsulationKey;
 use proto::{
-    EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm,
     crypto::{
         ActiveKeyExchange, AgreedKey, CryptoError, CryptoProvider, Digest, Hash, HashContext,
         KeyExchange, KeySourceSide, OpeningKey, SealingKey, SecureRandom, SharedSecret, SigningKey,
         SupportedAlgorithms, VerifyingKey,
     },
+    named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm},
 };
 
 pub const DEFAULT_PROVIDER: &'static dyn CryptoProvider = &Provider;

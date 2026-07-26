@@ -18,7 +18,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-use proto::{Encode, HostKeys, ReadState, WriteState, crypto::CryptoProvider};
+use proto::{Encode, ReadState, WriteState, crypto::CryptoProvider, key_exchange::HostKeys};
 use rustix::net::{
     RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
 };

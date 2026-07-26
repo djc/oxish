@@ -10,7 +10,10 @@ use std::{
 use clap::{ArgAction, Parser};
 use listenfd::ListenFd;
 use oxish::{Auth, Config, DEFAULT_PROVIDER, Server};
-use proto::{HostKeys, Named, PublicKeyAlgorithm};
+use proto::{
+    key_exchange::HostKeys,
+    named::{Named, PublicKeyAlgorithm},
+};
 use tokio::net::TcpListener;
 use tracing::info;
 use zeroize::Zeroizing;

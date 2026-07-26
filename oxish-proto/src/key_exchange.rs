@@ -4,15 +4,16 @@ use std::borrow::Cow;
 use tracing::debug;
 
 use crate::{
-    Decode, Decoded, Encode, ExtInfo, IncomingPacket, KeyExchangeAlgorithm, MessageType, Pretty,
-    ProtoError, PublicKeyAlgorithm,
+    Decode, Decoded, Encode, ExtInfo, IncomingPacket, MessageType, Pretty, ProtoError,
+    PublicKeyAlgorithm,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyDerivation,
         KeySourceSide, SharedSecret, SigningKey,
     },
     named::{
         CompressionAlgorithm, EncryptionAlgorithm, ExtensionId, ExtensionName, IncomingNameList,
-        KeyExchangeAlgorithmOrExtensionId, Language, MacAlgorithm, OutgoingNameList,
+        KeyExchangeAlgorithm, KeyExchangeAlgorithmOrExtensionId, Language, MacAlgorithm,
+        OutgoingNameList,
     },
 };
 
