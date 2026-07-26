@@ -9,11 +9,18 @@ use crate::{
     named::ChannelType,
 };
 
+/// The `SSH_MSG_CHANNEL_OPEN` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.1>.
 #[derive(Debug)]
 pub struct ChannelOpen<'a> {
+    /// The channel type to open
     pub r#type: ChannelType<'a>,
+    /// The sender's identifier for the channel
     pub sender_channel: u32,
+    /// Initial number of bytes the sender is willing to receive
     pub initial_window_size: u32,
+    /// Maximum packet size the sender is willing to receive
     pub maximum_packet_size: u32,
 }
 
@@ -66,11 +73,18 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_OPEN_CONFIRMATION` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.1>.
 #[derive(Debug)]
 pub struct ChannelOpenConfirmation {
+    /// The channel identifier chosen by the original sender
     pub recipient_channel: u32,
+    /// The responder's identifier for the channel
     pub sender_channel: u32,
+    /// Initial number of bytes the responder is willing to receive
     pub initial_window_size: u32,
+    /// Maximum packet size the responder is willing to receive
     pub maximum_packet_size: u32,
 }
 
@@ -84,6 +98,9 @@ impl Encode for ChannelOpenConfirmation {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_OPEN_FAILURE` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.1>.
 #[derive(Debug)]
 pub struct ChannelOpenFailure<'a> {
     recipient_channel: u32,
@@ -92,6 +109,7 @@ pub struct ChannelOpenFailure<'a> {
 }
 
 impl ChannelOpenFailure<'static> {
+    /// Failure response for a channel open reusing an active channel identifier
     pub fn duplicate_id(recipient_channel: u32) -> Self {
         Self {
             recipient_channel,
@@ -100,6 +118,7 @@ impl ChannelOpenFailure<'static> {
         }
     }
 
+    /// Failure response for a channel open with an unsupported channel type
     pub fn unknown_type(recipient_channel: u32) -> Self {
         Self {
             recipient_channel,
@@ -135,10 +154,17 @@ impl Encode for ChannelOpenFailureReason {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_REQUEST` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.4>; request types for session channels are
+/// defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6>.
 #[derive(Debug)]
 pub struct ChannelRequest<'a> {
+    /// The channel the request applies to
     pub recipient_channel: u32,
+    /// The request type and its type-specific data
     pub r#type: ChannelRequestType<'a>,
+    /// Whether the sender wants a success or failure reply
     pub want_reply: bool,
 }
 
@@ -225,19 +251,39 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
     }
 }
 
+/// Request type-specific data from a [`ChannelRequest`]
 #[derive(Debug)]
 pub enum ChannelRequestType<'a> {
+    /// `pty-req`, request a pseudo-terminal
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.2>.
     PtyReq(PtyReq<'a>),
+    /// `env`, set an environment variable
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.4>.
     Env(Env<'a>),
+    /// `shell`, start the user's default shell
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.5>.
     Shell,
+    /// `window-change`, report new terminal dimensions
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.7>.
     WindowChange(WindowChange),
 }
 
+/// Type-specific data for the `window-change` channel request
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-6.7>.
 #[derive(Clone, Copy, Debug)]
 pub struct WindowChange {
+    /// Terminal width in columns
     pub cols: u32,
+    /// Terminal height in rows
     pub rows: u32,
+    /// Terminal width in pixels
     pub width_px: u32,
+    /// Terminal height in pixels
     pub height_px: u32,
 }
 
@@ -266,9 +312,14 @@ impl<'a> Decode<'a> for WindowChange {
     }
 }
 
+/// Type-specific data for the `env` channel request
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-6.4>.
 #[derive(Debug)]
 pub struct Env<'a> {
+    /// The environment variable name
     pub name: &'a str,
+    /// The environment variable value
     pub value: &'a str,
 }
 
@@ -289,17 +340,29 @@ impl<'a> Decode<'a> for Env<'a> {
     }
 }
 
+/// Type-specific data for the `pty-req` channel request
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-6.2>.
 #[derive(Debug)]
 pub struct PtyReq<'a> {
+    /// The `TERM` environment variable value (e.g. `vt100`)
     pub term: Cow<'a, str>,
+    /// Terminal width in columns
     pub cols: u32,
+    /// Terminal height in rows
     pub rows: u32,
+    /// Terminal width in pixels
     pub width_px: u32,
+    /// Terminal height in pixels
     pub height_px: u32,
+    /// Encoded terminal modes
+    ///
+    /// See <https://www.rfc-editor.org/rfc/rfc4254#section-8>.
     pub terminal_modes: BTreeMap<Mode, u32>,
 }
 
 impl<'a> PtyReq<'a> {
+    /// Copy any borrowed data so the value can outlive the input buffer
     pub fn into_owned(self) -> PtyReq<'static> {
         PtyReq {
             term: Cow::Owned(self.term.into_owned()),
@@ -376,64 +439,124 @@ impl<'a> Decode<'a> for BTreeMap<Mode, u32> {
     }
 }
 
+/// Terminal mode opcodes for the `pty-req` channel request
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-8> for the encoding and opcode semantics;
+/// these largely mirror the POSIX termios flags.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mode {
+    /// `VINTR`, interrupt character
     VIntr = 1,
+    /// `VQUIT`, quit character
     VQuit = 2,
+    /// `VERASE`, erase the character to the left of the cursor
     VErase = 3,
+    /// `VKILL`, kill the current input line
     VKill = 4,
+    /// `VEOF`, end-of-file character
     VEof = 5,
+    /// `VEOL`, end-of-line character in addition to carriage return and/or linefeed
     VEol = 6,
+    /// `VEOL2`, additional end-of-line character
     VEol2 = 7,
+    /// `VSTART`, continues paused output
     VStart = 8,
+    /// `VSTOP`, pauses output
     VStop = 9,
+    /// `VSUSP`, suspends the current program
     VSusp = 10,
+    /// `VDSUSP`, another suspend character
     VDSusp = 11,
+    /// `VREPRINT`, reprints the current input line
     VReprint = 12,
+    /// `VWERASE`, erases a word left of the cursor
     VWErase = 13,
+    /// `VLNEXT`, enter the next character typed literally
     VLNext = 14,
+    /// `VFLUSH`, character to flush output
     VFlush = 15,
+    /// `VSWTCH`, switch to a different shell layer
     VSwtch = 16,
+    /// `VSTATUS`, prints the system status line
     VStatus = 17,
+    /// `VDISCARD`, toggles the flushing of terminal output
     VDiscard = 18,
+    /// `IGNPAR`, the ignore parity flag
     IgnPar = 30,
+    /// `PARMRK`, mark parity and framing errors
     ParMrk = 31,
+    /// `INPCK`, enable checking of parity errors
     INPck = 32,
+    /// `ISTRIP`, strip 8th bit off characters
     IStrip = 33,
+    /// `INLCR`, map NL into CR on input
     INlCr = 34,
+    /// `IGNCR`, ignore CR on input
     IgnCr = 35,
+    /// `ICRNL`, map CR to NL on input
     ICrNl = 36,
+    /// `IUCLC`, translate uppercase characters to lowercase
     IUcLc = 37,
+    /// `IXON`, enable output flow control
     IxOn = 38,
+    /// `IXANY`, any character will restart after stop
     IxAny = 39,
+    /// `IXOFF`, enable input flow control
     IxOff = 40,
+    /// `IMAXBEL`, ring bell on input queue full
     IMaxBel = 41,
+    /// `IUTF8`, terminal input and output is assumed to be UTF-8 encoded
     IUtf8 = 42,
+    /// `ISIG`, enable signals INTR, QUIT and \[D\]SUSP
     ISig = 50,
+    /// `ICANON`, canonicalize input lines
     ICanon = 51,
+    /// `XCASE`, escaped uppercase input and output
     XCase = 52,
+    /// `ECHO`, enable echoing
     Echo = 53,
+    /// `ECHOE`, visually erase characters
     EchoE = 54,
+    /// `ECHOK`, kill character discards current line
     EchoK = 55,
+    /// `ECHONL`, echo NL even if ECHO is off
     EchoNl = 56,
+    /// `NOFLSH`, don't flush after interrupt
     NoFlsh = 57,
+    /// `TOSTOP`, stop background jobs from output
     TOStop = 58,
+    /// `IEXTEN`, enable extensions
     IExten = 59,
+    /// `ECHOCTL`, echo control characters as ^X
     EchoCtl = 60,
+    /// `ECHOKE`, visual erase for line kill
     EchoKe = 61,
+    /// `PENDIN`, retype pending input
     Pendin = 62,
+    /// `OPOST`, enable output processing
     OPost = 70,
+    /// `OLCUC`, convert lowercase to uppercase on output
     OLcUc = 71,
+    /// `ONLCR`, map NL to CR-NL on output
     ONlCr = 72,
+    /// `OCRNL`, translate carriage return to newline on output
     OCrNl = 73,
+    /// `ONOCR`, translate newline to carriage return-newline on output
     ONoCr = 74,
+    /// `ONLRET`, newline performs a carriage return on output
     ONlRet = 75,
+    /// `CS7`, 7-bit mode
     Cs7 = 90,
+    /// `CS8`, 8-bit mode
     Cs8 = 91,
+    /// `PARENB`, parity enable
     ParenB = 92,
+    /// `PARODD`, odd parity, else even
     ParOdd = 93,
+    /// `TTY_OP_ISPEED`, input baud rate in bits per second
     TtyOpISpeed = 128,
+    /// `TTY_OP_OSPEED`, output baud rate in bits per second
     TtyOpOSpeed = 129,
 }
 
@@ -511,8 +634,12 @@ impl<'a> Decode<'a> for Option<Mode> {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_SUCCESS` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.4>.
 #[derive(Debug)]
 pub struct ChannelRequestSuccess {
+    /// The channel the reply applies to
     pub recipient_channel: u32,
 }
 
@@ -523,8 +650,12 @@ impl Encode for ChannelRequestSuccess {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_FAILURE` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.4>.
 #[derive(Debug)]
 pub struct ChannelRequestFailure {
+    /// The channel the reply applies to
     pub recipient_channel: u32,
 }
 
@@ -535,8 +666,13 @@ impl Encode for ChannelRequestFailure {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_DATA` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.2>.
 pub struct ChannelData<'a> {
+    /// The channel the data belongs to
     pub recipient_channel: u32,
+    /// The data being transferred
     pub data: Cow<'a, [u8]>,
 }
 
@@ -584,9 +720,14 @@ impl fmt::Debug for ChannelData<'_> {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_WINDOW_ADJUST` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.2>.
 #[derive(Debug)]
 pub struct ChannelWindowAdjust {
+    /// The channel whose window to extend
     pub recipient_channel: u32,
+    /// Number of bytes to add to the window
     pub bytes_to_add: u32,
 }
 
@@ -630,8 +771,14 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelWindowAdjust {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_EOF` message
+///
+/// Signals that no more data will be sent to the channel.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.3>.
 #[derive(Debug)]
 pub struct ChannelEof {
+    /// The channel that will receive no more data
     pub recipient_channel: u32,
 }
 
@@ -664,8 +811,12 @@ impl Encode for ChannelEof {
     }
 }
 
+/// The `SSH_MSG_CHANNEL_CLOSE` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-5.3>.
 #[derive(Debug)]
 pub struct ChannelClose {
+    /// The channel being closed
     pub recipient_channel: u32,
 }
 

@@ -7,12 +7,28 @@ use crate::{
     crypto::KeyLengths,
 };
 
+/// Authentication method names
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4252>.
 #[derive(Debug)]
 pub enum MethodName<'a> {
+    /// `publickey`
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4252#section-7>.
     PublicKey,
+    /// `password`
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4252#section-8>.
     Password,
+    /// `hostbased`
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4252#section-9>.
     HostBased,
+    /// `none`
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4252#section-5.2>.
     None,
+    /// A method name not known to this implementation
     Unknown(&'a str),
 }
 
@@ -44,10 +60,16 @@ impl PartialEq for MethodName<'_> {
     }
 }
 
+/// Service names for `SSH_MSG_SERVICE_REQUEST`
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-10>.
 #[derive(Debug)]
 pub enum ServiceName<'a> {
+    /// `ssh-userauth`, the user authentication protocol (RFC 4252)
     UserAuth,
+    /// `ssh-connection`, the connection protocol (RFC 4254)
     Connection,
+    /// A service name not known to this implementation
     Unknown(&'a str),
 }
 
@@ -97,9 +119,16 @@ impl<'a> Named<'a> for ExtensionName<'a> {
     }
 }
 
+/// Channel types for `SSH_MSG_CHANNEL_OPEN`
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4250#section-4.9.1>.
 #[derive(Debug, PartialEq)]
 pub enum ChannelType<'a> {
+    /// `session`
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.1>.
     Session,
+    /// A channel type not known to this implementation
     Unknown(&'a str),
 }
 
@@ -146,10 +175,16 @@ impl<'a> Named<'a> for KeyExchangeAlgorithmOrExtensionId<'a> {
     }
 }
 
+/// Key exchange algorithm names
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-7>.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyExchangeAlgorithm<'a> {
-    /// mlkem768x25519-sha256 (<https://datatracker.ietf.org/doc/draft-kampanakis-curdle-ssh-pq-ke/>)
+    /// `mlkem768x25519-sha256` key exchange algorithm: hybrid using ML-KEM-768 and X25519
+    ///
+    /// As defined in <https://datatracker.ietf.org/doc/draft-kampanakis-curdle-ssh-pq-ke/>.
     MlKem768X25519Sha256,
+    /// A key exchange algorithm not known to this implementation
     Unknown(&'a str),
 }
 
@@ -169,18 +204,22 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
     }
 }
 
+/// Extension marker names sent in the `SSH_MSG_KEXINIT` key exchange name list
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExtensionId<'a> {
-    /// ext-info-c (<https://www.rfc-editor.org/rfc/rfc8308>)
+    /// `ext-info-c`, the client's extension information marker
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc8308>.
     ExtInfoC,
-    /// kex-strict-c-v00@openssh.com, the client's strict key exchange marker
+    /// `kex-strict-c-v00@openssh.com`, the client's strict key exchange marker
     ///
-    /// <https://github.com/openssh/openssh-portable/blob/master/PROTOCOL>
+    /// As defined in <https://github.com/openssh/openssh-portable/blob/master/PROTOCOL>.
     StrictKexClient,
-    /// kex-strict-s-v00@openssh.com, the server's strict key exchange marker
+    /// `kex-strict-s-v00@openssh.com`, the server's strict key exchange marker
     ///
-    /// <https://github.com/openssh/openssh-portable/blob/master/PROTOCOL>
+    /// As defined in <https://github.com/openssh/openssh-portable/blob/master/PROTOCOL>.
     StrictKexServer,
+    /// An extension marker not known to this implementation
     Unknown(&'a str),
 }
 
@@ -204,16 +243,25 @@ impl<'a> Named<'a> for ExtensionId<'a> {
     }
 }
 
+/// Public key algorithm names
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-6.6>.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PublicKeyAlgorithm<'a> {
-    /// ecdsa-sha2-nistp256 (<https://www.rfc-editor.org/rfc/rfc5656>)
+    /// `ecdsa-sha2-nistp256`
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc5656>.
     EcdsaSha2Nistp256,
-    /// ssh-ed25519 (<https://www.rfc-editor.org/rfc/rfc8709>)
+    /// `ssh-ed25519`
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc8709>.
     Ed25519,
+    /// A public key algorithm not known to this implementation
     Unknown(Cow<'a, str>),
 }
 
 impl PublicKeyAlgorithm<'_> {
+    /// Copy any borrowed data so the value can outlive the input buffer
     pub fn to_owned(&self) -> PublicKeyAlgorithm<'static> {
         match self {
             Self::EcdsaSha2Nistp256 => PublicKeyAlgorithm::EcdsaSha2Nistp256,
@@ -241,14 +289,21 @@ impl<'a> Named<'a> for PublicKeyAlgorithm<'a> {
     }
 }
 
+/// Bulk/symmetric encryption algorithm names
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-6.3>.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EncryptionAlgorithm<'a> {
-    /// aes128-gcm@openssh.com (<https://www.rfc-editor.org/rfc/rfc5647>)
+    /// `aes128-gcm@openssh.com` encryption algorithm: 128-bit AES in Galois/Counter Mode
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc5647>.
     Aes128Gcm,
+    /// An encryption algorithm not known to this implementation
     Unknown(Cow<'a, str>),
 }
 
 impl EncryptionAlgorithm<'_> {
+    /// Copy any borrowed data so the value can outlive the input buffer
     pub fn to_owned(&self) -> EncryptionAlgorithm<'static> {
         match self {
             Self::Aes128Gcm => EncryptionAlgorithm::Aes128Gcm,
@@ -256,6 +311,7 @@ impl EncryptionAlgorithm<'_> {
         }
     }
 
+    /// The key and IV lengths this algorithm requires, if known
     pub fn lengths(&self) -> Option<KeyLengths> {
         match self {
             Self::Aes128Gcm => Some(KeyLengths {
@@ -283,11 +339,18 @@ impl<'a> Named<'a> for EncryptionAlgorithm<'a> {
     }
 }
 
+/// MAC algorithm names
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-6.4>.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MacAlgorithm<'a> {
-    /// hmac-sha2-256 (<https://www.rfc-editor.org/rfc/rfc6668#section-2>)
+    /// `hmac-sha2-256`
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc6668#section-2>.
     HmacSha2256,
+    /// `none`, for AEAD ciphers that need no separate MAC
     None,
+    /// A MAC algorithm not known to this implementation
     Unknown(&'a str),
 }
 
@@ -429,8 +492,14 @@ impl<'a, T: Named<'a>> Encode for T {
     }
 }
 
+/// A type represented on the wire by a name
+///
+/// Names are used in name lists and `string` fields as specified in
+/// <https://www.rfc-editor.org/rfc/rfc4251#section-5>.
 pub trait Named<'a>: fmt::Debug + Send + Sync {
+    /// Map `name` to a known value, or a catch-all unknown value
     fn typed(name: &'a str) -> Self;
 
+    /// The wire name for this value
     fn name(&self) -> &str;
 }

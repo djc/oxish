@@ -19,12 +19,19 @@ pub struct ReadState {
     /// the start of each call to `poll_packet()`.
     pub last_length: usize,
 
+    /// Sequence number of the next incoming packet
+    ///
+    /// See <https://www.rfc-editor.org/rfc/rfc4253#section-6.4>.
     pub sequence_number: u32,
+    /// Decryption state, or `None` before `SSH_MSG_NEWKEYS` takes effect
     pub opener: Option<Box<dyn OpeningKey>>,
 }
 
 impl ReadState {
-    // This and decode_packet are split because of a borrowck limitation
+    /// Verify and decrypt the next packet in the buffer, if complete
+    ///
+    /// On success, returns the packet's sequence number and length for use with
+    /// [`Self::decode_packet()`].
     pub fn poll_packet(&mut self) -> Result<Completion<(u32, PacketLength)>, ProtoError> {
         // Compact the internal buffer
         if self.last_length > 0 {
@@ -84,6 +91,7 @@ impl ReadState {
         Ok(Completion::Complete((sequence_number, packet_length)))
     }
 
+    /// Decode a packet decrypted by an earlier call to [`Self::poll_packet()`]
     pub fn decode_packet<'a>(
         &'a self,
         sequence_number: u32,
@@ -136,6 +144,7 @@ impl ReadState {
         })
     }
 
+    /// Record the full length of the last decoded packet for buffer compaction
     pub fn set_last_length(&mut self, len: usize) {
         self.last_length = len;
     }
@@ -167,6 +176,7 @@ impl Default for ReadState {
 
 /// Wrapper for the write and encryption state of an SSH connection
 pub struct Encoder<'a> {
+    /// The write state to encode packets into
     pub write: &'a mut WriteState,
 }
 
@@ -182,6 +192,7 @@ impl Encoder<'_> {
     }
 }
 
+/// The writer and encryption state for an SSH connection
 pub struct WriteState {
     /// Buffer for encoded but unencrypted packets
     buf: Vec<u8>,
@@ -190,7 +201,11 @@ pub struct WriteState {
     /// been sent to the transport stream
     written: usize,
 
+    /// Sequence number of the next outgoing packet
+    ///
+    /// See <https://www.rfc-editor.org/rfc/rfc4253#section-6.4>.
     pub sequence_number: u32,
+    /// Encryption state, or `None` before `SSH_MSG_NEWKEYS` takes effect
     pub sealer: Option<Box<dyn SealingKey>>,
 
     /// Source of random bytes for packet padding
@@ -198,6 +213,7 @@ pub struct WriteState {
 }
 
 impl WriteState {
+    /// Create a new write state with an empty buffer
     pub fn new(secure_random: &'static dyn SecureRandom) -> Self {
         Self {
             buf: Vec::with_capacity(16_384),
@@ -208,6 +224,10 @@ impl WriteState {
         }
     }
 
+    /// Encode `payload` as a packet into the outgoing buffer
+    ///
+    /// Applies padding and encryption per <https://www.rfc-editor.org/rfc/rfc4253#section-6>; if
+    /// `exchange_hash` is given, the packet payload is also fed into it.
     pub fn handle_packet(
         &mut self,
         payload: &impl Encode,
@@ -301,11 +321,13 @@ impl WriteState {
         Ok(())
     }
 
+    /// Encode `payload` directly into the buffer, without packet framing
     pub fn encoded(&mut self, payload: &impl Encode) -> &[u8] {
         payload.encode(&mut self.buf);
         &self.buf
     }
 
+    /// Process the result of writing buffered data to the transport stream
     pub fn written(&mut self, result: Result<usize, io::Error>) -> Result<(), io::Error> {
         let written = result?;
         if written == 0 {
@@ -336,6 +358,7 @@ impl WriteState {
         self.sequence_number = 0;
     }
 
+    /// The buffered data that has not yet been written to the stream
     pub fn buffered(&self) -> &[u8] {
         &self.buf[self.written..]
     }

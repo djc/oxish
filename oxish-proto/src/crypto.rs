@@ -62,10 +62,19 @@ pub trait CryptoProvider: Send + Sync {
     fn secure_random(&self) -> &'static dyn SecureRandom;
 }
 
+/// The algorithms supported by a [`CryptoProvider`], in preference order
+///
+/// Used to build the `SSH_MSG_KEXINIT` name lists.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-7.1>.
 pub struct SupportedAlgorithms {
+    /// Supported key exchange algorithms
     pub key_exchange: &'static [KeyExchangeAlgorithm<'static>],
+    /// Supported public key (host key and signature) algorithms
     pub public_key: &'static [PublicKeyAlgorithm<'static>],
+    /// Supported encryption algorithms
     pub encryption: &'static [EncryptionAlgorithm<'static>],
+    /// Supported MAC algorithms
     pub mac: &'static [MacAlgorithm<'static>],
 }
 
@@ -120,9 +129,16 @@ pub trait SealingKey: Send + Sync {
     fn tag_len(&self) -> usize;
 }
 
+/// Derived key material for one direction of the connection
+///
+/// Derived from the shared secret and exchange hash as specified in
+/// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>.
 pub struct KeySourceSide {
+    /// The negotiated encryption algorithm for this direction
     pub algorithm: EncryptionAlgorithm<'static>,
+    /// The derived initial IV
     pub initial_iv: Vec<u8>,
+    /// The derived encryption key
     pub encryption_key: Vec<u8>,
 }
 
@@ -187,8 +203,11 @@ impl fmt::Debug for KeySourceSide {
     }
 }
 
+/// Key material lengths required by an encryption algorithm
 pub struct KeyLengths {
+    /// The encryption key length in bytes
     pub key_len: usize,
+    /// The initial IV length in bytes
     pub iv_len: usize,
 }
 
@@ -269,27 +288,37 @@ impl From<KeyInput> for u8 {
     }
 }
 
+/// An in-progress exchange hash computation
+///
+/// Accumulates the values that make up the exchange hash `H`.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-8>.
 pub struct HandshakeHash(Box<dyn HashContext>);
 
 impl HandshakeHash {
+    /// Add `data` to the hash, prefixed with its length as a `string`
     pub fn prefixed(&mut self, data: &[u8]) {
         self.0.update(&(data.len() as u32).to_be_bytes());
         self.0.update(data);
     }
 
+    /// Add `data` to the hash as-is
     pub fn update(&mut self, data: &[u8]) {
         self.0.update(data);
     }
 
+    /// Finish the computation, yielding the exchange hash `H`
     pub fn finish(self) -> Digest {
         self.0.finish()
     }
 }
 
+/// Buffered exchange hash input, used before the hash algorithm is negotiated
 #[derive(Default)]
 pub struct HandshakeBuffer(Vec<u8>);
 
 impl HandshakeBuffer {
+    /// Feed the buffered input into `algorithm`, yielding a [`HandshakeHash`]
     pub fn hash(self, algorithm: &dyn Hash) -> HandshakeHash {
         let Self(bytes) = self;
         let mut context = algorithm.start();
@@ -297,11 +326,13 @@ impl HandshakeBuffer {
         HandshakeHash(context)
     }
 
+    /// Add `data` to the buffer, prefixed with its length as a `string`
     pub fn prefixed(&mut self, data: &[u8]) {
         self.0.extend_from_slice(&(data.len() as u32).to_be_bytes());
         self.0.extend_from_slice(data);
     }
 
+    /// Add `data` to the buffer as-is
     pub fn update(&mut self, data: &[u8]) {
         self.0.extend_from_slice(data);
     }
@@ -408,9 +439,15 @@ pub trait SecureRandom: Send + Sync {
     fn fill(&self, buf: &mut [u8]) -> Result<(), CryptoError>;
 }
 
+/// The shared secret `K` resulting from key exchange, zeroized on drop
+///
+/// Stored in its wire encoding, as fed into the exchange hash and key derivation.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>.
 pub struct SharedSecret(Vec<u8>);
 
 impl SharedSecret {
+    /// The encoded shared secret
     pub fn secret_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -431,16 +468,27 @@ impl From<Vec<u8>> for SharedSecret {
 /// An error returned by a cryptographic operation
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CryptoError {
+    /// Decryption or tag verification of a packet failed
     DecryptionFailed,
+    /// Encryption of a packet failed
     EncryptionFailed,
+    /// An input had an invalid length
     InvalidLength,
+    /// Key agreement with the peer's public value failed
     KeyAgreementFailed,
+    /// Generating a new key pair failed
     KeyGenerationFailed,
+    /// Key material was rejected while loading it
     KeyRejected,
+    /// The per-key nonce space was exhausted
     NonceOverflow,
+    /// No source of secure randomness was available
     NoRandomness,
+    /// The requested algorithm is not supported
     UnknownAlgorithm,
+    /// An unspecified cryptographic failure
     Unspecified,
+    /// Signature verification failed
     VerificationFailed,
 }
 

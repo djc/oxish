@@ -9,10 +9,18 @@ use crate::{
     named::{MethodName, OutgoingNameList, PublicKeyAlgorithm, ServiceName},
 };
 
+/// The `SSH_MSG_USERAUTH_REQUEST` message
+///
+/// Sent by the client to start or continue authentication.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4252#section-5>.
 #[derive(Debug)]
 pub struct UserAuthRequest<'a> {
+    /// The user name to authenticate as
     pub user_name: &'a str,
+    /// The service to start after authentication succeeds
     pub service_name: ServiceName<'a>,
+    /// The authentication method and its method-specific data
     pub method: Method<'a>,
 }
 
@@ -82,16 +90,29 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
     }
 }
 
+/// Authentication method data from a [`UserAuthRequest`]
 #[derive(Debug)]
 pub enum Method<'a> {
+    /// The `publickey` method
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4252#section-7>.
     PublicKey(PublicKey<'a>),
+    /// The `none` method
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4252#section-5.2>.
     None,
 }
 
+/// Method-specific data for `publickey` authentication
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4252#section-7>.
 #[derive(Debug)]
 pub struct PublicKey<'a> {
+    /// The public key algorithm name
     pub algorithm: PublicKeyAlgorithm<'a>,
+    /// The public key blob, encoded per its algorithm
     pub key_blob: &'a [u8],
+    /// The signature proving possession of the private key, if present
     pub signature: Option<Signature<'a>>,
 }
 
@@ -146,9 +167,14 @@ impl<'a> Decode<'a> for PublicKey<'a> {
     }
 }
 
+/// A signature over the [`SignatureData`] in a `publickey` authentication request
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4252#section-7>.
 #[derive(Debug)]
 pub struct Signature<'a> {
+    /// The public key algorithm used to produce the signature
     pub algorithm: PublicKeyAlgorithm<'a>,
+    /// The raw signature bytes
     pub signature_blob: &'a [u8],
 }
 
@@ -187,9 +213,14 @@ impl<'a> Decode<'a> for Signature<'a> {
     }
 }
 
+/// The `SSH_MSG_USERAUTH_FAILURE` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4252#section-5.1>.
 #[derive(Debug)]
 pub struct UserAuthFailure<'a> {
+    /// Authentication methods that may productively continue the exchange
     pub can_continue: &'a [MethodName<'a>],
+    /// Whether the rejected request was itself successful
     pub partial_success: bool,
 }
 
@@ -201,9 +232,16 @@ impl Encode for UserAuthFailure<'_> {
     }
 }
 
+/// The `SSH_MSG_USERAUTH_PK_OK` message
+///
+/// Confirms that the given public key would be acceptable for authentication.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4252#section-7>.
 #[derive(Debug)]
 pub struct UserAuthPkOk<'a> {
+    /// The public key algorithm name from the request
     pub algorithm: PublicKeyAlgorithm<'a>,
+    /// The public key blob from the request
     pub key_blob: Cow<'a, [u8]>,
 }
 
@@ -215,11 +253,19 @@ impl Encode for UserAuthPkOk<'_> {
     }
 }
 
+/// The data signed by the client for `publickey` authentication
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4252#section-7>.
 pub struct SignatureData<'a> {
+    /// The session identifier from the initial key exchange
     pub session_id: &'a [u8],
+    /// The user name from the authentication request
     pub user_name: &'a str,
+    /// The service name from the authentication request
     pub service_name: ServiceName<'a>,
+    /// The public key algorithm name
     pub algorithm: PublicKeyAlgorithm<'a>,
+    /// The public key blob
     pub public_key: &'a [u8],
 }
 
@@ -239,8 +285,12 @@ impl<'a> SignatureData<'a> {
     }
 }
 
+/// The `SSH_MSG_SERVICE_ACCEPT` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-10>.
 #[derive(Debug)]
 pub struct ServiceAccept<'a> {
+    /// The service name from the accepted request
     pub service_name: ServiceName<'a>,
 }
 
@@ -251,8 +301,12 @@ impl Encode for ServiceAccept<'_> {
     }
 }
 
+/// The `SSH_MSG_SERVICE_REQUEST` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-10>.
 #[derive(Debug)]
 pub struct ServiceRequest<'a> {
+    /// The name of the service to start
     pub service_name: ServiceName<'a>,
 }
 

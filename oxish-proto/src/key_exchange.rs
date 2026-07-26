@@ -18,13 +18,20 @@ use crate::{
 
 /// Output from the initial key exchange phase
 pub struct KeyExchange {
+    /// Our own `SSH_MSG_KEXINIT` message, to be sent to the peer
     pub local: KeyExchangeInit<'static>,
+    /// The in-progress exchange hash computation
     pub exchange: HandshakeHash,
+    /// The negotiated algorithms
     pub negotiated: Negotiated,
+    /// Our `SSH_MSG_EXT_INFO` message, to be sent if the peer supports it
     pub ext_info: ExtInfo<'static>,
 }
 
 impl KeyExchange {
+    /// Process the peer's `SSH_MSG_KEXINIT` and negotiate algorithms
+    ///
+    /// See <https://www.rfc-editor.org/rfc/rfc4253#section-7.1> for the negotiation procedure.
     pub fn start(
         packet: IncomingPacket<'_>,
         mut exchange: HandshakeBuffer,
@@ -83,6 +90,10 @@ impl KeyExchange {
     }
 }
 
+/// The `SSH_MSG_KEXINIT` message
+///
+/// Lists the algorithms each side supports, in preference order
+/// (<https://www.rfc-editor.org/rfc/rfc4253#section-7.1>).
 #[derive(Debug)]
 pub struct KeyExchangeInit<'a> {
     cookie: [u8; 16],
@@ -225,6 +236,9 @@ impl Encode for KeyExchangeInit<'_> {
     }
 }
 
+/// The `SSH_MSG_KEX_ECDH_INIT` message
+///
+/// Carries the client's ephemeral public key (<https://www.rfc-editor.org/rfc/rfc5656#section-4>).
 #[derive(Debug)]
 pub struct EcdhKeyExchangeInit<'a> {
     /// Also known as `Q_C` (<https://www.rfc-editor.org/rfc/rfc5656#section-4>)
@@ -255,6 +269,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
     }
 }
 
+/// The `SSH_MSG_KEX_ECDH_REPLY` message
+///
+/// Carries the server's host key, its ephemeral public key and its signature over the exchange hash
+/// (<https://www.rfc-editor.org/rfc/rfc5656#section-4>).
 #[derive(Debug)]
 pub struct EcdhKeyExchangeReply {
     server_public_host_key: TaggedPublicKey<'static>,
@@ -263,6 +281,10 @@ pub struct EcdhKeyExchangeReply {
 }
 
 impl EcdhKeyExchangeReply {
+    /// Complete the key exchange started by the client's `SSH_MSG_KEX_ECDH_INIT`
+    ///
+    /// Returns the reply message, the exchange hash and the derived key material
+    /// (<https://www.rfc-editor.org/rfc/rfc4253#section-7.2>).
     pub fn new(
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         negotiated: &Negotiated,
@@ -315,6 +337,9 @@ impl Encode for EcdhKeyExchangeReply {
     }
 }
 
+/// The server's host keys, used to authenticate the key exchange
+///
+/// Must be non-empty; see [`HostKeys::try_from()`].
 pub struct HostKeys(Vec<Box<dyn SigningKey>>);
 
 impl HostKeys {
@@ -374,6 +399,7 @@ impl HostKeys {
         })
     }
 
+    /// The public key algorithms of the held host keys
     pub fn algorithms(&self) -> impl Iterator<Item = PublicKeyAlgorithm<'static>> + '_ {
         self.0.iter().map(|key| key.algorithm())
     }
@@ -489,13 +515,18 @@ impl fmt::Debug for TaggedSignature<'_> {
     }
 }
 
+/// The algorithms negotiated from the client's and server's `SSH_MSG_KEXINIT`
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-7.1> for the negotiation procedure.
 #[derive(Debug)]
 pub struct Negotiated {
     key_exchange: KeyExchangeAlgorithm<'static>,
     server_host_key: PublicKeyAlgorithm<'static>,
     encryption_client_to_server: EncryptionAlgorithm<'static>,
     encryption_server_to_client: EncryptionAlgorithm<'static>,
+    /// Whether the client requested `SSH_MSG_EXT_INFO` via `ext-info-c` (RFC 8308)
     pub want_extension_info: bool,
+    /// Whether the client requested strict key exchange via `kex-strict-c-v00@openssh.com`
     pub strict_key_exchange: bool,
 }
 
@@ -578,6 +609,11 @@ impl Negotiated {
     }
 }
 
+/// The `SSH_MSG_NEWKEYS` message
+///
+/// Signals that all following packets use the newly negotiated keys and algorithms.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-7.3>.
 #[derive(Debug)]
 pub struct NewKeys;
 
@@ -604,6 +640,11 @@ impl Encode for NewKeys {
     }
 }
 
+/// The `SSH_MSG_EXT_INFO` message
+///
+/// Carries protocol extensions such as `server-sig-algs`
+///
+/// See <https://www.rfc-editor.org/rfc/rfc8308#section-2.3>.
 #[derive(Debug)]
 pub struct ExtInfo<'a> {
     extensions: Vec<(ExtensionName<'a>, Box<dyn Encode + 'a>)>,
@@ -622,9 +663,11 @@ impl Encode for ExtInfo<'_> {
 
 /// The raw hashes from which we will derive the crypto keys.
 ///
-/// <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-7.2>.
 pub struct KeySourceSet {
+    /// Key material for the client-to-server direction
     pub client_to_server: KeySourceSide,
+    /// Key material for the server-to-client direction
     pub server_to_client: KeySourceSide,
 }
 
