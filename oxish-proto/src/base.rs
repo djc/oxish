@@ -2,6 +2,11 @@ use core::fmt;
 
 use crate::{MAX_PACKET_LEN, ProtoError};
 
+/// The `SSH_MSG_IGNORE` message
+///
+/// Must be ignored by the receiver; can be used as a countermeasure against traffic analysis.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-11.2>.
 #[derive(Debug, Default)]
 pub struct Ignore<'a>(pub &'a [u8]);
 
@@ -12,9 +17,16 @@ impl Encode for Ignore<'_> {
     }
 }
 
+/// The `SSH_MSG_DISCONNECT` message
+///
+/// Terminates the connection; no party may send or receive data after it.
+///
+/// <https://www.rfc-editor.org/rfc/rfc4253#section-11.1>.
 #[derive(Debug)]
 pub struct Disconnect<'a> {
+    /// Machine-readable reason for the disconnect
     pub reason_code: DisconnectReason,
+    /// Human-readable description of the reason
     pub description: &'a str,
 }
 
@@ -64,24 +76,43 @@ impl Encode for Disconnect<'_> {
     }
 }
 
+/// Reason codes for the `SSH_MSG_DISCONNECT` message
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-11.1> for the semantics and
+/// <https://www.rfc-editor.org/rfc/rfc4250#section-4.2.2> for the registry.
 #[allow(dead_code)]
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
 pub enum DisconnectReason {
+    /// `SSH_DISCONNECT_HOST_NOT_ALLOWED_TO_CONNECT`
     HostNotAllowedToConnect = 1,
+    /// `SSH_DISCONNECT_PROTOCOL_ERROR`
     ProtocolError = 2,
+    /// `SSH_DISCONNECT_KEY_EXCHANGE_FAILED`
     KeyExchangeFailed = 3,
+    /// `SSH_DISCONNECT_RESERVED`
     Reserved = 4,
+    /// `SSH_DISCONNECT_MAC_ERROR`
     MacError = 5,
+    /// `SSH_DISCONNECT_COMPRESSION_ERROR`
     CompressionError = 6,
+    /// `SSH_DISCONNECT_SERVICE_NOT_AVAILABLE`
     ServiceNotAvailable = 7,
+    /// `SSH_DISCONNECT_PROTOCOL_VERSION_NOT_SUPPORTED`
     ProtocolVersionNotSupported = 8,
+    /// `SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE`
     HostKeyNotVerifiable = 9,
+    /// `SSH_DISCONNECT_CONNECTION_LOST`
     ConnectionLost = 10,
+    /// `SSH_DISCONNECT_BY_APPLICATION`
     ByApplication = 11,
+    /// `SSH_DISCONNECT_TOO_MANY_CONNECTIONS`
     TooManyConnections = 12,
+    /// `SSH_DISCONNECT_AUTH_CANCELLED_BY_USER`
     AuthCancelledByUser = 13,
+    /// `SSH_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE`
     NoMoreAuthMethodsAvailable = 14,
+    /// `SSH_DISCONNECT_ILLEGAL_USER_NAME`
     IllegalUserName = 15,
 }
 
@@ -110,8 +141,12 @@ impl TryFrom<u32> for DisconnectReason {
     }
 }
 
+/// A decrypted incoming packet, before message-specific decoding
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-6> for the packet format.
 pub struct IncomingPacket<'a> {
     pub(crate) sequence_number: u32,
+    /// The message type from the first byte of the payload
     pub message_type: MessageType,
     pub(crate) payload: &'a [u8],
 }
@@ -131,38 +166,72 @@ impl fmt::Debug for IncomingPacket<'_> {
     }
 }
 
+/// SSH message numbers, sent as the first byte of each packet payload
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4250#section-4.1> for the registry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageType {
+    /// `SSH_MSG_DISCONNECT` (RFC 4253 section 11.1)
     Disconnect,
+    /// `SSH_MSG_IGNORE` (RFC 4253 section 11.2)
     Ignore,
+    /// `SSH_MSG_UNIMPLEMENTED` (RFC 4253 section 11.4)
     Unimplemented,
+    /// `SSH_MSG_DEBUG` (RFC 4253 section 11.3)
     Debug,
+    /// `SSH_MSG_SERVICE_REQUEST` (RFC 4253 section 10)
     ServiceRequest,
+    /// `SSH_MSG_SERVICE_ACCEPT` (RFC 4253 section 10)
     ServiceAccept,
+    /// `SSH_MSG_EXT_INFO` (RFC 8308 section 2.3)
     ExtInfo,
+    /// `SSH_MSG_KEXINIT` (RFC 4253 section 7.1)
     KeyExchangeInit,
+    /// `SSH_MSG_NEWKEYS` (RFC 4253 section 7.3)
     NewKeys,
+    /// `SSH_MSG_KEX_ECDH_INIT` (RFC 5656 section 4)
     KeyExchangeEcdhInit,
+    /// `SSH_MSG_KEX_ECDH_REPLY` (RFC 5656 section 4)
     KeyExchangeEcdhReply,
+    /// `SSH_MSG_USERAUTH_REQUEST` (RFC 4252 section 5)
     UserAuthRequest,
+    /// `SSH_MSG_USERAUTH_FAILURE` (RFC 4252 section 5.1)
     UserAuthFailure,
+    /// `SSH_MSG_USERAUTH_SUCCESS` (RFC 4252 section 5.1)
     UserAuthSuccess,
+    /// `SSH_MSG_USERAUTH_BANNER` (RFC 4252 section 5.4)
     UserAuthBanner,
+    /// `SSH_MSG_USERAUTH_PK_OK` (RFC 4252 section 7)
     UserAuthPkOk,
+    /// `SSH_MSG_GLOBAL_REQUEST` (RFC 4254 section 4)
     GlobalRequest,
+    /// `SSH_MSG_REQUEST_SUCCESS` (RFC 4254 section 4)
     RequestSuccess,
+    /// `SSH_MSG_REQUEST_FAILURE` (RFC 4254 section 4)
     RequestFailure,
+    /// `SSH_MSG_CHANNEL_OPEN` (RFC 4254 section 5.1)
     ChannelOpen,
+    /// `SSH_MSG_CHANNEL_OPEN_CONFIRMATION` (RFC 4254 section 5.1)
     ChannelOpenConfirmation,
+    /// `SSH_MSG_CHANNEL_OPEN_FAILURE` (RFC 4254 section 5.1)
     ChannelOpenFailure,
+    /// `SSH_MSG_CHANNEL_WINDOW_ADJUST` (RFC 4254 section 5.2)
     ChannelWindowAdjust,
+    /// `SSH_MSG_CHANNEL_DATA` (RFC 4254 section 5.2)
     ChannelData,
+    /// `SSH_MSG_CHANNEL_EXTENDED_DATA` (RFC 4254 section 5.2)
     ChannelExtendedData,
+    /// `SSH_MSG_CHANNEL_EOF` (RFC 4254 section 5.3)
     ChannelEof,
+    /// `SSH_MSG_CHANNEL_CLOSE` (RFC 4254 section 5.3)
     ChannelClose,
+    /// `SSH_MSG_CHANNEL_REQUEST` (RFC 4254 section 5.4)
     ChannelRequest,
+    /// `SSH_MSG_CHANNEL_SUCCESS` (RFC 4254 section 5.4)
     ChannelSuccess,
+    /// `SSH_MSG_CHANNEL_FAILURE` (RFC 4254 section 5.4)
     ChannelFailure,
+    /// A message number not known to this implementation
     Unknown(u8),
 }
 
@@ -258,6 +327,11 @@ impl From<MessageType> for u8 {
     }
 }
 
+/// The `packet_length` field at the start of each packet
+///
+/// Covers `padding_length`, `payload` and `padding`, but not the length field itself or the MAC
+/// (<https://www.rfc-editor.org/rfc/rfc4253#section-6>). Decoding rejects lengths beyond
+/// [`MAX_PACKET_LEN`](crate::MAX_PACKET_LEN).
 #[derive(Clone, Copy, Debug)]
 pub struct PacketLength(u32);
 
@@ -288,6 +362,11 @@ impl From<PacketLength> for u32 {
     }
 }
 
+/// The `padding_length` field of a packet
+///
+/// There must be at least 4 bytes of padding.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4253#section-6>.
 #[derive(Debug)]
 pub struct PaddingLength(pub(crate) u8);
 
@@ -394,7 +473,9 @@ impl<'a> Decode<'a> for u8 {
     }
 }
 
+/// The result of decoding from input that may not yet hold a full value
 pub enum Completion<T> {
+    /// A complete value was decoded
     Complete(T),
     /// Not enough input was available to produce a value
     ///
@@ -403,16 +484,27 @@ pub enum Completion<T> {
     Incomplete(Option<usize>),
 }
 
+/// A type that can be encoded into the SSH wire format
+///
+/// Data type representations are defined in <https://www.rfc-editor.org/rfc/rfc4251#section-5>.
 pub trait Encode: fmt::Debug + Send + Sync {
+    /// Append the wire representation of `self` to `buf`
     fn encode(&self, buf: &mut Vec<u8>);
 }
 
+/// A type that can be decoded from the SSH wire format
+///
+/// Data type representations are defined in <https://www.rfc-editor.org/rfc/rfc4251#section-5>.
 pub trait Decode<'a>: Sized {
+    /// Decode a value from the start of `bytes`
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError>;
 }
 
+/// A decoded value together with the remaining input
 #[derive(Debug)]
 pub struct Decoded<'a, T> {
+    /// The decoded value
     pub value: T,
+    /// The input remaining after the decoded value
     pub next: &'a [u8],
 }
