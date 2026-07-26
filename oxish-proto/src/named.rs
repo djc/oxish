@@ -76,7 +76,7 @@ impl PartialEq for ServiceName<'_> {
 }
 
 #[derive(Debug)]
-pub enum ExtensionName<'a> {
+pub(crate) enum ExtensionName<'a> {
     ServerSigAlgs,
     Unknown(&'a str),
 }
@@ -310,7 +310,7 @@ impl<'a> Named<'a> for MacAlgorithm<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CompressionAlgorithm<'a> {
+pub(crate) enum CompressionAlgorithm<'a> {
     None,
     Unknown(&'a str),
 }
@@ -332,7 +332,7 @@ impl<'a> Named<'a> for CompressionAlgorithm<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Language<'a> {
+pub(crate) enum Language<'a> {
     Unknown(&'a str),
 }
 
@@ -348,7 +348,7 @@ impl<'a> Named<'a> for Language<'a> {
     }
 }
 
-pub(crate) struct IncomingNameList<T>(pub(super) Vec<T>);
+pub(crate) struct IncomingNameList<T>(pub(crate) Vec<T>);
 
 impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
@@ -387,7 +387,7 @@ impl<'a, T: Named<'a>> Decode<'a> for IncomingNameList<T> {
 }
 
 #[derive(Debug)]
-pub(crate) struct OutgoingNameList<'a, T>(pub &'a [T]);
+pub(crate) struct OutgoingNameList<'a, T>(pub(crate) &'a [T]);
 
 impl<'a, T: Named<'a>> Encode for OutgoingNameList<'_, T> {
     fn encode(&self, buf: &mut Vec<u8>) {

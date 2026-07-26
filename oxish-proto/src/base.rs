@@ -111,9 +111,9 @@ impl TryFrom<u32> for DisconnectReason {
 }
 
 pub struct IncomingPacket<'a> {
-    pub sequence_number: u32,
+    pub(crate) sequence_number: u32,
     pub message_type: MessageType,
-    pub payload: &'a [u8],
+    pub(crate) payload: &'a [u8],
 }
 
 impl fmt::Debug for IncomingPacket<'_> {
@@ -289,7 +289,7 @@ impl From<PacketLength> for u32 {
 }
 
 #[derive(Debug)]
-pub struct PaddingLength(pub u8);
+pub struct PaddingLength(pub(crate) u8);
 
 impl Decode<'_> for PaddingLength {
     fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
