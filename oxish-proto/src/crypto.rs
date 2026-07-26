@@ -3,10 +3,7 @@ use std::sync::Arc;
 
 use zeroize::Zeroize;
 
-use crate::{
-    MacAlgorithm,
-    named::{EncryptionAlgorithm, KeyExchangeAlgorithm, PublicKeyAlgorithm},
-};
+use crate::named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm};
 
 /// A bundle of cryptographic algorithm implementations
 pub trait CryptoProvider: Send + Sync {

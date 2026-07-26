@@ -17,7 +17,7 @@ use std::{
 };
 
 use bitflags::Flags;
-use proto::{Mode, PtyReq, WindowChange};
+use proto::channels::{Mode, PtyReq, WindowChange};
 use rustix::{
     fs::OFlags,
     io::{read, write},

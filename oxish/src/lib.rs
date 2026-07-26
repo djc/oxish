@@ -9,14 +9,16 @@ use std::{io, str, task::ready};
 
 use anyhow::Context as _;
 use proto::{
-    Completion, Decode, Decoded, EcdhKeyExchangeInit, EcdhKeyExchangeReply, Encode,
-    EncryptionAlgorithm, ExtensionId, HostKeys, Identification, IdentificationError, Ignore,
-    IncomingPacket, KeyExchange, KeySourceSet, MethodName, NewKeys, PROTOCOL, ProtoError,
-    ReadState, UserAuthFailure, WriteState,
+    Completion, Decode, Decoded, Encode, Identification, IdentificationError, Ignore,
+    IncomingPacket, NewKeys, PROTOCOL, ProtoError, ReadState, UserAuthFailure, WriteState,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyLengths,
         KeySourceSide,
     },
+    key_exchange::{
+        EcdhKeyExchangeInit, EcdhKeyExchangeReply, HostKeys, KeyExchange, KeySourceSet,
+    },
+    named::{EncryptionAlgorithm, ExtensionId, MethodName},
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

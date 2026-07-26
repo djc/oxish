@@ -11,10 +11,13 @@ use std::{
 };
 
 use proto::{
-    ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
-    ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
-    ChannelRequestType, ChannelType, ChannelWindowAdjust, Encode, Encoder, IncomingPacket,
-    MAX_PACKET_LEN, MessageType, ProtoError, PtyReq,
+    Encode, Encoder, IncomingPacket, MAX_PACKET_LEN, MessageType, ProtoError,
+    channels::{
+        ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
+        ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
+        ChannelRequestType, ChannelWindowAdjust, PtyReq,
+    },
+    named::ChannelType,
 };
 use tracing::{debug, warn};
 
