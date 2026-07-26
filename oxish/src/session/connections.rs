@@ -13,8 +13,8 @@ use std::{
 use proto::{
     ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
     ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
-    ChannelRequestType, ChannelType, Encode, Encoder, IncomingPacket, MessageType, ProtoError,
-    PtyReq,
+    ChannelRequestType, ChannelType, ChannelWindowAdjust, Encode, Encoder, IncomingPacket,
+    MessageType, ProtoError, PtyReq,
 };
 use tracing::{debug, warn};
 
@@ -111,6 +111,21 @@ impl Channels {
             encoder.enqueue(&channel.success())?;
         }
 
+        Ok(())
+    }
+
+    pub(crate) fn adjust_window(&mut self, adjust: &ChannelWindowAdjust) -> Result<(), ProtoError> {
+        let Some(channel) = self.channels.get_mut(&adjust.recipient_channel) else {
+            return Err(ProtoError::InvalidPacket(
+                "channel window adjust for unknown channel ID",
+            ));
+        };
+
+        if u32::MAX - channel.send_window < adjust.bytes_to_add {
+            debug!(channel_id = %adjust.recipient_channel, "window adjust would overflow; capping");
+        }
+
+        channel.send_window = channel.send_window.saturating_add(adjust.bytes_to_add);
         Ok(())
     }
 
@@ -327,6 +342,7 @@ pub(crate) enum IncomingChannelMessage<'a> {
     Open(ChannelOpen<'a>),
     Request(ChannelRequest<'a>),
     Data(ChannelData<'a>),
+    WindowAdjust(ChannelWindowAdjust),
     Eof(ChannelEof),
     Close(ChannelClose),
 }
@@ -345,6 +361,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
             MessageType::ChannelData => {
                 Ok(IncomingChannelMessage::Data(ChannelData::try_from(packet)?))
             }
+            MessageType::ChannelWindowAdjust => Ok(IncomingChannelMessage::WindowAdjust(
+                ChannelWindowAdjust::try_from(packet)?,
+            )),
             MessageType::ChannelEof => {
                 Ok(IncomingChannelMessage::Eof(ChannelEof::try_from(packet)?))
             }
