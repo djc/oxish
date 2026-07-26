@@ -51,6 +51,7 @@ impl Channels {
         let channel = entry.insert(Channel {
             remote_id: open.sender_channel,
             send_window: open.initial_window_size,
+            receive_window: 0,
             maximum_packet_size: open.maximum_packet_size,
             env: Vec::new(),
             terminal: None,
@@ -100,6 +101,12 @@ impl Channels {
                     &pty_req,
                     &channel.env,
                 )?));
+
+                channel.receive_window = INITIAL_WINDOW_SIZE;
+                encoder.enqueue(&ChannelWindowAdjust {
+                    recipient_channel: channel.remote_id,
+                    bytes_to_add: INITIAL_WINDOW_SIZE,
+                })?;
             }
             ChannelRequestType::WindowChange(window_change) => match &channel.terminal {
                 Some(TerminalState::Running(terminal)) => terminal.resize(&window_change)?,
@@ -132,12 +139,32 @@ impl Channels {
     pub(crate) fn data<'m, 's>(
         &'s mut self,
         data: &'m ChannelData<'m>,
+        encoder: &mut Encoder<'_>,
     ) -> Result<Option<(&'s mut Terminal, &'m [u8])>, ProtoError> {
         let Some(channel) = self.channels.get_mut(&data.recipient_channel) else {
             return Err(ProtoError::InvalidPacket(
                 "channel data for unknown channel ID",
             ));
         };
+
+        match channel.receive_window.checked_sub(data.data.len() as u32) {
+            Some(window) => channel.receive_window = window,
+            None => {
+                return Err(ProtoError::InvalidPacket(
+                    "channel data exceeds receive window",
+                ));
+            }
+        }
+
+        if channel.receive_window < INITIAL_WINDOW_SIZE / 2 {
+            debug!(channel_id = %data.recipient_channel, "receive window low; sending window adjust");
+            let bytes_to_add = INITIAL_WINDOW_SIZE - channel.receive_window;
+            channel.receive_window = INITIAL_WINDOW_SIZE;
+            encoder.enqueue(&ChannelWindowAdjust {
+                recipient_channel: channel.remote_id,
+                bytes_to_add,
+            })?;
+        }
 
         debug!(len = %data.data.len(), "received channel data");
         Ok(match &mut channel.terminal {
@@ -276,6 +303,7 @@ impl<'a> Future for TerminalsFuture<'a> {
 pub(crate) struct Channel {
     remote_id: u32,
     send_window: u32,
+    receive_window: u32,
     maximum_packet_size: u32,
     env: Vec<(String, String)>,
     terminal: Option<TerminalState>,
@@ -287,7 +315,7 @@ impl Channel {
         ChannelOpenConfirmation {
             recipient_channel: self.remote_id,
             sender_channel: local_id,
-            initial_window_size: self.send_window,
+            initial_window_size: 0,
             maximum_packet_size: MAX_PACKET_LEN - 64, // Leave some room for packet overhead
         }
     }
@@ -384,3 +412,5 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
         }
     }
 }
+
+const INITIAL_WINDOW_SIZE: u32 = 16 * MAX_PACKET_LEN;

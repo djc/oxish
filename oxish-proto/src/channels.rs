@@ -590,6 +590,14 @@ pub struct ChannelWindowAdjust {
     pub bytes_to_add: u32,
 }
 
+impl Encode for ChannelWindowAdjust {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        MessageType::ChannelWindowAdjust.encode(buffer);
+        self.recipient_channel.encode(buffer);
+        self.bytes_to_add.encode(buffer);
+    }
+}
+
 impl<'a> TryFrom<IncomingPacket<'a>> for ChannelWindowAdjust {
     type Error = ProtoError;
 

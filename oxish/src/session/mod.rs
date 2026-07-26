@@ -171,7 +171,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                     match channel_message {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
                         IncomingChannelMessage::Request(request) => self.channels.request(request, &mut encoder),
-                        IncomingChannelMessage::Data(data) => match self.channels.data(&data) {
+                        IncomingChannelMessage::Data(data) => match self.channels.data(&data, &mut encoder) {
                             Ok(Some((session, data))) => match session.write(data).await {
                                 Ok(_) => Ok(()),
                                 Err(error) => Err(error.into()),
