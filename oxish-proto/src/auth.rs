@@ -181,9 +181,7 @@ impl<'a> Decode<'a> for Signature<'a> {
     fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: input, next } = <&[u8]>::decode(input)?;
         if !next.is_empty() {
-            return Err(ProtoError::InvalidPacket(
-                "extra data in ECDSA signature data",
-            ));
+            return Err(ProtoError::InvalidPacket("extra data in signature data"));
         }
 
         let Decoded {
@@ -197,9 +195,7 @@ impl<'a> Decode<'a> for Signature<'a> {
         } = <&[u8]>::decode(next)?;
 
         if !next.is_empty() {
-            return Err(ProtoError::InvalidPacket(
-                "extra data in ECDSA signature blob",
-            ));
+            return Err(ProtoError::InvalidPacket("extra data in signature blob"));
         }
 
         Ok(Decoded {
