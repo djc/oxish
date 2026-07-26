@@ -585,6 +585,44 @@ impl fmt::Debug for ChannelData<'_> {
 }
 
 #[derive(Debug)]
+pub struct ChannelWindowAdjust {
+    pub recipient_channel: u32,
+    pub bytes_to_add: u32,
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for ChannelWindowAdjust {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::ChannelWindowAdjust {
+            return Err(ProtoError::InvalidPacket(
+                "expected channel window adjust packet",
+            ));
+        }
+
+        let Decoded {
+            value: recipient_channel,
+            next,
+        } = u32::decode(packet.payload)?;
+
+        let Decoded {
+            value: bytes_to_add,
+            next,
+        } = u32::decode(next)?;
+
+        match next.is_empty() {
+            true => Ok(Self {
+                recipient_channel,
+                bytes_to_add,
+            }),
+            false => Err(ProtoError::InvalidPacket(
+                "extra data in channel window adjust packet",
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct ChannelEof {
     pub recipient_channel: u32,
 }
