@@ -26,8 +26,11 @@ use std::{
 
 use libc::{_SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
-    Decode, Decoded, Disconnect, DisconnectReason, MessageType, Method, ProtoError, ServiceAccept,
-    ServiceRequest, Signature, SignatureData, UserAuthPkOk, UserAuthRequest,
+    Decode, Decoded, Disconnect, DisconnectReason, MessageType, ProtoError,
+    auth::{
+        Method, ServiceAccept, ServiceRequest, Signature, SignatureData, UserAuthPkOk,
+        UserAuthRequest,
+    },
     crypto::{CryptoError, CryptoProvider, Digest, VerifyingKey},
     named::{Named, PublicKeyAlgorithm, ServiceName},
 };
