@@ -86,22 +86,22 @@ impl KeyExchange {
 #[derive(Debug)]
 pub struct KeyExchangeInit<'a> {
     cookie: [u8; 16],
-    pub(crate) key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'a>>,
-    pub(crate) server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
-    pub(crate) encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
-    pub(crate) encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
-    pub(crate) mac_algorithms_client_to_server: Vec<MacAlgorithm<'a>>,
-    pub(crate) mac_algorithms_server_to_client: Vec<MacAlgorithm<'a>>,
-    pub(crate) compression_algorithms_client_to_server: Vec<CompressionAlgorithm<'a>>,
-    pub(crate) compression_algorithms_server_to_client: Vec<CompressionAlgorithm<'a>>,
-    pub(crate) languages_client_to_server: Vec<Language<'a>>,
-    pub(crate) languages_server_to_client: Vec<Language<'a>>,
+    key_exchange_algorithms: Vec<KeyExchangeAlgorithmOrExtensionId<'a>>,
+    server_host_key_algorithms: Vec<PublicKeyAlgorithm<'a>>,
+    encryption_algorithms_client_to_server: Vec<EncryptionAlgorithm<'a>>,
+    encryption_algorithms_server_to_client: Vec<EncryptionAlgorithm<'a>>,
+    mac_algorithms_client_to_server: Vec<MacAlgorithm<'a>>,
+    mac_algorithms_server_to_client: Vec<MacAlgorithm<'a>>,
+    compression_algorithms_client_to_server: Vec<CompressionAlgorithm<'a>>,
+    compression_algorithms_server_to_client: Vec<CompressionAlgorithm<'a>>,
+    languages_client_to_server: Vec<Language<'a>>,
+    languages_server_to_client: Vec<Language<'a>>,
     first_kex_packet_follows: bool,
     extended: u32,
 }
 
 impl<'a> KeyExchangeInit<'a> {
-    pub fn has_extension(&self, extension: ExtensionId<'_>) -> bool {
+    fn has_extension(&self, extension: ExtensionId<'_>) -> bool {
         self.key_exchange_algorithms
             .iter()
             .any(|alg| matches!(alg, KeyExchangeAlgorithmOrExtensionId::Extension(ext) if *ext == extension))
@@ -491,10 +491,10 @@ impl fmt::Debug for TaggedSignature<'_> {
 
 #[derive(Debug)]
 pub struct Negotiated {
-    pub key_exchange: KeyExchangeAlgorithm<'static>,
-    pub server_host_key: PublicKeyAlgorithm<'static>,
-    pub encryption_client_to_server: EncryptionAlgorithm<'static>,
-    pub encryption_server_to_client: EncryptionAlgorithm<'static>,
+    key_exchange: KeyExchangeAlgorithm<'static>,
+    server_host_key: PublicKeyAlgorithm<'static>,
+    encryption_client_to_server: EncryptionAlgorithm<'static>,
+    encryption_server_to_client: EncryptionAlgorithm<'static>,
     pub want_extension_info: bool,
     pub strict_key_exchange: bool,
 }
@@ -606,7 +606,7 @@ impl Encode for NewKeys {
 
 #[derive(Debug)]
 pub struct ExtInfo<'a> {
-    pub extensions: Vec<(ExtensionName<'a>, Box<dyn Encode + 'a>)>,
+    extensions: Vec<(ExtensionName<'a>, Box<dyn Encode + 'a>)>,
 }
 
 impl Encode for ExtInfo<'_> {
