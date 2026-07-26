@@ -3,11 +3,7 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use tracing::warn;
 
-use crate::{
-    ProtoError,
-    base::{Decode, Decoded, Encode, IncomingPacket, MessageType},
-    named::ChannelType,
-};
+use crate::{Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError, named::ChannelType};
 
 /// The `SSH_MSG_CHANNEL_OPEN` message
 ///

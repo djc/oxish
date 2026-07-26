@@ -1,11 +1,7 @@
 use core::{fmt, str};
 use std::borrow::Cow;
 
-use crate::{
-    ProtoError,
-    base::{Decode, Decoded, Encode},
-    crypto::KeyLengths,
-};
+use crate::{Decode, Decoded, Encode, ProtoError, crypto::KeyLengths};
 
 /// Authentication method names
 ///

@@ -4,8 +4,7 @@ use std::borrow::Cow;
 use tracing::warn;
 
 use crate::{
-    ProtoError,
-    base::{Decode, Decoded, Encode, IncomingPacket, MessageType},
+    Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError,
     named::{MethodName, OutgoingNameList, PublicKeyAlgorithm, ServiceName},
 };
 
