@@ -10,7 +10,8 @@ use std::{io, str, task::ready};
 use anyhow::Context as _;
 use proto::{
     Completion, Decode, Decoded, Encode, Identification, IdentificationError, Ignore,
-    IncomingPacket, PROTOCOL, ProtoError, ReadState, UserAuthFailure, WriteState,
+    IncomingPacket, PROTOCOL, ProtoError, ReadState, WriteState,
+    auth::UserAuthFailure,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyLengths,
         KeySourceSide,
