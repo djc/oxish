@@ -4,8 +4,7 @@ use std::borrow::Cow;
 use tracing::debug;
 
 use crate::{
-    Decode, Decoded, Encode, ExtInfo, IncomingPacket, MessageType, Pretty, ProtoError,
-    PublicKeyAlgorithm,
+    Decode, Decoded, Encode, IncomingPacket, MessageType, Pretty, ProtoError, PublicKeyAlgorithm,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyDerivation,
         KeySourceSide, SharedSecret, SigningKey,
@@ -576,6 +575,48 @@ impl Negotiated {
             want_extension_info: client.has_extension(ExtensionId::ExtInfoC),
             strict_key_exchange: client.has_extension(ExtensionId::StrictKexClient),
         })
+    }
+}
+
+#[derive(Debug)]
+pub struct NewKeys;
+
+impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::NewKeys {
+            return Err(ProtoError::InvalidPacket("unexpected message type"));
+        }
+
+        if !packet.payload.is_empty() {
+            debug!(bytes = ?packet.payload, "unexpected trailing bytes");
+            return Err(ProtoError::InvalidPacket("unexpected trailing bytes"));
+        }
+
+        Ok(Self)
+    }
+}
+
+impl Encode for NewKeys {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::NewKeys.encode(buf);
+    }
+}
+
+#[derive(Debug)]
+pub struct ExtInfo<'a> {
+    pub extensions: Vec<(ExtensionName<'a>, Box<dyn Encode + 'a>)>,
+}
+
+impl Encode for ExtInfo<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        MessageType::ExtInfo.encode(buf);
+        (self.extensions.len() as u32).encode(buf);
+        for (name, value) in &self.extensions {
+            name.encode(buf);
+            value.encode(buf);
+        }
     }
 }
 

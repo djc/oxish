@@ -2,7 +2,7 @@ use core::{fmt, str};
 use std::borrow::Cow;
 
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::warn;
 
 mod base;
 pub use base::{
@@ -16,7 +16,7 @@ mod io;
 pub use io::{Encoder, ReadState, WriteState};
 pub mod key_exchange;
 pub mod named;
-use named::{ExtensionName, MethodName, OutgoingNameList, PublicKeyAlgorithm, ServiceName};
+use named::{MethodName, OutgoingNameList, PublicKeyAlgorithm, ServiceName};
 
 #[derive(Debug)]
 pub struct Identification<'a> {
@@ -77,48 +77,6 @@ impl Encode for Identification<'_> {
             buf.extend_from_slice(self.comments.as_bytes());
         }
         buf.extend_from_slice(b"\r\n");
-    }
-}
-
-#[derive(Debug)]
-pub struct NewKeys;
-
-impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
-    type Error = ProtoError;
-
-    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::NewKeys {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
-        }
-
-        if !packet.payload.is_empty() {
-            debug!(bytes = ?packet.payload, "unexpected trailing bytes");
-            return Err(ProtoError::InvalidPacket("unexpected trailing bytes"));
-        }
-
-        Ok(Self)
-    }
-}
-
-impl Encode for NewKeys {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        MessageType::NewKeys.encode(buf);
-    }
-}
-
-#[derive(Debug)]
-pub struct ExtInfo<'a> {
-    pub extensions: Vec<(ExtensionName<'a>, Box<dyn Encode + 'a>)>,
-}
-
-impl Encode for ExtInfo<'_> {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        MessageType::ExtInfo.encode(buf);
-        (self.extensions.len() as u32).encode(buf);
-        for (name, value) in &self.extensions {
-            name.encode(buf);
-            value.encode(buf);
-        }
     }
 }
 
