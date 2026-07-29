@@ -64,8 +64,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         &mut self,
         host_keys: &HostKeys,
         provider: &dyn CryptoProvider,
-    ) -> anyhow::Result<(Digest, KeySourceSet)> {
-        let exchange = self.identify().await.context("identification failed")?;
+    ) -> anyhow::Result<(Identities, Digest, KeySourceSet)> {
+        let (exchange, identities) = self.identify().await.context("identification failed")?;
 
         // Receive and send key exchange init packets
 
@@ -104,7 +104,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         self.send(&Ignore::default()).await?;
-        Ok((session_id, keys))
+        Ok((identities, session_id, keys))
     }
 
     async fn update_keys(
@@ -132,7 +132,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         Ok(())
     }
 
-    async fn identify(&mut self) -> Result<HandshakeBuffer, Error> {
+    async fn identify(&mut self) -> Result<(HandshakeBuffer, Identities), Error> {
         let (buf, Decoded { value: ident, next }) = loop {
             let bytes = buffer(&mut self.stream, &mut self.read).await?;
             match Identification::decode(bytes) {
@@ -151,11 +151,17 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .into());
         }
 
+        let mut identities = Identities {
+            client: Vec::new(),
+            server: Vec::new(),
+        };
+
         let mut exchange = HandshakeBuffer::default();
         let rest = next.len();
         let v_c_len = buf.len() - rest - 2;
         if let Some(v_c) = buf.get(..v_c_len) {
             exchange.prefixed(v_c);
+            identities.client = v_c.to_vec();
         }
 
         let last_length = buf.len() - rest;
@@ -176,11 +182,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let v_s_len = server_ident_bytes.len() - 2;
         if let Some(v_s) = server_ident_bytes.get(..v_s_len) {
             exchange.prefixed(v_s);
+            identities.server = v_s.to_vec();
         }
 
         // The ident was written to the stream directly, so drop it from the outgoing buffer
         self.write.clear();
-        Ok(exchange)
+        Ok((exchange, identities))
     }
 
     async fn send_auth_failed(&mut self) -> Result<(), Error> {
@@ -213,6 +220,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 /// The state needed to resume an authenticated connection in a session process
 struct SessionState {
     addr: SocketAddr,
+    identities: Identities,
     read: SideState,
     write: SideState,
     /// Residual inbound bytes already drained from the socket (pipelined packets)
@@ -222,6 +230,7 @@ struct SessionState {
 impl Encode for SessionState {
     fn encode(&self, buf: &mut Vec<u8>) {
         self.addr.to_string().as_bytes().encode(buf);
+        self.identities.encode(buf);
         self.read.encode(buf);
         self.write.encode(buf);
         self.read_buf.encode(buf);
@@ -239,6 +248,10 @@ impl Decode<'_> for SessionState {
             return Err(ProtoError::InvalidPacket("invalid peer address"));
         };
 
+        let Decoded {
+            value: identities,
+            next,
+        } = Identities::decode(next)?;
         let Decoded { value: read, next } = SideState::decode(next)?;
         let Decoded { value: write, next } = SideState::decode(next)?;
         let Decoded {
@@ -249,6 +262,7 @@ impl Decode<'_> for SessionState {
         Ok(Decoded {
             value: Self {
                 addr,
+                identities,
                 read,
                 write,
                 read_buf: read_buf.to_vec(),
@@ -386,6 +400,40 @@ async fn buffer<'a>(
             "EOF",
         ))),
         _ => Ok(&state.buf),
+    }
+}
+
+#[derive(Debug)]
+pub struct Identities {
+    client: Vec<u8>,
+    server: Vec<u8>,
+}
+
+impl Encode for Identities {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.client.encode(buf);
+        self.server.encode(buf);
+    }
+}
+
+impl Decode<'_> for Identities {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded {
+            value: client,
+            next,
+        } = <&[u8]>::decode(bytes)?;
+        let Decoded {
+            value: server,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        Ok(Decoded {
+            value: Self {
+                client: client.to_vec(),
+                server: server.to_vec(),
+            },
+            next,
+        })
     }
 }
 

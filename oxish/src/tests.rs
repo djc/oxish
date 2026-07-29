@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
 
 use crate::{
-    SessionState, SideState,
+    Identities, SessionState, SideState,
     authentication::{Auth, AuthorizedKey, User},
     server::Server,
 };
@@ -207,6 +207,10 @@ async fn verify_keys() {
 fn session_state_round_trip() {
     let state = SessionState {
         addr: SocketAddr::from(([192, 0, 2, 7], 22022)),
+        identities: Identities {
+            client: b"client-identity".to_vec(),
+            server: b"server-identity".to_vec(),
+        },
         read: SideState {
             source: KeySourceSide {
                 algorithm: EncryptionAlgorithm::Aes128Gcm,
@@ -238,6 +242,8 @@ fn session_state_round_trip() {
     assert!(next.is_empty());
 
     assert_eq!(decoded.addr, state.addr);
+    assert_eq!(decoded.identities.client, state.identities.client);
+    assert_eq!(decoded.identities.server, state.identities.server);
     assert_eq!(decoded.read_buf, state.read_buf);
     assert_eq!(
         decoded.read.source.algorithm,

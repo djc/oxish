@@ -112,7 +112,7 @@ impl Server {
         };
 
         let future = conn.exchange_keys(&self.host_keys, self.provider);
-        let (session_id, keys) = match timeout(Duration::from_secs(30), future).await {
+        let (identities, session_id, keys) = match timeout(Duration::from_secs(30), future).await {
             Ok(result) => result.context("key exchange failed")?,
             Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
         };
@@ -150,6 +150,7 @@ impl Server {
 
         let state = SessionState {
             addr,
+            identities,
             read: SideState {
                 source: keys.client_to_server,
                 counter: read.opener.as_ref().map_or(0, |opener| opener.counter()),
