@@ -346,7 +346,7 @@ pub struct HostKeys(Vec<Box<dyn SigningKey>>);
 impl HostKeys {
     fn sign(
         &self,
-        mut exchange: HandshakeHash,
+        exchange: HandshakeHash,
         client_ephemeral_public_key: &[u8],
         negotiated: &Negotiated,
         provider: &dyn CryptoProvider,
@@ -357,6 +357,47 @@ impl HostKeys {
             .find(|key| key.algorithm() == negotiated.server_host_key)
             .ok_or(CryptoError::UnknownAlgorithm)?;
 
+        KeyExchangeOutput::new(
+            exchange,
+            client_ephemeral_public_key,
+            negotiated,
+            host_key.as_ref(),
+            provider,
+        )
+    }
+
+    /// The public key algorithms of the held host keys
+    pub fn algorithms(&self) -> impl Iterator<Item = PublicKeyAlgorithm<'static>> + '_ {
+        self.0.iter().map(|key| key.algorithm())
+    }
+}
+
+impl TryFrom<Vec<Box<dyn SigningKey>>> for HostKeys {
+    type Error = ProtoError;
+
+    fn try_from(host_keys: Vec<Box<dyn SigningKey>>) -> Result<Self, Self::Error> {
+        if host_keys.is_empty() {
+            return Err(ProtoError::NoHostKeys);
+        }
+
+        Ok(Self(host_keys))
+    }
+}
+
+struct KeyExchangeOutput {
+    shared_secret: SharedSecret,
+    exchange_hash: Digest,
+    reply: EcdhKeyExchangeReply,
+}
+
+impl KeyExchangeOutput {
+    fn new(
+        mut exchange: HandshakeHash,
+        client_ephemeral_public_key: &[u8],
+        negotiated: &Negotiated,
+        host_key: &dyn SigningKey,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, CryptoError> {
         // Write the server's public host key (`K_S`) to the exchange hash
 
         let mut host_key_buf = Vec::with_capacity(128);
@@ -383,7 +424,7 @@ impl HostKeys {
         exchange.update(&shared_secret);
 
         let exchange_hash = exchange.finish();
-        Ok(KeyExchangeOutput {
+        Ok(Self {
             shared_secret: SharedSecret::from(shared_secret),
             reply: EcdhKeyExchangeReply {
                 server_public_host_key: TaggedPublicKey {
@@ -399,29 +440,6 @@ impl HostKeys {
             exchange_hash,
         })
     }
-
-    /// The public key algorithms of the held host keys
-    pub fn algorithms(&self) -> impl Iterator<Item = PublicKeyAlgorithm<'static>> + '_ {
-        self.0.iter().map(|key| key.algorithm())
-    }
-}
-
-impl TryFrom<Vec<Box<dyn SigningKey>>> for HostKeys {
-    type Error = ProtoError;
-
-    fn try_from(host_keys: Vec<Box<dyn SigningKey>>) -> Result<Self, Self::Error> {
-        if host_keys.is_empty() {
-            return Err(ProtoError::NoHostKeys);
-        }
-
-        Ok(Self(host_keys))
-    }
-}
-
-struct KeyExchangeOutput {
-    shared_secret: SharedSecret,
-    exchange_hash: Digest,
-    reply: EcdhKeyExchangeReply,
 }
 
 #[derive(Debug)]
