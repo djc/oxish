@@ -581,7 +581,7 @@ pub enum Completion<T> {
 /// A type that can be encoded into the SSH wire format
 ///
 /// Data type representations are defined in <https://www.rfc-editor.org/rfc/rfc4251#section-5>.
-pub trait Encode: fmt::Debug + Send + Sync {
+pub trait Encode: Send + Sync {
     /// Append the wire representation of `self` to `buf`
     fn encode(&self, buf: &mut Vec<u8>);
 }

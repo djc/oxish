@@ -646,7 +646,6 @@ impl Encode for NewKeys {
 /// Carries protocol extensions such as `server-sig-algs`
 ///
 /// See <https://www.rfc-editor.org/rfc/rfc8308#section-2.3>.
-#[derive(Debug)]
 pub struct ExtInfo<'a> {
     extensions: Vec<(ExtensionName<'a>, Box<dyn Encode + 'a>)>,
 }
