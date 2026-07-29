@@ -158,6 +158,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             exchange.prefixed(v_c);
         }
 
+        let last_length = buf.len() - rest;
+        self.read.set_last_length(last_length);
+
         let ident = Identification {
             protocol: PROTOCOL,
             software: SOFTWARE,
@@ -177,9 +180,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // The ident was written to the stream directly, so drop it from the outgoing buffer
         self.write.clear();
-
-        let last_length = buf.len() - rest;
-        self.read.set_last_length(last_length);
         Ok(exchange)
     }
 
