@@ -9,6 +9,7 @@ use proto::{
 };
 use tempfile::TempDir;
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
+use zeroize::Zeroizing;
 
 use crate::{
     Identities, SessionState, SideState,
@@ -96,7 +97,7 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
     .unwrap();
 
     // Start the server on a loopback port and serve exactly one connection.
-    let (host_key, _) = provider
+    let (_, pkcs8) = provider
         .generate_signing_key(&algorithm)
         .expect("failed to generate host key");
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -104,7 +105,7 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
 
     let server = Server::new(
         Auth::Fixed(user),
-        HostKeys::try_from(vec![host_key]).unwrap(),
+        HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider).unwrap(),
         session_binary().await,
         provider,
     )

@@ -2,6 +2,7 @@ use core::fmt;
 use std::borrow::Cow;
 
 use tracing::debug;
+use zeroize::Zeroizing;
 
 use crate::{
     Decode, Decoded, Encode, IncomingPacket, MessageType, Pretty, ProtoError, PublicKeyAlgorithm,
@@ -339,11 +340,34 @@ impl Encode for EcdhKeyExchangeReply {
 }
 
 /// The server's host keys, used to authenticate the key exchange
-///
-/// Must be non-empty; see [`HostKeys::try_from()`].
-pub struct HostKeys(Vec<Box<dyn SigningKey>>);
+#[expect(clippy::type_complexity)]
+pub struct HostKeys(Vec<(Zeroizing<Vec<u8>>, Box<dyn SigningKey>)>);
 
 impl HostKeys {
+    /// Create a new set of host keys from the given PKCS#8 private keys
+    ///
+    /// `pkcs8` must have more than 0 and less than 16 elements.
+    pub fn new(
+        pkcs8: impl Iterator<Item = Zeroizing<Vec<u8>>>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, ProtoError> {
+        let mut keys = Vec::new();
+        for pkcs8 in pkcs8 {
+            if keys.len() >= Self::MAX_KEYS {
+                return Err(ProtoError::TooManyHostKeys);
+            }
+
+            let signing_key = provider.signing_key_from_pkcs8(&pkcs8)?;
+            keys.push((pkcs8, signing_key));
+        }
+
+        if keys.is_empty() {
+            return Err(ProtoError::NoHostKeys);
+        }
+
+        Ok(Self(keys))
+    }
+
     fn sign(
         &self,
         exchange: HandshakeHash,
@@ -351,10 +375,10 @@ impl HostKeys {
         negotiated: &Negotiated,
         provider: &dyn CryptoProvider,
     ) -> Result<KeyExchangeOutput, CryptoError> {
-        let host_key = self
+        let (_, host_key) = self
             .0
             .iter()
-            .find(|key| key.algorithm() == negotiated.server_host_key)
+            .find(|(_, key)| key.algorithm() == negotiated.server_host_key)
             .ok_or(CryptoError::UnknownAlgorithm)?;
 
         KeyExchangeOutput::new(
@@ -368,20 +392,10 @@ impl HostKeys {
 
     /// The public key algorithms of the held host keys
     pub fn algorithms(&self) -> impl Iterator<Item = PublicKeyAlgorithm<'static>> + '_ {
-        self.0.iter().map(|key| key.algorithm())
+        self.0.iter().map(|(_, key)| key.algorithm())
     }
-}
 
-impl TryFrom<Vec<Box<dyn SigningKey>>> for HostKeys {
-    type Error = ProtoError;
-
-    fn try_from(host_keys: Vec<Box<dyn SigningKey>>) -> Result<Self, Self::Error> {
-        if host_keys.is_empty() {
-            return Err(ProtoError::NoHostKeys);
-        }
-
-        Ok(Self(host_keys))
-    }
+    const MAX_KEYS: usize = 16;
 }
 
 struct KeyExchangeOutput {

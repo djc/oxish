@@ -48,8 +48,7 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         let pkcs8 = Zeroizing::new(fs::read(&args.host_key_file)?);
-        let result = provider.signing_key_from_pkcs8(&pkcs8);
-        HostKeys::try_from(vec![result?])?
+        HostKeys::new([pkcs8].into_iter(), provider)?
     };
 
     let session_bin = match args.session_bin {
