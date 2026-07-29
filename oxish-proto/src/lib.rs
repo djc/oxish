@@ -627,6 +627,9 @@ pub enum ProtoError {
     /// Algorithm negotiation failed for the named algorithm category
     #[error("no common {0} algorithms")]
     NoCommonAlgorithm(&'static str),
+    /// Too many host keys were specified
+    #[error("too many host keys specified")]
+    TooManyHostKeys,
     /// An internal invariant was violated (this is a bug)
     #[error("unreachable code: {0}")]
     Unreachable(&'static str),
