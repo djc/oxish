@@ -89,6 +89,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             ecdh_key_exchange_init,
             &kx.negotiated,
             kx.exchange,
+            None,
             host_keys,
             provider,
         )?;

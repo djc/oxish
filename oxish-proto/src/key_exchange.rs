@@ -289,6 +289,7 @@ impl EcdhKeyExchangeReply {
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         negotiated: &Negotiated,
         exchange: HandshakeHash,
+        session_id: Option<Digest>,
         host_keys: &HostKeys,
         provider: &dyn CryptoProvider,
     ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
@@ -308,7 +309,7 @@ impl EcdhKeyExchangeReply {
             hash: provider.hash(&negotiated.key_exchange)?,
             shared_secret,
             exchange_hash: exchange_hash.clone(),
-            session_id: exchange_hash.clone(),
+            session_id: session_id.unwrap_or_else(|| exchange_hash.clone()),
         };
 
         Ok((
