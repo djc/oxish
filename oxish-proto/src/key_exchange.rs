@@ -294,11 +294,12 @@ impl EcdhKeyExchangeReply {
         host_keys: &HostKeys,
         provider: &dyn CryptoProvider,
     ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
+        let host_key = host_keys.key(negotiated)?;
         let KeyExchangeOutput {
             shared_secret,
             exchange_hash,
             reply: key_exchange_reply,
-        } = host_keys.sign(
+        } = host_key.sign(
             exchange,
             ecdh_key_exchange_init.client_ephemeral_public_key,
             negotiated,
@@ -368,26 +369,15 @@ impl HostKeys {
         Ok(Self(keys))
     }
 
-    fn sign(
-        &self,
-        exchange: HandshakeHash,
-        client_ephemeral_public_key: &[u8],
-        negotiated: &Negotiated,
-        provider: &dyn CryptoProvider,
-    ) -> Result<KeyExchangeOutput, CryptoError> {
-        let (_, host_key) = self
-            .0
-            .iter()
-            .find(|(_, key)| key.algorithm() == negotiated.server_host_key)
-            .ok_or(CryptoError::UnknownAlgorithm)?;
-
-        KeyExchangeOutput::new(
-            exchange,
-            client_ephemeral_public_key,
-            negotiated,
-            host_key.as_ref(),
-            provider,
-        )
+    fn key<'a>(&'a self, negotiated: &Negotiated) -> Result<ServerHostKey<'a>, CryptoError> {
+        let mut iter = self.0.iter();
+        match iter.find(|(_, key)| key.algorithm() == negotiated.server_host_key) {
+            Some((pkcs8, key)) => Ok(ServerHostKey {
+                pkcs8,
+                key: key.as_ref(),
+            }),
+            None => Err(CryptoError::UnknownAlgorithm),
+        }
     }
 
     /// The public key algorithms of the held host keys
@@ -396,6 +386,31 @@ impl HostKeys {
     }
 
     const MAX_KEYS: usize = 16;
+}
+
+/// A borrowed single host key, used to sign the key exchange output
+pub struct ServerHostKey<'a> {
+    #[expect(dead_code)]
+    pkcs8: &'a Zeroizing<Vec<u8>>,
+    key: &'a dyn SigningKey,
+}
+
+impl ServerHostKey<'_> {
+    fn sign(
+        &self,
+        exchange: HandshakeHash,
+        client_ephemeral_public_key: &[u8],
+        negotiated: &Negotiated,
+        provider: &dyn CryptoProvider,
+    ) -> Result<KeyExchangeOutput, CryptoError> {
+        KeyExchangeOutput::new(
+            exchange,
+            client_ephemeral_public_key,
+            negotiated,
+            self.key,
+            provider,
+        )
+    }
 }
 
 struct KeyExchangeOutput {
