@@ -62,7 +62,7 @@ impl Auth {
     #[instrument(name = "authentication", skip(self, session_id, conn, provider), fields(addr = %conn.addr))]
     pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
         &self,
-        session_id: Digest,
+        session_id: &Digest,
         conn: &mut Connection<T>,
         provider: &dyn CryptoProvider,
     ) -> Result<User, Error> {
@@ -83,7 +83,7 @@ impl Auth {
 
     async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
         &self,
-        session_id: Digest,
+        session_id: &Digest,
         conn: &mut Connection<T>,
         provider: &dyn CryptoProvider,
     ) -> Result<User, Error> {

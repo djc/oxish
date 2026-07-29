@@ -224,6 +224,7 @@ struct SessionState<H> {
     addr: SocketAddr,
     host_key: H,
     identities: Identities,
+    session_id: Digest,
     read: SideState,
     write: SideState,
     /// Residual inbound bytes already drained from the socket (pipelined packets)
@@ -235,6 +236,7 @@ impl Encode for SessionState<ServerHostKey<'_>> {
         self.addr.to_string().as_bytes().encode(buf);
         self.host_key.encode(buf);
         self.identities.encode(buf);
+        self.session_id.as_ref().encode(buf);
         self.read.encode(buf);
         self.write.encode(buf);
         self.read_buf.encode(buf);
@@ -264,6 +266,12 @@ impl SessionState<SessionHostKey> {
             value: identities,
             next,
         } = Identities::decode(next)?;
+
+        let Decoded {
+            value: session_id,
+            next,
+        } = <&[u8]>::decode(next)?;
+
         let Decoded { value: read, next } = SideState::decode(next)?;
         let Decoded { value: write, next } = SideState::decode(next)?;
         let Decoded {
@@ -276,6 +284,7 @@ impl SessionState<SessionHostKey> {
                 addr,
                 host_key,
                 identities,
+                session_id: Digest::new(session_id),
                 read,
                 write,
                 read_buf: read_buf.to_vec(),

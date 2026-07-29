@@ -3,7 +3,7 @@ use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::On
 
 use proto::{
     Decoded, Encode,
-    crypto::{CryptoProvider, KeySourceSide},
+    crypto::{CryptoProvider, Digest, KeySourceSide},
     key_exchange::{HostKeys, ServerHostKey},
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
 };
@@ -220,6 +220,7 @@ fn session_state_round_trip() {
             server: b"server-identity".to_vec(),
         },
         host_key,
+        session_id: Digest::new(b"session-id"),
         read: SideState {
             source: KeySourceSide {
                 algorithm: EncryptionAlgorithm::Aes128Gcm,
@@ -253,6 +254,7 @@ fn session_state_round_trip() {
     assert_eq!(decoded.addr, state.addr);
     assert_eq!(decoded.identities.client, state.identities.client);
     assert_eq!(decoded.identities.server, state.identities.server);
+    assert_eq!(decoded.session_id.as_ref(), state.session_id.as_ref());
     assert_eq!(decoded.read_buf, state.read_buf);
     assert_eq!(
         decoded.read.source.algorithm,
