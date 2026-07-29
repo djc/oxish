@@ -115,6 +115,7 @@ impl Session<TcpStream> {
             addr,
             host_key: _,
             identities: _,
+            session_id: _,
             read,
             write,
             read_buf,

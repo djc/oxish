@@ -124,7 +124,7 @@ impl Server {
 
         let user = self
             .auth
-            .authenticate(session_id, &mut conn, self.provider)
+            .authenticate(&session_id, &mut conn, self.provider)
             .await
             .context("authentication failed")?;
 
@@ -157,6 +157,7 @@ impl Server {
             addr,
             host_key,
             identities,
+            session_id,
             read: SideState {
                 source: keys.client_to_server,
                 counter: read.opener.as_ref().map_or(0, |opener| opener.counter()),
