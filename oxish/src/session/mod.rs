@@ -4,7 +4,10 @@ use std::{
     os::fd::AsFd,
 };
 
-use proto::{Decode, Decoded, Disconnect, Encoder, MessageType, Pretty, ReadState, WriteState};
+use proto::{
+    Decoded, Disconnect, Encoder, MessageType, Pretty, ReadState, WriteState,
+    key_exchange::SessionHostKey,
+};
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -97,7 +100,9 @@ impl Session<TcpStream> {
             return Err(Error::InvalidState("no file descriptor received"));
         };
 
-        let Decoded { value: state, next } = SessionState::decode(&received)?;
+        let provider = DEFAULT_PROVIDER;
+        let Decoded { value: state, next } =
+            SessionState::<SessionHostKey>::decode(&received, provider)?;
         if !next.is_empty() {
             return Err(Error::InvalidState("trailing bytes after message"));
         }
@@ -108,13 +113,13 @@ impl Session<TcpStream> {
 
         let SessionState {
             addr,
+            host_key: _,
             identities: _,
             read,
             write,
             read_buf,
         } = state;
 
-        let provider = DEFAULT_PROVIDER;
         let opener = provider.opening_key(read.counter, &read.source)?;
         let sealer = provider.sealing_key(write.counter, &write.source)?;
 

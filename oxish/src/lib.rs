@@ -18,6 +18,7 @@ use proto::{
     },
     key_exchange::{
         EcdhKeyExchangeInit, EcdhKeyExchangeReply, HostKeys, KeyExchange, KeySourceSet, NewKeys,
+        ServerHostKey, SessionHostKey,
     },
     named::{EncryptionAlgorithm, ExtensionId, MethodName},
 };
@@ -60,11 +61,11 @@ struct Connection<T> {
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     /// Perform the SSH handshake and key exchange, returning the session ID
-    async fn exchange_keys(
+    async fn exchange_keys<'h>(
         &mut self,
-        host_keys: &HostKeys,
+        host_keys: &'h HostKeys,
         provider: &dyn CryptoProvider,
-    ) -> anyhow::Result<(Identities, Digest, KeySourceSet)> {
+    ) -> anyhow::Result<(Identities, ServerHostKey<'h>, Digest, KeySourceSet)> {
         let (exchange, identities) = self.identify().await.context("identification failed")?;
 
         // Receive and send key exchange init packets
@@ -85,7 +86,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let packet = receive(&mut self.stream, &mut self.read).await?;
         let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
-        let (key_exchange_reply, session_id, keys) = EcdhKeyExchangeReply::new(
+        let (host_key, key_exchange_reply, session_id, keys) = EcdhKeyExchangeReply::new(
             ecdh_key_exchange_init,
             &kx.negotiated,
             kx.exchange,
@@ -105,7 +106,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         self.send(&Ignore::default()).await?;
-        Ok((identities, session_id, keys))
+        Ok((identities, host_key, session_id, keys))
     }
 
     async fn update_keys(
@@ -219,8 +220,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 }
 
 /// The state needed to resume an authenticated connection in a session process
-struct SessionState {
+struct SessionState<H> {
     addr: SocketAddr,
+    host_key: H,
     identities: Identities,
     read: SideState,
     write: SideState,
@@ -228,9 +230,10 @@ struct SessionState {
     read_buf: Vec<u8>,
 }
 
-impl Encode for SessionState {
+impl Encode for SessionState<ServerHostKey<'_>> {
     fn encode(&self, buf: &mut Vec<u8>) {
         self.addr.to_string().as_bytes().encode(buf);
+        self.host_key.encode(buf);
         self.identities.encode(buf);
         self.read.encode(buf);
         self.write.encode(buf);
@@ -238,8 +241,11 @@ impl Encode for SessionState {
     }
 }
 
-impl Decode<'_> for SessionState {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+impl SessionState<SessionHostKey> {
+    fn decode<'a>(
+        bytes: &'a [u8],
+        provider: &dyn CryptoProvider,
+    ) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: addr, next } = <&[u8]>::decode(bytes)?;
         let Ok(addr) = str::from_utf8(addr) else {
             return Err(ProtoError::InvalidPacket("invalid UTF-8 in peer address"));
@@ -248,6 +254,11 @@ impl Decode<'_> for SessionState {
         let Ok(addr) = SocketAddr::from_str(addr) else {
             return Err(ProtoError::InvalidPacket("invalid peer address"));
         };
+
+        let Decoded {
+            value: host_key,
+            next,
+        } = SessionHostKey::decode(next, provider)?;
 
         let Decoded {
             value: identities,
@@ -263,6 +274,7 @@ impl Decode<'_> for SessionState {
         Ok(Decoded {
             value: Self {
                 addr,
+                host_key,
                 identities,
                 read,
                 write,
@@ -273,7 +285,7 @@ impl Decode<'_> for SessionState {
     }
 }
 
-impl fmt::Debug for SessionState {
+impl<H> fmt::Debug for SessionState<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SessionState")
             .field("addr", &self.addr)

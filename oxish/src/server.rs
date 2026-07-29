@@ -18,7 +18,11 @@ use std::{
 };
 
 use anyhow::Context as _;
-use proto::{Encode, ReadState, WriteState, crypto::CryptoProvider, key_exchange::HostKeys};
+use proto::{
+    Encode, ReadState, WriteState,
+    crypto::CryptoProvider,
+    key_exchange::{HostKeys, ServerHostKey},
+};
 use rustix::net::{
     RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
 };
@@ -112,10 +116,11 @@ impl Server {
         };
 
         let future = conn.exchange_keys(&self.host_keys, self.provider);
-        let (identities, session_id, keys) = match timeout(Duration::from_secs(30), future).await {
-            Ok(result) => result.context("key exchange failed")?,
-            Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
-        };
+        let (identities, host_key, session_id, keys) =
+            match timeout(Duration::from_secs(30), future).await {
+                Ok(result) => result.context("key exchange failed")?,
+                Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
+            };
 
         let user = self
             .auth
@@ -150,6 +155,7 @@ impl Server {
 
         let state = SessionState {
             addr,
+            host_key,
             identities,
             read: SideState {
                 source: keys.client_to_server,
@@ -188,7 +194,7 @@ impl Server {
     /// restricted to the user the server runs as, so there's no need to drop privileges.
     async fn spawn(
         &self,
-        state: SessionState,
+        state: SessionState<ServerHostKey<'_>>,
         stream: TcpStream,
         user: User,
     ) -> Result<Child, Error> {

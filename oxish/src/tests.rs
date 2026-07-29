@@ -2,9 +2,9 @@ use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
 use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
 use proto::{
-    Decode, Decoded, Encode,
+    Decoded, Encode,
     crypto::{CryptoProvider, KeySourceSide},
-    key_exchange::HostKeys,
+    key_exchange::{HostKeys, ServerHostKey},
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
 };
 use tempfile::TempDir;
@@ -206,12 +206,20 @@ async fn verify_keys() {
 
 #[test]
 fn session_state_round_trip() {
+    use crate::DEFAULT_PROVIDER;
+    let (key, pkcs8) = DEFAULT_PROVIDER
+        .generate_signing_key(&PublicKeyAlgorithm::Ed25519)
+        .expect("failed to generate signing key");
+    let pkcs8 = Zeroizing::new(pkcs8);
+    let host_key = ServerHostKey::from((&pkcs8, &*key));
+
     let state = SessionState {
         addr: SocketAddr::from(([192, 0, 2, 7], 22022)),
         identities: Identities {
             client: b"client-identity".to_vec(),
             server: b"server-identity".to_vec(),
         },
+        host_key,
         read: SideState {
             source: KeySourceSide {
                 algorithm: EncryptionAlgorithm::Aes128Gcm,
@@ -239,7 +247,7 @@ fn session_state_round_trip() {
     let Decoded {
         value: decoded,
         next,
-    } = SessionState::decode(&buf).unwrap();
+    } = SessionState::decode(&buf, DEFAULT_PROVIDER).unwrap();
     assert!(next.is_empty());
 
     assert_eq!(decoded.addr, state.addr);

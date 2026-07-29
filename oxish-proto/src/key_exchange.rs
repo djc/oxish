@@ -286,14 +286,14 @@ impl EcdhKeyExchangeReply {
     ///
     /// Returns the reply message, the exchange hash and the derived key material
     /// (<https://www.rfc-editor.org/rfc/rfc4253#section-7.2>).
-    pub fn new(
+    pub fn new<'h>(
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         negotiated: &Negotiated,
         exchange: HandshakeHash,
         session_id: Option<Digest>,
-        host_keys: &HostKeys,
+        host_keys: &'h HostKeys,
         provider: &dyn CryptoProvider,
-    ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
+    ) -> Result<(ServerHostKey<'h>, Self, Digest, KeySourceSet), CryptoError> {
         let host_key = host_keys.key(negotiated)?;
         let KeyExchangeOutput {
             shared_secret,
@@ -315,6 +315,7 @@ impl EcdhKeyExchangeReply {
         };
 
         Ok((
+            host_key,
             key_exchange_reply,
             exchange_hash,
             KeySourceSet {
@@ -390,12 +391,11 @@ impl HostKeys {
 
 /// A borrowed single host key, used to sign the key exchange output
 pub struct ServerHostKey<'a> {
-    #[expect(dead_code)]
     pkcs8: &'a Zeroizing<Vec<u8>>,
     key: &'a dyn SigningKey,
 }
 
-impl ServerHostKey<'_> {
+impl<'a> ServerHostKey<'a> {
     fn sign(
         &self,
         exchange: HandshakeHash,
@@ -410,6 +410,37 @@ impl ServerHostKey<'_> {
             self.key,
             provider,
         )
+    }
+}
+
+impl Encode for ServerHostKey<'_> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.pkcs8.encode(buf);
+    }
+}
+
+#[doc(hidden)] // for testing
+impl<'a> From<(&'a Zeroizing<Vec<u8>>, &'a dyn SigningKey)> for ServerHostKey<'a> {
+    fn from((pkcs8, key): (&'a Zeroizing<Vec<u8>>, &'a dyn SigningKey)) -> Self {
+        Self { pkcs8, key }
+    }
+}
+
+/// A single host key, used to sign rekeying exchanges
+#[expect(dead_code)]
+pub struct SessionHostKey(Box<dyn SigningKey>);
+
+impl SessionHostKey {
+    /// Decode a host key from encoded PKCS#8 bytes
+    pub fn decode<'a>(
+        buf: &'a [u8],
+        provider: &dyn CryptoProvider,
+    ) -> Result<Decoded<'a, Self>, ProtoError> {
+        let Decoded { value: pkcs8, next } = <&[u8]>::decode(buf)?;
+        Ok(Decoded {
+            value: Self(provider.signing_key_from_pkcs8(pkcs8)?),
+            next,
+        })
     }
 }
 
