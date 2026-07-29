@@ -108,6 +108,7 @@ impl Session<TcpStream> {
 
         let SessionState {
             addr,
+            identities: _,
             read,
             write,
             read_buf,
