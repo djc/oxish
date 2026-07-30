@@ -43,6 +43,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::{Connection, Error, receive};
 
+/// Authentication mode
 pub enum Auth {
     /// Look up the requested user in the system database and read their `authorized_keys` file
     System,
@@ -51,6 +52,10 @@ pub enum Auth {
 }
 
 impl Auth {
+    /// Determine the authentication mode from the given user ID
+    ///
+    /// If the `uid` is 0, this will resolve to [`Auth::System`]; otherwise, it will resolve to
+    /// [`Auth::Fixed`] with the user information looked up from the system database.
     pub fn for_id(uid: u32, provider: &dyn CryptoProvider) -> Result<Self, Error> {
         Ok(match uid {
             0 => Self::System,
@@ -272,6 +277,7 @@ impl Auth {
     }
 }
 
+/// User data as retrieved from the system database
 #[derive(Clone, Debug)]
 pub struct User {
     pub(crate) name: Username,

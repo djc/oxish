@@ -40,6 +40,7 @@ use crate::{
     authentication::{Auth, User},
 };
 
+/// State for an SSH server
 pub struct Server {
     pub(crate) provider: &'static dyn CryptoProvider,
     pub(crate) host_keys: HostKeys,
@@ -50,6 +51,7 @@ pub struct Server {
 }
 
 impl Server {
+    /// Create a new SSH server from the necessary minimal state
     pub fn new(
         auth: Auth,
         host_keys: HostKeys,
@@ -66,11 +68,20 @@ impl Server {
         })
     }
 
+    /// Set additional server configuration
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = config;
         self
     }
 
+    /// Run the server, accepting connections on the given listener
+    ///
+    /// Accepts connections from the `listener` and spawns a task for each accepted connection.
+    /// If [`Config::spawn`] is `true` (the default), the server will spawn a child process to
+    /// serve the connected client after authentication. When [`Config::spawn`] is `false`,
+    /// the session will continue running in the server process.
+    ///
+    /// This function never returns unless the listener is closed or an error occurs.
     pub async fn run(self: &Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
         loop {
             let (stream, addr) = match listener.accept().await {
@@ -337,9 +348,13 @@ impl Server {
     }
 }
 
+/// Additional configuration for the SSH server
+///
+/// Can be used with [`Server::with_config()`] to override the default configuration.
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct Config {
+    /// Whether to spawn a child process for each authenticated session
     pub spawn: bool,
 }
 

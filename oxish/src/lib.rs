@@ -1,3 +1,7 @@
+//! OxiSH: a modern, memory-safe SSH server implementation
+
+#![warn(missing_docs)]
+
 use core::{
     fmt, future,
     net::SocketAddr,
@@ -26,8 +30,10 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, trace, warn};
 
+/// Default cryptography provider, as determined based on the enabled features
 #[cfg(any(feature = "aws-lc", feature = "aws-lc-fips"))]
 pub use aws_lc::DEFAULT_PROVIDER;
+/// Default cryptography provider, as determined based on the enabled features
 #[cfg(all(
     feature = "graviola",
     not(feature = "aws-lc"),
@@ -479,14 +485,19 @@ async fn buffer<'a>(
     }
 }
 
+/// Error type for SSH connections
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Invalid state encountered during SSH session
     #[error("invalid state: {0}")]
     InvalidState(&'static str),
+    /// Invalid username provided during authentication
     #[error("invalid user name")]
     InvalidUsername,
+    /// I/O errors
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
+    /// Protocol errors
     #[error("proto: {0}")]
     Proto(#[from] ProtoError),
 }
