@@ -37,7 +37,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     Connection, Error, Session, SessionState, SideState,
-    authentication::{Auth, User},
+    authentication::{Auth, User, authenticate},
 };
 
 /// State for an SSH server
@@ -132,9 +132,7 @@ impl Server {
                 Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
             };
 
-        let user = self
-            .auth
-            .authenticate(&session_id, &mut conn, self.provider)
+        let user = authenticate(&session_id, &mut conn, &self.auth, self.provider)
             .await
             .context("authentication failed")?;
 
