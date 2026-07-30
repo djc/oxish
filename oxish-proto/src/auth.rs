@@ -1,4 +1,4 @@
-use core::str;
+use core::{ops::Deref, str};
 use std::borrow::Cow;
 
 use tracing::warn;
@@ -276,7 +276,7 @@ pub struct SignatureData<'a> {
 
 impl<'a> SignatureData<'a> {
     /// Build the data that the client signs for public key authentication (RFC 4252 Section 7)
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> SignatureInput {
         let mut buf = Vec::new();
         self.session_id.encode(&mut buf);
         MessageType::UserAuthRequest.encode(&mut buf);
@@ -286,7 +286,20 @@ impl<'a> SignatureData<'a> {
         true.encode(&mut buf);
         self.algorithm.encode(&mut buf);
         self.public_key.encode(&mut buf);
-        buf
+        SignatureInput(buf)
+    }
+}
+
+/// Encoded signature input for public key authentication
+///
+/// Constructed by [`SignatureData::encode()`].
+pub struct SignatureInput(Vec<u8>);
+
+impl Deref for SignatureInput {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
