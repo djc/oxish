@@ -24,6 +24,7 @@ async fn handshake_ecdsa_aws_lc() {
     handshake(
         aws_lc::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        false,
     )
     .await;
 }
@@ -35,6 +36,7 @@ async fn handshake_ecdsa_graviola() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        false,
     )
     .await;
 }
@@ -43,14 +45,19 @@ async fn handshake_ecdsa_graviola() {
 #[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ed25519_aws_lc() {
-    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519, false).await;
 }
 
 /// Exercise an ssh-ed25519 client key against the graviola provider
 #[cfg(feature = "graviola")]
 #[tokio::test]
 async fn handshake_ed25519_graviola() {
-    handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+    handshake(
+        graviola::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::Ed25519,
+        false,
+    )
+    .await;
 }
 
 #[cfg(feature = "graviola")]
@@ -59,11 +66,29 @@ async fn handshake_ecdsa_graviola_split() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        false,
     )
     .await;
 }
 
-async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAlgorithm<'_>) {
+/// Exercise a client-initiated rekey against the graviola provider
+#[cfg(feature = "graviola")]
+#[tokio::test]
+#[ignore = "slow"]
+async fn rekey_graviola() {
+    handshake(
+        graviola::DEFAULT_PROVIDER,
+        PublicKeyAlgorithm::Ed25519,
+        true,
+    )
+    .await;
+}
+
+async fn handshake(
+    provider: &'static dyn CryptoProvider,
+    algorithm: PublicKeyAlgorithm<'_>,
+    rekey: bool,
+) {
     subscribe();
 
     let dir = TempDir::new().unwrap();
@@ -117,8 +142,8 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         server.accept(stream, peer).await
     });
 
-    let mut child = Command::new("ssh")
-        .arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
+    let mut ssh = Command::new("ssh");
+    ssh.arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
         .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
         .args(["-p", &addr.port().to_string()]) // port to connect to
         .arg("-i") // identity (private key) file to authenticate with
@@ -127,7 +152,16 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         .args(["-o", "UserKnownHostsFile=/dev/null"])
         .args(["-o", "GlobalKnownHostsFile=/dev/null"]) // ignore system known hosts
         .args(["-o", "IdentitiesOnly=yes"]) // don't offer agent keys
-        .args(["-o", "LogLevel=DEBUG3"]) // verbose client diagnostics, captured on stderr for failure triage
+        .args(["-o", "LogLevel=DEBUG3"]); // verbose client diagnostics, captured on stderr for failure triage
+
+    // A short time-based rekey interval makes the client send a fresh SSH_MSG_KEXINIT every
+    // couple of seconds, exercising client-initiated rekeying. A time trigger keeps the
+    // session near-idle, avoiding the data volume a byte-based trigger would need.
+    if rekey {
+        ssh.args(["-o", "RekeyLimit=default 1"]);
+    }
+
+    let mut child = ssh
         .arg(format!("{USER}@{}", addr.ip()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -136,11 +170,23 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         .spawn()
         .expect("failed to spawn ssh");
 
+    // In the rekey scenario, keep the session open long enough for several rekeys before the
+    // sentinel; it only arrives if the session survived them.
+    let command = match rekey {
+        true => b"sleep 10\necho OXISH-$((6*7))\nexit\n".to_vec(),
+        false => COMMAND.to_vec(),
+    };
+
     let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(COMMAND).await.unwrap();
+    stdin.write_all(&command).await.unwrap();
     drop(stdin); // close stdin so the session ends after `exit`
 
-    let output = timeout(Duration::from_secs(10), child.wait_with_output())
+    let client_timeout = match rekey {
+        true => Duration::from_secs(30),
+        false => Duration::from_secs(10),
+    };
+
+    let output = timeout(client_timeout, child.wait_with_output())
         .await
         .expect("ssh client timed out")
         .expect("failed to wait for ssh");
@@ -170,6 +216,19 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
         stdout_len = output.stdout.len(),
         stderr_len = output.stderr.len(),
     );
+
+    // The client logs "SSH2_MSG_KEXINIT received" once per key exchange it observes from the
+    // server: once for the initial handshake, then once for each rekey the server answered.
+    // More than one proves the server handled a client-initiated rekey.
+    if rekey {
+        let key_exchanges = stderr.matches("SSH2_MSG_KEXINIT received").count();
+        assert!(
+            key_exchanges >= 2,
+            "expected at least one rekey, saw {key_exchanges} key exchange(s).\n\
+             --- stderr ({stderr_len} bytes) ---\n{stderr}",
+            stderr_len = output.stderr.len(),
+        );
+    }
 }
 
 #[tokio::test]
@@ -219,6 +278,7 @@ fn session_state_round_trip() {
             client: b"client-identity".to_vec(),
             server: b"server-identity".to_vec(),
         },
+        strict_kx: None,
         host_key,
         session_id: Digest::new(b"session-id"),
         read: SideState {
@@ -254,6 +314,7 @@ fn session_state_round_trip() {
     assert_eq!(decoded.addr, state.addr);
     assert_eq!(decoded.identities.client, state.identities.client);
     assert_eq!(decoded.identities.server, state.identities.server);
+    assert_eq!(decoded.strict_kx.is_some(), state.strict_kx.is_some());
     assert_eq!(decoded.session_id.as_ref(), state.session_id.as_ref());
     assert_eq!(decoded.read_buf, state.read_buf);
     assert_eq!(

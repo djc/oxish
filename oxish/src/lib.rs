@@ -17,7 +17,7 @@ use proto::{
         KeySourceSide,
     },
     key_exchange::{
-        EcdhKeyExchangeInit, HostKeys, Identities, KeyExchange, KeySourceSet, NewKeys,
+        EcdhKeyExchangeInit, HostKeys, Identities, KeyExchange, KeySourceSet, NewKeys, Rekey,
         ServerHostKey, SessionHostKey, StrictKeyExchange,
     },
     named::{EncryptionAlgorithm, ExtensionId, MethodName},
@@ -65,7 +65,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         &mut self,
         host_keys: &'h HostKeys,
         provider: &dyn CryptoProvider,
-    ) -> anyhow::Result<(Identities, ServerHostKey<'h>, Digest, KeySourceSet)> {
+    ) -> anyhow::Result<(
+        Identities,
+        ServerHostKey<'h>,
+        Option<StrictKeyExchange>,
+        Digest,
+        KeySourceSet,
+    )> {
         let (exchange, identities) = self.identify().await.context("identification failed")?;
 
         // Receive and send key exchange init packets
@@ -91,17 +97,44 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .context("key exchange failed")?;
 
         self.send(&key_exchange_reply).await?;
-
-        // Exchange new keys packets and install new keys
-
         self.update_keys(&keys, strict_kx.as_ref(), provider)
             .await?;
+
         if let Some(ext_info) = ext_info {
             self.send(&ext_info).await?;
         }
 
         self.send(&Ignore::default()).await?;
-        Ok((identities, host_key, session_id, keys))
+        Ok((identities, host_key, strict_kx, session_id, keys))
+    }
+
+    /// Complete a client-initiated rekey after its `SSH_MSG_KEXINIT` has been parsed
+    async fn rekey(
+        &mut self,
+        mut kx: KeyExchange,
+        rekey: &Rekey,
+        provider: &dyn CryptoProvider,
+    ) -> Result<(), Error> {
+        debug!("starting client-initiated rekey");
+
+        self.send_handshake(&kx.local, Some(&mut kx.exchange))
+            .await?;
+
+        let packet = receive(&mut self.stream, &mut self.read).await?;
+        let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
+        let (key_exchange_reply, keys) = rekey.complete(
+            ecdh_key_exchange_init,
+            &kx.negotiated,
+            kx.exchange,
+            provider,
+        )?;
+
+        self.send(&key_exchange_reply).await?;
+        self.update_keys(&keys, rekey.strict_key_exchange(), provider)
+            .await?;
+
+        debug!("completed client-initiated rekey");
+        Ok(())
     }
 
     async fn update_keys(
@@ -215,6 +248,7 @@ struct SessionState<H> {
     addr: SocketAddr,
     host_key: H,
     identities: Identities,
+    strict_kx: Option<StrictKeyExchange>,
     session_id: Digest,
     read: SideState,
     write: SideState,
@@ -228,6 +262,7 @@ impl Encode for SessionState<ServerHostKey<'_>> {
             addr,
             host_key,
             identities,
+            strict_kx,
             session_id,
             read,
             write,
@@ -237,6 +272,7 @@ impl Encode for SessionState<ServerHostKey<'_>> {
         addr.to_string().as_bytes().encode(buf);
         host_key.encode(buf);
         identities.encode(buf);
+        strict_kx.encode(buf);
         session_id.as_ref().encode(buf);
         read.encode(buf);
         write.encode(buf);
@@ -269,6 +305,11 @@ impl SessionState<SessionHostKey> {
         } = Identities::decode(next)?;
 
         let Decoded {
+            value: strict_kx,
+            next,
+        } = Option::<StrictKeyExchange>::decode(next)?;
+
+        let Decoded {
             value: session_id,
             next,
         } = <&[u8]>::decode(next)?;
@@ -285,6 +326,7 @@ impl SessionState<SessionHostKey> {
                 addr,
                 host_key,
                 identities,
+                strict_kx,
                 session_id: Digest::new(session_id),
                 read,
                 write,

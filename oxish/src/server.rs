@@ -21,7 +21,7 @@ use anyhow::Context as _;
 use proto::{
     Encode, ReadState, WriteState,
     crypto::CryptoProvider,
-    key_exchange::{HostKeys, ServerHostKey},
+    key_exchange::{HostKeys, Rekey, ServerHostKey, SessionHostKey},
 };
 use rustix::net::{
     RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
@@ -35,9 +35,8 @@ use tokio::{
 use tracing::{debug, instrument, warn};
 use zeroize::Zeroizing;
 
-use crate::{Connection, Error, Session, SessionState};
 use crate::{
-    SideState,
+    Connection, Error, Session, SessionState, SideState,
     authentication::{Auth, User},
 };
 
@@ -116,7 +115,7 @@ impl Server {
         };
 
         let future = conn.exchange_keys(&self.host_keys, self.provider);
-        let (identities, host_key, session_id, keys) =
+        let (identities, host_key, strict_kx, session_id, keys) =
             match timeout(Duration::from_secs(30), future).await {
                 Ok(result) => result.context("key exchange failed")?,
                 Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
@@ -130,8 +129,12 @@ impl Server {
 
         drop(authenticating);
         if !self.config.spawn {
-            let session = Session::from(conn);
-            return session.run().await.context("session failed");
+            let host_key = SessionHostKey::from_server(host_key, self.provider)?;
+            let session = Session::new(
+                conn,
+                Rekey::new(session_id, strict_kx, identities, host_key),
+            );
+            return session.run(self.provider).await.context("session failed");
         }
 
         let Connection {
@@ -157,6 +160,7 @@ impl Server {
             addr,
             host_key,
             identities,
+            strict_kx,
             session_id,
             read: SideState {
                 source: keys.client_to_server,
