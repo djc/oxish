@@ -7,6 +7,7 @@ use crate::{
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
     ProtoError,
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
+    key_exchange::StrictKeyExchange,
 };
 
 /// The reader and decryption state for an SSH connection
@@ -152,8 +153,10 @@ impl ReadState {
     /// Reset the receive sequence number to zero
     ///
     /// As required by strict key exchange after receiving `SSH_MSG_NEWKEYS`.
-    pub fn reset_sequence_number(&mut self) {
-        self.sequence_number = 0;
+    pub fn reset_sequence_number(&mut self, strict_kx: Option<&StrictKeyExchange>) {
+        if strict_kx.is_some() {
+            self.sequence_number = 0;
+        }
     }
 }
 
@@ -354,8 +357,10 @@ impl WriteState {
     /// Reset the send sequence number to zero
     ///
     /// As required by strict key exchange after sending `SSH_MSG_NEWKEYS`.
-    pub fn reset_sequence_number(&mut self) {
-        self.sequence_number = 0;
+    pub fn reset_sequence_number(&mut self, strict_kx: Option<&StrictKeyExchange>) {
+        if strict_kx.is_some() {
+            self.sequence_number = 0;
+        }
     }
 
     /// The buffered data that has not yet been written to the stream
