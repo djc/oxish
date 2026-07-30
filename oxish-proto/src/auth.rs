@@ -177,6 +177,68 @@ pub struct Signature<'a> {
     pub signature_blob: &'a [u8],
 }
 
+impl Signature<'_> {
+    /// Encode the signature for verification
+    pub fn encode(self) -> Result<EncodedSignature, ProtoError> {
+        Ok(EncodedSignature(match &self.algorithm {
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
+                let Decoded {
+                    value: r,
+                    next: rest,
+                } = <&[u8]>::decode(self.signature_blob)?;
+
+                let Decoded { value: s, next } = <&[u8]>::decode(rest)?;
+                if !next.is_empty() {
+                    return Err(ProtoError::InvalidPacket(
+                        "extra data after ECDSA signature components",
+                    ));
+                }
+
+                let mut fixed = [0u8; 64];
+                if mpint_to_fixed(r, &mut fixed[..64 / 2]).is_none() {
+                    return Err(ProtoError::InvalidPacket(
+                        "failure to decode r in ECDSA signature",
+                    ));
+                }
+
+                if mpint_to_fixed(s, &mut fixed[64 / 2..]).is_none() {
+                    return Err(ProtoError::InvalidPacket(
+                        "failure to decode s in ECDSA signature",
+                    ));
+                }
+
+                fixed.to_vec()
+            }
+            PublicKeyAlgorithm::Ed25519 => self.signature_blob.to_vec(),
+            algorithm => {
+                warn!(
+                    ?algorithm,
+                    "unsupported public key algorithm for verification"
+                );
+                return Err(ProtoError::InvalidPacket(
+                    "unsupported public key algorithm for verification",
+                ));
+            }
+        }))
+    }
+}
+
+/// Convert an SSH mpint to a fixed-width big-endian representation
+fn mpint_to_fixed(mpint: &[u8], out: &mut [u8]) -> Option<()> {
+    let data = match mpint.split_first() {
+        Some((&0, rest)) if !rest.is_empty() => rest,
+        _ => mpint,
+    };
+
+    if data.len() > out.len() {
+        return None;
+    }
+
+    let offset = out.len() - data.len();
+    out[offset..].copy_from_slice(data);
+    Some(())
+}
+
 impl<'a> Decode<'a> for Signature<'a> {
     fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: input, next } = <&[u8]>::decode(input)?;
@@ -205,6 +267,19 @@ impl<'a> Decode<'a> for Signature<'a> {
             },
             next,
         })
+    }
+}
+
+/// Encoded signature for public key authentication
+///
+/// Constructed by [`Signature::encode()`].
+pub struct EncodedSignature(Vec<u8>);
+
+impl Deref for EncodedSignature {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 

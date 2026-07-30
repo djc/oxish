@@ -730,48 +730,8 @@ impl AuthorizedKey {
         message: SignatureData<'_>,
         signature: Signature<'_>,
     ) -> Result<(), ProtoError> {
-        let signature = match &self.algorithm {
-            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
-                let Decoded {
-                    value: r,
-                    next: rest,
-                } = <&[u8]>::decode(signature.signature_blob)?;
-
-                let Decoded { value: s, next } = <&[u8]>::decode(rest)?;
-                if !next.is_empty() {
-                    return Err(ProtoError::InvalidPacket(
-                        "extra data after ECDSA signature components",
-                    ));
-                }
-
-                let mut fixed = [0u8; 64];
-                if mpint_to_fixed(r, &mut fixed[..64 / 2]).is_none() {
-                    return Err(ProtoError::InvalidPacket(
-                        "failure to decode r in ECDSA signature",
-                    ));
-                }
-
-                if mpint_to_fixed(s, &mut fixed[64 / 2..]).is_none() {
-                    return Err(ProtoError::InvalidPacket(
-                        "failure to decode s in ECDSA signature",
-                    ));
-                }
-
-                fixed.to_vec()
-            }
-            PublicKeyAlgorithm::Ed25519 => signature.signature_blob.to_vec(),
-            algorithm => {
-                warn!(
-                    ?algorithm,
-                    "unsupported public key algorithm for verification"
-                );
-                return Err(ProtoError::InvalidPacket(
-                    "unsupported public key algorithm for verification",
-                ));
-            }
-        };
-
         let encoded = message.encode();
+        let signature = signature.encode()?;
         let key = self.key.clone();
         spawn_blocking(move || {
             key.verify(&encoded, &signature)
@@ -788,20 +748,4 @@ impl fmt::Debug for AuthorizedKey {
             .field("algorithm", &self.algorithm)
             .finish_non_exhaustive()
     }
-}
-
-/// Convert an SSH mpint to a fixed-width big-endian representation
-fn mpint_to_fixed(mpint: &[u8], out: &mut [u8]) -> Option<()> {
-    let data = match mpint.split_first() {
-        Some((&0, rest)) if !rest.is_empty() => rest,
-        _ => mpint,
-    };
-
-    if data.len() > out.len() {
-        return None;
-    }
-
-    let offset = out.len() - data.len();
-    out[offset..].copy_from_slice(data);
-    Some(())
 }
