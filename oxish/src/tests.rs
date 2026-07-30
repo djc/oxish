@@ -12,7 +12,7 @@ use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout
 use zeroize::Zeroizing;
 
 use crate::{
-    SessionState, SideState,
+    SessionState, SideState, Username,
     authentication::{AuthorizedKey, SingleUser, User},
     server::Server,
 };
@@ -111,7 +111,13 @@ async fn handshake(
     let authorized_key = fs::read_to_string(key_path.with_extension("pub")).unwrap();
     let key = AuthorizedKey::from_str(&authorized_key, provider)
         .expect("failed to parse generated public key");
-    let user = User::new(USER.to_string(), 1000, 1000, PathBuf::from("/var/empty")).unwrap();
+    let user = User {
+        name: Username::try_from(USER.to_string()).unwrap(),
+        id: 1000,
+        gid: 1000,
+        home_dir: PathBuf::from("/var/empty"),
+        shell: PathBuf::from("/bin/sh"),
+    };
 
     // Start the server on a loopback port and serve exactly one connection.
     let (_, pkcs8) = provider
