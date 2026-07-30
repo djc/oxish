@@ -11,6 +11,7 @@ keywords = ["ssh", "protocol", "cryptography"]
 categories = ["network-programming", "cryptography"]
 
 [dependencies]
+data-encoding = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 zeroize = { workspace = true }
