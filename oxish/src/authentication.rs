@@ -94,7 +94,7 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
     };
     conn.send(&service_accept).await?;
 
-    let mut cached_user = None::<User>;
+    let mut cached_user = None::<CachedUser>;
     let mut attempts = 6;
     loop {
         attempts -= 1;
@@ -144,24 +144,24 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
         };
 
         let user = match &mut cached_user {
-            Some(user) if &*user.name == user_auth_request.user_name => user,
+            Some(user) if &*user.data.name == user_auth_request.user_name => user,
             _ => {
                 let Ok(name) = Username::try_from(user_auth_request.user_name.to_owned()) else {
                     conn.send_auth_failed().await?;
                     continue;
                 };
 
-                match store.lookup(name, provider) {
-                    Some(user) => cached_user.insert(user),
-                    _ => {
-                        conn.send_auth_failed().await?;
-                        continue;
-                    }
-                }
+                let Some(user) = store.lookup(name) else {
+                    conn.send_auth_failed().await?;
+                    continue;
+                };
+
+                let keys = store.keys(&user, provider);
+                cached_user.insert(CachedUser { data: user, keys })
             }
         };
 
-        let authorized_key = user.authorized_keys.iter().find(|key| {
+        let authorized_key = user.keys.iter().find(|key| {
             key.algorithm == public_key.algorithm && key.blob.as_slice() == public_key.key_blob
         });
 
@@ -208,7 +208,7 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
 
         let message = SignatureData {
             session_id: session_id.as_ref(),
-            user_name: &user.name,
+            user_name: &user.data.name,
             service_name: user_auth_request.service_name,
             algorithm: public_key.algorithm,
             public_key: public_key.key_blob,
@@ -220,9 +220,9 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
                     return Err(ProtoError::Unreachable("must have cached user").into());
                 };
 
-                info!(user = %user.name, "authentication successful");
+                info!(user = %user.data.name, "authentication successful");
                 conn.send(&MessageType::UserAuthSuccess).await?;
-                break Ok(user);
+                break Ok(user.data);
             }
             _ => {
                 conn.send_auth_failed().await?;
@@ -243,7 +243,11 @@ impl DefaultStore {
     pub fn new(provider: &dyn CryptoProvider) -> Result<Box<dyn UserStore>, Error> {
         Ok(match unsafe { libc::geteuid() } {
             0 => Box::new(SystemStore) as Box<dyn UserStore>,
-            uid => Box::new(SingleUser(User::lookup(UserLookup::Id(uid), provider)?)),
+            uid => {
+                let data = User::lookup(UserLookup::Id(uid))?;
+                let keys = authorized_keys(&data.home_dir, data.id, provider);
+                Box::new(SingleUser(CachedUser { data, keys }))
+            }
         })
     }
 }
@@ -252,8 +256,8 @@ impl DefaultStore {
 struct SystemStore;
 
 impl UserStore for SystemStore {
-    fn lookup(&self, name: Username, provider: &dyn CryptoProvider) -> Option<User> {
-        match User::lookup(UserLookup::Name(name), provider) {
+    fn lookup(&self, name: Username) -> Option<User> {
+        match User::lookup(UserLookup::Name(name)) {
             Ok(user) => Some(user),
             Err(error) => {
                 error!(%error, "failed to get user information");
@@ -262,22 +266,33 @@ impl UserStore for SystemStore {
         }
     }
 
+    fn keys(&self, user: &User, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
+        authorized_keys(&user.home_dir, user.id, provider)
+    }
+
     fn drop_privileges(&self) -> bool {
         true
     }
 }
 
 /// User store that only contains a single user
-pub(crate) struct SingleUser(User);
+pub(crate) struct SingleUser(CachedUser);
+
+impl SingleUser {
+    #[cfg(test)]
+    pub(crate) fn with_keys(data: User, keys: Vec<AuthorizedKey>) -> Self {
+        Self(CachedUser { data, keys })
+    }
+}
 
 impl UserStore for SingleUser {
-    fn lookup(&self, name: Username, _: &dyn CryptoProvider) -> Option<User> {
-        match self.0.name == name {
-            true => Some(self.0.clone()),
+    fn lookup(&self, name: Username) -> Option<User> {
+        match self.0.data.name == name {
+            true => Some(self.0.data.clone()),
             false => {
                 warn!(
                     requested = %name,
-                    authorized = %self.0.name,
+                    authorized = %self.0.data.name,
                     "requested user does not match authorized user",
                 );
                 None
@@ -285,24 +300,30 @@ impl UserStore for SingleUser {
         }
     }
 
+    fn keys(&self, _: &User, _: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
+        self.0.keys.clone()
+    }
+
     fn drop_privileges(&self) -> bool {
         false
-    }
-}
-
-impl From<User> for SingleUser {
-    fn from(user: User) -> Self {
-        Self(user)
     }
 }
 
 /// A user store resolves a username to a `User` type containing data used for authentication
 pub trait UserStore: Send + Sync + 'static {
     /// Lookup a user by name, returning `None` if the user does not exist or cannot be retrieved
-    fn lookup(&self, name: Username, provider: &dyn CryptoProvider) -> Option<User>;
+    fn lookup(&self, name: Username) -> Option<User>;
+
+    /// Lookup the authorized keys for a user
+    fn keys(&self, user: &User, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey>;
 
     /// Whether the user store should set the UID of the process to the authenticated user
     fn drop_privileges(&self) -> bool;
+}
+
+struct CachedUser {
+    data: User,
+    keys: Vec<AuthorizedKey>,
 }
 
 /// User data as retrieved from the system database
@@ -313,15 +334,10 @@ pub struct User {
     pub(crate) gid: u32,
     pub(crate) home_dir: PathBuf,
     pub(crate) shell: PathBuf,
-    /// Cached authorized keys for the user
-    ///
-    /// Since finding the authorized keys can be somewhat expensive, prefer to cache them
-    /// here so we can reuse them across attempts for the same user.
-    authorized_keys: Vec<AuthorizedKey>,
 }
 
 impl User {
-    fn lookup(by: UserLookup, provider: &dyn CryptoProvider) -> Result<Self, Error> {
+    fn lookup(by: UserLookup) -> Result<Self, Error> {
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
             n => Ord::min(n as usize, 1_048_576),
@@ -414,7 +430,6 @@ impl User {
             name,
             id,
             gid,
-            authorized_keys: authorized_keys(&home_dir, id, provider),
             home_dir,
             shell,
         })
@@ -424,20 +439,13 @@ impl User {
     ///
     /// This is primarily intended for testing.
     #[cfg(test)]
-    pub(crate) fn new(
-        name: String,
-        id: u32,
-        gid: u32,
-        home_dir: PathBuf,
-        authorized_keys: Vec<AuthorizedKey>,
-    ) -> Result<Self, Error> {
+    pub(crate) fn new(name: String, id: u32, gid: u32, home_dir: PathBuf) -> Result<Self, Error> {
         Ok(Self {
             name: Username::try_from(name)?,
             id,
             gid,
             home_dir,
             shell: PathBuf::from("/bin/sh"),
-            authorized_keys,
         })
     }
 
@@ -597,8 +605,9 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
     }
 }
 
+/// An authorized public key for a user
 #[derive(Clone)]
-pub(crate) struct AuthorizedKey {
+pub struct AuthorizedKey {
     algorithm: PublicKeyAlgorithm<'static>,
     blob: Vec<u8>,
     key: Arc<dyn VerifyingKey>,
@@ -629,7 +638,8 @@ impl AuthorizedKey {
         })
     }
 
-    pub(crate) fn from_str(s: &str, provider: &dyn CryptoProvider) -> Result<Option<Self>, ()> {
+    /// Build an `AuthorizedKey` from a string in the format used in `authorized_keys`
+    pub fn from_str(s: &str, provider: &dyn CryptoProvider) -> Result<Option<Self>, ()> {
         let key = match s.split_once('#') {
             Some((contents, _)) => contents,
             None => s,

@@ -112,14 +112,7 @@ async fn handshake(
     let key = AuthorizedKey::from_str(&authorized_key, provider)
         .unwrap()
         .expect("failed to parse generated public key");
-    let user = User::new(
-        USER.to_string(),
-        1000,
-        1000,
-        PathBuf::from("/var/empty"),
-        vec![key],
-    )
-    .unwrap();
+    let user = User::new(USER.to_string(), 1000, 1000, PathBuf::from("/var/empty")).unwrap();
 
     // Start the server on a loopback port and serve exactly one connection.
     let (_, pkcs8) = provider
@@ -129,7 +122,7 @@ async fn handshake(
     let addr = listener.local_addr().unwrap();
 
     let server = Server::new(
-        Box::new(SingleUser::from(user)),
+        Box::new(SingleUser::with_keys(user, vec![key])),
         HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider).unwrap(),
         session_binary().await,
         provider,
