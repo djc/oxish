@@ -291,10 +291,9 @@ impl EcdhKeyExchangeReply {
         negotiated: &Negotiated,
         exchange: HandshakeHash,
         session_id: Option<Digest>,
-        host_keys: &'h HostKeys,
+        host_key: &ServerHostKey<'h>,
         provider: &dyn CryptoProvider,
-    ) -> Result<(ServerHostKey<'h>, Self, Digest, KeySourceSet), CryptoError> {
-        let host_key = host_keys.key(negotiated)?;
+    ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
         let KeyExchangeOutput {
             shared_secret,
             exchange_hash,
@@ -315,7 +314,6 @@ impl EcdhKeyExchangeReply {
         };
 
         Ok((
-            host_key,
             key_exchange_reply,
             exchange_hash,
             KeySourceSet {
@@ -370,7 +368,8 @@ impl HostKeys {
         Ok(Self(keys))
     }
 
-    fn key<'a>(&'a self, negotiated: &Negotiated) -> Result<ServerHostKey<'a>, CryptoError> {
+    /// Select the host key matching the negotiated algorithm
+    pub fn key<'a>(&'a self, negotiated: &Negotiated) -> Result<ServerHostKey<'a>, CryptoError> {
         let mut iter = self.0.iter();
         match iter.find(|(_, key)| key.algorithm() == negotiated.server_host_key) {
             Some((pkcs8, key)) => Ok(ServerHostKey {

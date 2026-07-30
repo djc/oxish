@@ -86,12 +86,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let packet = receive(&mut self.stream, &mut self.read).await?;
         let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
-        let (host_key, key_exchange_reply, session_id, keys) = EcdhKeyExchangeReply::new(
+        let host_key = host_keys.key(&kx.negotiated)?;
+        let (key_exchange_reply, session_id, keys) = EcdhKeyExchangeReply::new(
             ecdh_key_exchange_init,
             &kx.negotiated,
             kx.exchange,
             None,
-            host_keys,
+            &host_key,
             provider,
         )?;
 
