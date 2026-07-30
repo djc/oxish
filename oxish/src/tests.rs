@@ -3,6 +3,7 @@ use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::On
 
 use proto::{
     Decoded, Encode,
+    auth::AuthorizedKey,
     crypto::{CryptoProvider, Digest, KeySourceSide},
     key_exchange::{HostKeys, Identities, ServerHostKey},
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
@@ -13,7 +14,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     SessionState, SideState, Username,
-    authentication::{AuthorizedKey, SingleUser, User},
+    authentication::{SingleUser, User},
     server::Server,
 };
 

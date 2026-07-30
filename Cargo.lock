@@ -564,6 +564,7 @@ dependencies = [
 name = "oxish-proto"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
  "sha1",
  "sha2",
  "thiserror",

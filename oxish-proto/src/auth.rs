@@ -1,12 +1,151 @@
-use core::{ops::Deref, str};
-use std::borrow::Cow;
+use core::{fmt, str};
+use std::{borrow::Cow, sync::Arc};
 
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::{
     Decode, Decoded, Encode, IncomingPacket, MessageType, ProtoError,
-    named::{MethodName, OutgoingNameList, PublicKeyAlgorithm, ServiceName},
+    crypto::{CryptoProvider, VerifyingKey},
+    named::{MethodName, Named, OutgoingNameList, PublicKeyAlgorithm, ServiceName},
 };
+
+/// An authorized public key for a user
+#[derive(Clone)]
+pub struct AuthorizedKey {
+    algorithm: PublicKeyAlgorithm<'static>,
+    blob: Vec<u8>,
+    key: Arc<dyn VerifyingKey>,
+}
+
+impl AuthorizedKey {
+    /// Build an `AuthorizedKey` from a string in the format used in `authorized_keys`
+    pub fn from_str(s: &str, provider: &dyn CryptoProvider) -> Option<Self> {
+        let key = match s.split_once('#') {
+            Some((contents, _)) => contents,
+            None => s,
+        }
+        .trim();
+
+        if key.is_empty() {
+            return None;
+        }
+
+        let mut parts = key.split_whitespace();
+        let Some(alg) = parts.next() else {
+            debug!("missing algorithm");
+            return None;
+        };
+
+        // TODO: support options before key type
+        let algorithm = PublicKeyAlgorithm::typed(alg);
+        let Some(key_data) = parts.next() else {
+            debug!("missing key data");
+            return None;
+        };
+
+        let Ok(blob) = data_encoding::BASE64.decode(key_data.as_bytes()) else {
+            debug!("invalid base64 key data");
+            return None;
+        };
+
+        let Ok(Decoded {
+            value: key_type,
+            next,
+        }) = <&[u8]>::decode(&blob)
+        else {
+            debug!("failed to decode key blob");
+            return None;
+        };
+
+        if key_type != algorithm.name().as_bytes() {
+            debug!(?key_type, ?algorithm, "key type does not match algorithm");
+            return None;
+        }
+
+        let key = match algorithm {
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
+                let Ok(Decoded { next, .. }) = <&[u8]>::decode(next) else {
+                    debug!("invalid public key data");
+                    return None;
+                };
+
+                let Ok(Decoded { value, next }) = <&[u8]>::decode(next) else {
+                    debug!("invalid public key data");
+                    return None;
+                };
+
+                if !next.is_empty() {
+                    debug!("trailing data after ECDSA public key");
+                    return None;
+                }
+
+                let Ok(key) = provider.verifying_key(value, &algorithm) else {
+                    debug!("failed to build verifying key");
+                    return None;
+                };
+
+                key
+            }
+            PublicKeyAlgorithm::Ed25519 => {
+                let Ok(Decoded { value, next }) = <&[u8]>::decode(next) else {
+                    debug!("invalid public key data");
+                    return None;
+                };
+
+                if !next.is_empty() {
+                    debug!("trailing data after ED25519 public key");
+                    return None;
+                }
+
+                let Ok(key) = provider.verifying_key(value, &algorithm) else {
+                    debug!("failed to build verifying key");
+                    return None;
+                };
+
+                key
+            }
+            PublicKeyAlgorithm::Unknown(_) => {
+                debug!(?algorithm, "unsupported public key algorithm");
+                return None;
+            }
+        };
+
+        Some(Self {
+            algorithm: algorithm.to_owned(),
+            key,
+            blob,
+        })
+    }
+
+    /// Verify a signature over the given message
+    pub fn verify(
+        &self,
+        message: SignatureInput,
+        signature: EncodedSignature,
+    ) -> Result<(), ProtoError> {
+        self.key
+            .verify(&message.0, &signature.0)
+            .map_err(|_| ProtoError::InvalidPacket("invalid signature"))
+    }
+
+    /// Check whether the given public key matches this authorized key
+    pub fn matches(&self, public_key: &PublicKey<'_>) -> bool {
+        self.algorithm == public_key.algorithm && self.blob.as_slice() == public_key.key_blob
+    }
+
+    /// Get the public key algorithm for this authorized key
+    pub fn algorithm(&self) -> &PublicKeyAlgorithm<'_> {
+        &self.algorithm
+    }
+}
+
+impl fmt::Debug for AuthorizedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizedKey")
+            .field("algorithm", &self.algorithm)
+            .finish_non_exhaustive()
+    }
+}
 
 /// The `SSH_MSG_USERAUTH_REQUEST` message
 ///
@@ -275,14 +414,6 @@ impl<'a> Decode<'a> for Signature<'a> {
 /// Constructed by [`Signature::encode()`].
 pub struct EncodedSignature(Vec<u8>);
 
-impl Deref for EncodedSignature {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 /// The `SSH_MSG_USERAUTH_FAILURE` message
 ///
 /// See <https://www.rfc-editor.org/rfc/rfc4252#section-5.1>.
@@ -369,14 +500,6 @@ impl<'a> SignatureData<'a> {
 ///
 /// Constructed by [`SignatureData::encode()`].
 pub struct SignatureInput(Vec<u8>);
-
-impl Deref for SignatureInput {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 /// The `SSH_MSG_SERVICE_ACCEPT` message
 ///
