@@ -17,8 +17,8 @@ use proto::{
         KeySourceSide,
     },
     key_exchange::{
-        EcdhKeyExchangeInit, EcdhKeyExchangeReply, HostKeys, KeyExchange, KeySourceSet, NewKeys,
-        ServerHostKey, SessionHostKey,
+        EcdhKeyExchangeInit, EcdhKeyExchangeReply, HostKeys, Identities, KeyExchange, KeySourceSet,
+        NewKeys, ServerHostKey, SessionHostKey,
     },
     named::{EncryptionAlgorithm, ExtensionId, MethodName},
 };
@@ -422,40 +422,6 @@ async fn buffer<'a>(
             "EOF",
         ))),
         _ => Ok(&state.buf),
-    }
-}
-
-#[derive(Debug)]
-pub struct Identities {
-    client: Vec<u8>,
-    server: Vec<u8>,
-}
-
-impl Encode for Identities {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        self.client.encode(buf);
-        self.server.encode(buf);
-    }
-}
-
-impl Decode<'_> for Identities {
-    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
-        let Decoded {
-            value: client,
-            next,
-        } = <&[u8]>::decode(bytes)?;
-        let Decoded {
-            value: server,
-            next,
-        } = <&[u8]>::decode(next)?;
-
-        Ok(Decoded {
-            value: Self {
-                client: client.to_vec(),
-                server: server.to_vec(),
-            },
-            next,
-        })
     }
 }
 

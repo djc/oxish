@@ -395,7 +395,7 @@ pub struct ServerHostKey<'a> {
     key: &'a dyn SigningKey,
 }
 
-impl<'a> ServerHostKey<'a> {
+impl ServerHostKey<'_> {
     fn sign(
         &self,
         exchange: HandshakeHash,
@@ -716,6 +716,45 @@ impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
 impl Encode for NewKeys {
     fn encode(&self, buf: &mut Vec<u8>) {
         MessageType::NewKeys.encode(buf);
+    }
+}
+
+/// Identities from the connection's initial setup
+///
+/// Used to derive the session id and the exchange hash for rekeying.
+#[derive(Debug)]
+pub struct Identities {
+    /// Client identity
+    pub client: Vec<u8>,
+    /// Server identity
+    pub server: Vec<u8>,
+}
+
+impl Encode for Identities {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.client.encode(buf);
+        self.server.encode(buf);
+    }
+}
+
+impl Decode<'_> for Identities {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded {
+            value: client,
+            next,
+        } = <&[u8]>::decode(bytes)?;
+        let Decoded {
+            value: server,
+            next,
+        } = <&[u8]>::decode(next)?;
+
+        Ok(Decoded {
+            value: Self {
+                client: client.to_vec(),
+                server: server.to_vec(),
+            },
+            next,
+        })
     }
 }
 
