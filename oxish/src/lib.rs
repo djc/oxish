@@ -224,13 +224,23 @@ struct SessionState<H> {
 
 impl Encode for SessionState<ServerHostKey<'_>> {
     fn encode(&self, buf: &mut Vec<u8>) {
-        self.addr.to_string().as_bytes().encode(buf);
-        self.host_key.encode(buf);
-        self.identities.encode(buf);
-        self.session_id.as_ref().encode(buf);
-        self.read.encode(buf);
-        self.write.encode(buf);
-        self.read_buf.encode(buf);
+        let Self {
+            addr,
+            host_key,
+            identities,
+            session_id,
+            read,
+            write,
+            read_buf,
+        } = self;
+
+        addr.to_string().as_bytes().encode(buf);
+        host_key.encode(buf);
+        identities.encode(buf);
+        session_id.as_ref().encode(buf);
+        read.encode(buf);
+        write.encode(buf);
+        read_buf.encode(buf);
     }
 }
 
@@ -304,11 +314,22 @@ struct SideState {
 
 impl Encode for SideState {
     fn encode(&self, buf: &mut Vec<u8>) {
-        self.source.algorithm.encode(buf);
-        self.source.encryption_key.encode(buf);
-        self.source.initial_iv.encode(buf);
-        self.counter.encode(buf);
-        self.sequence_number.encode(buf);
+        let Self {
+            source:
+                KeySourceSide {
+                    algorithm,
+                    encryption_key,
+                    initial_iv,
+                },
+            counter,
+            sequence_number,
+        } = self;
+
+        algorithm.encode(buf);
+        encryption_key.encode(buf);
+        initial_iv.encode(buf);
+        counter.encode(buf);
+        sequence_number.encode(buf);
     }
 }
 

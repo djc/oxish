@@ -254,20 +254,36 @@ impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
 
 impl Encode for KeyExchangeInit<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self {
+            cookie,
+            key_exchange_algorithms,
+            server_host_key_algorithms,
+            encryption_algorithms_client_to_server,
+            encryption_algorithms_server_to_client,
+            mac_algorithms_client_to_server,
+            mac_algorithms_server_to_client,
+            compression_algorithms_client_to_server,
+            compression_algorithms_server_to_client,
+            languages_client_to_server,
+            languages_server_to_client,
+            first_kex_packet_follows,
+            extended,
+        } = self;
+
         MessageType::KeyExchangeInit.encode(buf);
-        buf.extend_from_slice(&self.cookie);
-        OutgoingNameList(&self.key_exchange_algorithms).encode(buf);
-        OutgoingNameList(&self.server_host_key_algorithms).encode(buf);
-        OutgoingNameList(&self.encryption_algorithms_client_to_server).encode(buf);
-        OutgoingNameList(&self.encryption_algorithms_server_to_client).encode(buf);
-        OutgoingNameList(&self.mac_algorithms_client_to_server).encode(buf);
-        OutgoingNameList(&self.mac_algorithms_server_to_client).encode(buf);
-        OutgoingNameList(&self.compression_algorithms_client_to_server).encode(buf);
-        OutgoingNameList(&self.compression_algorithms_server_to_client).encode(buf);
-        OutgoingNameList(&self.languages_client_to_server).encode(buf);
-        OutgoingNameList(&self.languages_server_to_client).encode(buf);
-        buf.push(if self.first_kex_packet_follows { 1 } else { 0 });
-        buf.extend_from_slice(&self.extended.to_be_bytes());
+        buf.extend_from_slice(cookie);
+        OutgoingNameList(key_exchange_algorithms).encode(buf);
+        OutgoingNameList(server_host_key_algorithms).encode(buf);
+        OutgoingNameList(encryption_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(encryption_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(mac_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(mac_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(compression_algorithms_client_to_server).encode(buf);
+        OutgoingNameList(compression_algorithms_server_to_client).encode(buf);
+        OutgoingNameList(languages_client_to_server).encode(buf);
+        OutgoingNameList(languages_server_to_client).encode(buf);
+        buf.push(if *first_kex_packet_follows { 1 } else { 0 });
+        buf.extend_from_slice(&extended.to_be_bytes());
     }
 }
 
@@ -367,10 +383,16 @@ impl EcdhKeyExchangeReply {
 
 impl Encode for EcdhKeyExchangeReply {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self {
+            server_public_host_key,
+            server_ephemeral_public_key,
+            exchange_hash_signature,
+        } = self;
+
         MessageType::KeyExchangeEcdhReply.encode(buf);
-        self.server_public_host_key.encode(buf);
-        self.server_ephemeral_public_key.encode(buf);
-        self.exchange_hash_signature.encode(buf);
+        server_public_host_key.encode(buf);
+        server_ephemeral_public_key.encode(buf);
+        exchange_hash_signature.encode(buf);
     }
 }
 
@@ -431,7 +453,8 @@ pub struct ServerHostKey<'a> {
 
 impl Encode for ServerHostKey<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
-        self.pkcs8.encode(buf);
+        let Self { pkcs8, key: _ } = self;
+        pkcs8.encode(buf);
     }
 }
 
@@ -526,17 +549,18 @@ struct TaggedPublicKey<'a> {
 
 impl Encode for TaggedPublicKey<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self { algorithm, key } = self;
         let start = buf.len();
         buf.extend([0; 4]);
-        self.algorithm.encode(buf);
+        algorithm.encode(buf);
 
         // RFC 5656 section 3.1: an ECDSA public key blob carries the curve
         // identifier between the algorithm name and the point `Q`.
-        if matches!(self.algorithm, PublicKeyAlgorithm::EcdsaSha2Nistp256) {
+        if matches!(algorithm, PublicKeyAlgorithm::EcdsaSha2Nistp256) {
             "nistp256".as_bytes().encode(buf);
         }
 
-        self.key.encode(buf);
+        key.encode(buf);
         let len = (buf.len() - start - 4) as u32;
         if let Some(dst) = buf.get_mut(start..start + 4) {
             dst.copy_from_slice(&len.to_be_bytes());
@@ -551,18 +575,22 @@ struct TaggedSignature<'a> {
 
 impl Encode for TaggedSignature<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self {
+            algorithm,
+            signature,
+        } = self;
         let start = buf.len();
         buf.extend([0; 4]);
-        self.algorithm.encode(buf);
+        algorithm.encode(buf);
 
-        match self.algorithm {
+        match algorithm {
             // RFC 5656 section 3.1.2: the ECDSA signature blob is the pair of
             // integers `r` and `s`, each encoded as an mpint. The signing key
             // hands us the fixed-length `r || s` form, which we split in half.
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
                 let blob_start = buf.len();
                 buf.extend([0; 4]);
-                let (r, s) = self.signature.split_at(self.signature.len() / 2);
+                let (r, s) = signature.split_at(signature.len() / 2);
                 encode_mpint(r, buf);
                 encode_mpint(s, buf);
                 let blob_len = (buf.len() - blob_start - 4) as u32;
@@ -570,7 +598,7 @@ impl Encode for TaggedSignature<'_> {
                     dst.copy_from_slice(&blob_len.to_be_bytes());
                 }
             }
-            PublicKeyAlgorithm::Ed25519 => self.signature.as_slice().encode(buf),
+            PublicKeyAlgorithm::Ed25519 => signature.as_slice().encode(buf),
             PublicKeyAlgorithm::Unknown(_) => {
                 unreachable!("unknown algorithm should not be used for signing")
             }
@@ -748,8 +776,9 @@ pub struct Identities {
 
 impl Encode for Identities {
     fn encode(&self, buf: &mut Vec<u8>) {
-        self.client.encode(buf);
-        self.server.encode(buf);
+        let Self { client, server } = self;
+        client.encode(buf);
+        server.encode(buf);
     }
 }
 
@@ -785,9 +814,10 @@ pub struct ExtInfo<'a> {
 
 impl Encode for ExtInfo<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self { extensions } = self;
         MessageType::ExtInfo.encode(buf);
-        (self.extensions.len() as u32).encode(buf);
-        for (name, value) in &self.extensions {
+        (extensions.len() as u32).encode(buf);
+        for (name, value) in extensions {
             name.encode(buf);
             value.encode(buf);
         }

@@ -86,11 +86,18 @@ pub struct ChannelOpenConfirmation {
 
 impl Encode for ChannelOpenConfirmation {
     fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self {
+            recipient_channel,
+            sender_channel,
+            initial_window_size,
+            maximum_packet_size,
+        } = self;
+
         MessageType::ChannelOpenConfirmation.encode(buffer);
-        self.recipient_channel.encode(buffer);
-        self.sender_channel.encode(buffer);
-        self.initial_window_size.encode(buffer);
-        self.maximum_packet_size.encode(buffer);
+        recipient_channel.encode(buffer);
+        sender_channel.encode(buffer);
+        initial_window_size.encode(buffer);
+        maximum_packet_size.encode(buffer);
     }
 }
 
@@ -126,10 +133,16 @@ impl ChannelOpenFailure<'static> {
 
 impl Encode for ChannelOpenFailure<'_> {
     fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self {
+            recipient_channel,
+            reason_code,
+            description,
+        } = self;
+
         MessageType::ChannelOpenFailure.encode(buffer);
-        self.recipient_channel.encode(buffer);
-        self.reason_code.encode(buffer);
-        self.description.as_bytes().encode(buffer);
+        recipient_channel.encode(buffer);
+        reason_code.encode(buffer);
+        description.as_bytes().encode(buffer);
         "en-US".as_bytes().encode(buffer);
     }
 }
@@ -641,8 +654,9 @@ pub struct ChannelRequestSuccess {
 
 impl Encode for ChannelRequestSuccess {
     fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self { recipient_channel } = self;
         MessageType::ChannelSuccess.encode(buffer);
-        self.recipient_channel.encode(buffer);
+        recipient_channel.encode(buffer);
     }
 }
 
@@ -657,8 +671,9 @@ pub struct ChannelRequestFailure {
 
 impl Encode for ChannelRequestFailure {
     fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self { recipient_channel } = self;
         MessageType::ChannelFailure.encode(buffer);
-        self.recipient_channel.encode(buffer);
+        recipient_channel.encode(buffer);
     }
 }
 
@@ -701,9 +716,14 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
 
 impl Encode for ChannelData<'_> {
     fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self {
+            recipient_channel,
+            data,
+        } = self;
+
         MessageType::ChannelData.encode(buffer);
-        self.recipient_channel.encode(buffer);
-        self.data.as_ref().encode(buffer);
+        recipient_channel.encode(buffer);
+        data.as_ref().encode(buffer);
     }
 }
 
@@ -729,9 +749,14 @@ pub struct ChannelWindowAdjust {
 
 impl Encode for ChannelWindowAdjust {
     fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self {
+            recipient_channel,
+            bytes_to_add,
+        } = self;
+
         MessageType::ChannelWindowAdjust.encode(buffer);
-        self.recipient_channel.encode(buffer);
-        self.bytes_to_add.encode(buffer);
+        recipient_channel.encode(buffer);
+        bytes_to_add.encode(buffer);
     }
 }
 
@@ -802,8 +827,9 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelEof {
 
 impl Encode for ChannelEof {
     fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self { recipient_channel } = self;
         MessageType::ChannelEof.encode(buffer);
-        self.recipient_channel.encode(buffer);
+        recipient_channel.encode(buffer);
     }
 }
 
@@ -840,7 +866,8 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelClose {
 
 impl Encode for ChannelClose {
     fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self { recipient_channel } = self;
         MessageType::ChannelClose.encode(buffer);
-        self.recipient_channel.encode(buffer);
+        recipient_channel.encode(buffer);
     }
 }
