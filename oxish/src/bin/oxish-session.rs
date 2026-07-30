@@ -8,6 +8,6 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let session = Session::new(&rustix::stdio::stdin())?;
+    let session = Session::from_message(&rustix::stdio::stdin())?;
     Ok(session.run().await?)
 }
