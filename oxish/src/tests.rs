@@ -285,7 +285,7 @@ async fn session_binary() -> PathBuf {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
 
     let mut command = Command::new(cargo);
-    command.args(["build", "-p", "oxish", "--bin", "oxish-session"]);
+    command.args(["build", "-q", "-p", "oxish", "--bin", "oxish-session"]);
     command
         .arg("--target-dir")
         .arg(profile_dir.parent().unwrap());
