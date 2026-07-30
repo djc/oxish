@@ -29,7 +29,7 @@ pub struct Session<T> {
 }
 
 impl Session<TcpStream> {
-    pub fn new(source: &impl AsFd) -> Result<Self, Error> {
+    pub fn from_message(source: &impl AsFd) -> Result<Self, Error> {
         let mut length = None;
         let mut received = Zeroizing::new(Vec::new());
         let mut tcp = None;
