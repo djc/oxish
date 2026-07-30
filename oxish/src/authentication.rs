@@ -44,14 +44,14 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::{Connection, Error, receive};
 
 /// Authenticate a user over the given SSH connection
-#[instrument(name = "authentication", skip(session_id, conn, auth, provider), fields(addr = %conn.addr))]
+#[instrument(name = "authentication", skip(session_id, conn, store, provider), fields(addr = %conn.addr))]
 pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
     session_id: &Digest,
     conn: &mut Connection<T>,
-    auth: &Auth,
+    store: &dyn UserStore,
     provider: &dyn CryptoProvider,
 ) -> Result<User, Error> {
-    let future = inner(session_id, conn, auth, provider);
+    let future = inner(session_id, conn, store, provider);
     if let Ok(result) = timeout(Duration::from_secs(60), future).await {
         return result;
     }
@@ -69,7 +69,7 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
 async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
     session_id: &Digest,
     conn: &mut Connection<T>,
-    auth: &Auth,
+    store: &dyn UserStore,
     provider: &dyn CryptoProvider,
 ) -> Result<User, Error> {
     let packet = receive(&mut conn.stream, &mut conn.read).await?;
@@ -143,17 +143,17 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
             continue;
         };
 
-        let user = match (&mut cached_user, auth) {
-            (Some(user), _) if &*user.name == user_auth_request.user_name => user,
-            (_, auth) => {
+        let user = match &mut cached_user {
+            Some(user) if &*user.name == user_auth_request.user_name => user,
+            _ => {
                 let Ok(name) = Username::try_from(user_auth_request.user_name.to_owned()) else {
                     conn.send_auth_failed().await?;
                     continue;
                 };
 
-                match auth.resolve(name, provider) {
+                match store.lookup(name, provider) {
                     Some(user) => cached_user.insert(user),
-                    None => {
+                    _ => {
                         conn.send_auth_failed().await?;
                         continue;
                     }
@@ -232,48 +232,77 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
     }
 }
 
-/// Authentication mode
-pub enum Auth {
-    /// Look up the requested user in the system database and read their `authorized_keys` file
-    System,
-    /// Authorize against a fixed user
-    Fixed(User),
-}
+/// Default [`UserStore`] implementation
+///
+/// Uses the system database when running as root, and a single-user store otherwise.
+pub struct DefaultStore(());
 
-impl Auth {
-    /// Determine the authentication mode from the given user ID
-    ///
-    /// If the `uid` is 0, this will resolve to [`Auth::System`]; otherwise, it will resolve to
-    /// [`Auth::Fixed`] with the user information looked up from the system database.
-    pub fn for_id(uid: u32, provider: &dyn CryptoProvider) -> Result<Self, Error> {
-        Ok(match uid {
-            0 => Self::System,
-            _ => Self::Fixed(User::lookup(UserLookup::Id(uid), provider)?),
+impl DefaultStore {
+    /// Construct a new [`DefaultStore`] from the current process's effective UID
+    #[expect(clippy::new_ret_no_self)]
+    pub fn new(provider: &dyn CryptoProvider) -> Result<Box<dyn UserStore>, Error> {
+        Ok(match unsafe { libc::geteuid() } {
+            0 => Box::new(SystemStore) as Box<dyn UserStore>,
+            uid => Box::new(SingleUser(User::lookup(UserLookup::Id(uid), provider)?)),
         })
     }
+}
 
-    pub(crate) fn resolve(&self, name: Username, provider: &dyn CryptoProvider) -> Option<User> {
-        match self {
-            Self::System => match User::lookup(UserLookup::Name(name), provider) {
-                Ok(user) => Some(user),
-                Err(error) => {
-                    error!(%error, "failed to get user information");
-                    None
-                }
-            },
-            Self::Fixed(user) => match user.name == name {
-                true => Some(user.clone()),
-                false => {
-                    warn!(
-                        requested_user = %name,
-                        authorized_user = %user.name,
-                        "requested user does not match authorized user",
-                    );
-                    None
-                }
-            },
+/// User store backed by the system database
+struct SystemStore;
+
+impl UserStore for SystemStore {
+    fn lookup(&self, name: Username, provider: &dyn CryptoProvider) -> Option<User> {
+        match User::lookup(UserLookup::Name(name), provider) {
+            Ok(user) => Some(user),
+            Err(error) => {
+                error!(%error, "failed to get user information");
+                None
+            }
         }
     }
+
+    fn drop_privileges(&self) -> bool {
+        true
+    }
+}
+
+/// User store that only contains a single user
+pub(crate) struct SingleUser(User);
+
+impl UserStore for SingleUser {
+    fn lookup(&self, name: Username, _: &dyn CryptoProvider) -> Option<User> {
+        match self.0.name == name {
+            true => Some(self.0.clone()),
+            false => {
+                warn!(
+                    requested = %name,
+                    authorized = %self.0.name,
+                    "requested user does not match authorized user",
+                );
+                None
+            }
+        }
+    }
+
+    fn drop_privileges(&self) -> bool {
+        false
+    }
+}
+
+impl From<User> for SingleUser {
+    fn from(user: User) -> Self {
+        Self(user)
+    }
+}
+
+/// A user store resolves a username to a `User` type containing data used for authentication
+pub trait UserStore: Send + Sync + 'static {
+    /// Lookup a user by name, returning `None` if the user does not exist or cannot be retrieved
+    fn lookup(&self, name: Username, provider: &dyn CryptoProvider) -> Option<User>;
+
+    /// Whether the user store should set the UID of the process to the authenticated user
+    fn drop_privileges(&self) -> bool;
 }
 
 /// User data as retrieved from the system database
@@ -416,8 +445,11 @@ impl User {
     const DEFAULT_SHELL: *const c_char = c"/bin/sh".as_ptr().cast::<c_char>();
 }
 
+/// A validated username
+///
+/// Must be valid UTF-8 without any ASCII control characters or slashes.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Username(String);
+pub struct Username(String);
 
 impl Username {
     fn nobody() -> Self {

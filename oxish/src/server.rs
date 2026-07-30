@@ -37,7 +37,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     Connection, Error, Session, SessionState, SideState,
-    authentication::{Auth, User, authenticate},
+    authentication::{User, UserStore, authenticate},
 };
 
 /// State for an SSH server
@@ -45,7 +45,7 @@ pub struct Server {
     pub(crate) provider: &'static dyn CryptoProvider,
     pub(crate) host_keys: HostKeys,
     pub(crate) session: PathBuf,
-    pub(crate) auth: Auth,
+    pub(crate) store: Box<dyn UserStore>,
     pub(crate) authenticating: Semaphore,
     config: Config,
 }
@@ -53,7 +53,7 @@ pub struct Server {
 impl Server {
     /// Create a new SSH server from the necessary minimal state
     pub fn new(
-        auth: Auth,
+        store: Box<dyn UserStore>,
         host_keys: HostKeys,
         session: PathBuf,
         provider: &'static dyn CryptoProvider,
@@ -62,7 +62,7 @@ impl Server {
             provider,
             host_keys,
             session,
-            auth,
+            store,
             authenticating: Semaphore::new(32),
             config: Config::default(),
         })
@@ -132,7 +132,7 @@ impl Server {
                 Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
             };
 
-        let user = authenticate(&session_id, &mut conn, &self.auth, self.provider)
+        let user = authenticate(&session_id, &mut conn, &*self.store, self.provider)
             .await
             .context("authentication failed")?;
 
@@ -201,11 +201,11 @@ impl Server {
 
     /// Spawn a child process for the authenticated session
     ///
-    /// When `auth` is [`Auth::System`], the child process drops its privileges to `user` and
-    /// changes into that user's home directory before `exec`, so the session (and any shell it
-    /// spawns) runs as the authenticated user. The caller sets this only when the server is
-    /// privileged enough to change the process owner; when it is not, authentication is already
-    /// restricted to the user the server runs as, so there's no need to drop privileges.
+    /// If [`UserStore::drop_privileges()`] yields true, the child process drops its privileges
+    /// to `user` and changes into that user's home directory before `exec`, so the session (and
+    /// any shell it spawns) runs as the authenticated user. The caller sets this only when the
+    /// server is privileged enough to change the process owner; when it is not, authentication
+    /// is already restricted to the user the server runs as, so there's no need to drop privileges.
     async fn spawn(
         &self,
         state: SessionState<ServerHostKey<'_>>,
@@ -232,7 +232,7 @@ impl Server {
             command.env("LLVM_PROFILE_FILE", file);
         }
 
-        if let Auth::System = self.auth {
+        if self.store.drop_privileges() {
             let home = CString::new(user.home_dir.as_os_str().as_bytes())
                 .map_err(|_| Error::InvalidState("home directory path contains an interior NUL"))?;
             let name = CString::new(user.name.as_bytes())

@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     SessionState, SideState,
-    authentication::{Auth, AuthorizedKey, User},
+    authentication::{AuthorizedKey, SingleUser, User},
     server::Server,
 };
 
@@ -129,7 +129,7 @@ async fn handshake(
     let addr = listener.local_addr().unwrap();
 
     let server = Server::new(
-        Auth::Fixed(user),
+        Box::new(SingleUser::from(user)),
         HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider).unwrap(),
         session_binary().await,
         provider,
