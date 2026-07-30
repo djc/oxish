@@ -622,3 +622,15 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
         false => ControlFlow::Break(()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DEFAULT_PROVIDER;
+
+    #[test]
+    fn parse_fake_keys() {
+        fake_key(&PublicKeyAlgorithm::EcdsaSha2Nistp256, DEFAULT_PROVIDER).unwrap();
+        fake_key(&PublicKeyAlgorithm::Ed25519, DEFAULT_PROVIDER).unwrap();
+    }
+}
