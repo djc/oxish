@@ -573,9 +573,8 @@ fn authorized_keys(home_dir: &Path, uid: u32, provider: &dyn CryptoProvider) -> 
     let mut keys = Vec::new();
     for (line, key) in contents.lines().enumerate() {
         match AuthorizedKey::from_str(key, provider) {
-            Ok(Some(key)) => keys.push(key),
-            Ok(None) => continue,
-            Err(()) => debug!(line = line + 1, "skipping invalid authorized keys line"),
+            Some(key) => keys.push(key),
+            None => debug!(line = line + 1, "no valid authorized key found on line"),
         }
     }
 
@@ -639,7 +638,7 @@ impl AuthorizedKey {
     }
 
     /// Build an `AuthorizedKey` from a string in the format used in `authorized_keys`
-    pub fn from_str(s: &str, provider: &dyn CryptoProvider) -> Result<Option<Self>, ()> {
+    pub fn from_str(s: &str, provider: &dyn CryptoProvider) -> Option<Self> {
         let key = match s.split_once('#') {
             Some((contents, _)) => contents,
             None => s,
@@ -647,25 +646,25 @@ impl AuthorizedKey {
         .trim();
 
         if key.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         let mut parts = key.split_whitespace();
         let Some(alg) = parts.next() else {
             debug!("missing algorithm");
-            return Err(());
+            return None;
         };
 
         // TODO: support options before key type
         let algorithm = PublicKeyAlgorithm::typed(alg);
         let Some(key_data) = parts.next() else {
             debug!("missing key data");
-            return Err(());
+            return None;
         };
 
         let Ok(blob) = data_encoding::BASE64.decode(key_data.as_bytes()) else {
             debug!("invalid base64 key data");
-            return Err(());
+            return None;
         };
 
         let Ok(Decoded {
@@ -674,34 +673,34 @@ impl AuthorizedKey {
         }) = <&[u8]>::decode(&blob)
         else {
             debug!("failed to decode key blob");
-            return Err(());
+            return None;
         };
 
         if key_type != algorithm.name().as_bytes() {
             debug!(?key_type, ?algorithm, "key type does not match algorithm");
-            return Err(());
+            return None;
         }
 
         let key = match algorithm {
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
                 let Ok(Decoded { next, .. }) = <&[u8]>::decode(next) else {
                     debug!("invalid public key data");
-                    return Err(());
+                    return None;
                 };
 
                 let Ok(Decoded { value, next }) = <&[u8]>::decode(next) else {
                     debug!("invalid public key data");
-                    return Err(());
+                    return None;
                 };
 
                 if !next.is_empty() {
                     debug!("trailing data after ECDSA public key");
-                    return Err(());
+                    return None;
                 }
 
                 let Ok(key) = provider.verifying_key(value, &algorithm) else {
                     debug!("failed to build verifying key");
-                    return Err(());
+                    return None;
                 };
 
                 key
@@ -709,32 +708,32 @@ impl AuthorizedKey {
             PublicKeyAlgorithm::Ed25519 => {
                 let Ok(Decoded { value, next }) = <&[u8]>::decode(next) else {
                     debug!("invalid public key data");
-                    return Err(());
+                    return None;
                 };
 
                 if !next.is_empty() {
                     debug!("trailing data after ED25519 public key");
-                    return Err(());
+                    return None;
                 }
 
                 let Ok(key) = provider.verifying_key(value, &algorithm) else {
                     debug!("failed to build verifying key");
-                    return Err(());
+                    return None;
                 };
 
                 key
             }
             PublicKeyAlgorithm::Unknown(_) => {
                 debug!(?algorithm, "unsupported public key algorithm");
-                return Err(());
+                return None;
             }
         };
 
-        Ok(Some(Self {
+        Some(Self {
             algorithm: algorithm.to_owned(),
             key,
             blob,
-        }))
+        })
     }
 
     async fn verify(
