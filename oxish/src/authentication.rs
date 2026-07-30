@@ -327,13 +327,19 @@ struct CachedUser {
 }
 
 /// User data as retrieved from the system database
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct User {
-    pub(crate) name: Username,
-    pub(crate) id: u32,
-    pub(crate) gid: u32,
-    pub(crate) home_dir: PathBuf,
-    pub(crate) shell: PathBuf,
+    /// The user's name
+    pub name: Username,
+    /// The user's UID
+    pub id: u32,
+    /// The user's GID
+    pub gid: u32,
+    /// The user's home directory
+    pub home_dir: PathBuf,
+    /// The user's shell
+    pub shell: PathBuf,
 }
 
 impl User {
@@ -432,20 +438,6 @@ impl User {
             gid,
             home_dir,
             shell,
-        })
-    }
-
-    /// Create a new user with the given name and home directory
-    ///
-    /// This is primarily intended for testing.
-    #[cfg(test)]
-    pub(crate) fn new(name: String, id: u32, gid: u32, home_dir: PathBuf) -> Result<Self, Error> {
-        Ok(Self {
-            name: Username::try_from(name)?,
-            id,
-            gid,
-            home_dir,
-            shell: PathBuf::from("/bin/sh"),
         })
     }
 
