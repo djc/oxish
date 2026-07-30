@@ -171,7 +171,7 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
             // Signature, no authorized key => verify signature against fake key
             (Some(sig), None) => (
                 sig,
-                match AuthorizedKey::fake(&public_key.algorithm, provider) {
+                match fake_key(&public_key.algorithm, provider) {
                     Ok(key) => key,
                     Err(_) => {
                         warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
@@ -230,6 +230,27 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
             }
         }
     }
+}
+
+/// Build a fake key for the given `algorithm` to mitigate timing attacks
+///
+/// We want to execute a signature verification even when the user does not have a matching
+/// authorized key, so we build a fake key for the requested algorithm and verify the
+/// signature against it. This ensures that the response time is consistent regardless of
+/// whether the user has a matching authorized key.
+fn fake_key(
+    algorithm: &PublicKeyAlgorithm<'_>,
+    provider: &dyn CryptoProvider,
+) -> Result<AuthorizedKey, CryptoError> {
+    AuthorizedKey::from_str(
+        match algorithm {
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBE4MlZd759Tv7GElTKPf1D0FCmDWB9LEkkWyaP3E8T0H/fKyFnA0e0yBm/XpkG9erfxrcgMkAu1CM3e19g9bZWg=",
+            PublicKeyAlgorithm::Ed25519 => "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDX+GNCeikghR3A2bLB0KmlovqxdC+BUHAfYhYGcUJxA",
+            _ => return Err(CryptoError::UnknownAlgorithm),
+        },
+        provider,
+    )
+    .ok_or(CryptoError::KeyRejected)
 }
 
 /// Default [`UserStore`] implementation
@@ -605,27 +626,6 @@ pub struct AuthorizedKey {
 }
 
 impl AuthorizedKey {
-    /// Build a fake key for the given `algorithm` to mitigate timing attacks
-    ///
-    /// We want to execute a signature verification even when the user does not have a matching
-    /// authorized key, so we build a fake key for the requested algorithm and verify the
-    /// signature against it. This ensures that the response time is consistent regardless of
-    /// whether the user has a matching authorized key.
-    fn fake(
-        algorithm: &PublicKeyAlgorithm<'_>,
-        provider: &dyn CryptoProvider,
-    ) -> Result<Self, CryptoError> {
-        Self::from_str(
-            match algorithm {
-                PublicKeyAlgorithm::EcdsaSha2Nistp256 => Self::FAKE_ECDSA_P256_KEY,
-                PublicKeyAlgorithm::Ed25519 => Self::FAKE_ED25519_KEY,
-                _ => return Err(CryptoError::UnknownAlgorithm),
-            },
-            provider,
-        )
-        .ok_or(CryptoError::KeyRejected)
-    }
-
     /// Build an `AuthorizedKey` from a string in the format used in `authorized_keys`
     pub fn from_str(s: &str, provider: &dyn CryptoProvider) -> Option<Self> {
         let key = match s.split_once('#') {
@@ -780,13 +780,6 @@ impl AuthorizedKey {
         .await
         .map_err(|_| ProtoError::InvalidPacket("signature verification task failed"))?
     }
-
-    /// Random ECDSA-P256 key used to mitigate timing attacks during authentication
-    const FAKE_ECDSA_P256_KEY: &'static str = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBE4MlZd759Tv7GElTKPf1D0FCmDWB9LEkkWyaP3E8T0H/fKyFnA0e0yBm/XpkG9erfxrcgMkAu1CM3e19g9bZWg=";
-
-    /// Random Ed25519 public key used to mitigate timing attacks during authentication
-    const FAKE_ED25519_KEY: &'static str =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDX+GNCeikghR3A2bLB0KmlovqxdC+BUHAfYhYGcUJxA";
 }
 
 impl fmt::Debug for AuthorizedKey {
