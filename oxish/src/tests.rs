@@ -110,7 +110,6 @@ async fn handshake(
 
     let authorized_key = fs::read_to_string(key_path.with_extension("pub")).unwrap();
     let key = AuthorizedKey::from_str(&authorized_key, provider)
-        .unwrap()
         .expect("failed to parse generated public key");
     let user = User::new(USER.to_string(), 1000, 1000, PathBuf::from("/var/empty")).unwrap();
 
