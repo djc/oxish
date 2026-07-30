@@ -84,13 +84,19 @@ impl<'a> Identification<'a> {
 
 impl Encode for Identification<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self {
+            protocol,
+            software,
+            comments,
+        } = self;
+
         buf.extend_from_slice(b"SSH-");
-        buf.extend_from_slice(self.protocol.as_bytes());
+        buf.extend_from_slice(protocol.as_bytes());
         buf.push(b'-');
-        buf.extend_from_slice(self.software.as_bytes());
+        buf.extend_from_slice(software.as_bytes());
         if !self.comments.is_empty() {
             buf.push(b' ');
-            buf.extend_from_slice(self.comments.as_bytes());
+            buf.extend_from_slice(comments.as_bytes());
         }
         buf.extend_from_slice(b"\r\n");
     }
@@ -148,9 +154,14 @@ impl<'a> TryFrom<IncomingPacket<'a>> for Disconnect<'a> {
 
 impl Encode for Disconnect<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self {
+            reason_code,
+            description,
+        } = self;
+
         MessageType::Disconnect.encode(buf);
-        (self.reason_code as u32).encode(buf);
-        self.description.as_bytes().encode(buf);
+        (*reason_code as u32).encode(buf);
+        description.as_bytes().encode(buf);
         "en-US".as_bytes().encode(buf);
     }
 }
@@ -473,8 +484,9 @@ pub struct Ignore<'a>(pub &'a [u8]);
 
 impl Encode for Ignore<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self(payload) = self;
         MessageType::Ignore.encode(buf);
-        self.0.encode(buf);
+        payload.encode(buf);
     }
 }
 

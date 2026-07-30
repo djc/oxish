@@ -221,9 +221,14 @@ pub struct UserAuthFailure<'a> {
 
 impl Encode for UserAuthFailure<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self {
+            can_continue,
+            partial_success,
+        } = self;
+
         MessageType::UserAuthFailure.encode(buf);
-        OutgoingNameList(self.can_continue).encode(buf);
-        self.partial_success.encode(buf);
+        OutgoingNameList(can_continue).encode(buf);
+        partial_success.encode(buf);
     }
 }
 
@@ -242,9 +247,14 @@ pub struct UserAuthPkOk<'a> {
 
 impl Encode for UserAuthPkOk<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self {
+            algorithm,
+            key_blob,
+        } = self;
+
         MessageType::UserAuthPkOk.encode(buf);
-        self.algorithm.encode(buf);
-        self.key_blob.encode(buf);
+        algorithm.encode(buf);
+        key_blob.encode(buf);
     }
 }
 
@@ -291,8 +301,9 @@ pub struct ServiceAccept<'a> {
 
 impl Encode for ServiceAccept<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
+        let Self { service_name } = self;
         MessageType::ServiceAccept.encode(buf);
-        self.service_name.encode(buf);
+        service_name.encode(buf);
     }
 }
 
