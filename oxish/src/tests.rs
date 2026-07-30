@@ -4,7 +4,7 @@ use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::On
 use proto::{
     Decoded, Encode,
     crypto::{CryptoProvider, Digest, KeySourceSide},
-    key_exchange::{HostKeys, ServerHostKey},
+    key_exchange::{HostKeys, Identities, ServerHostKey},
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
 };
 use tempfile::TempDir;
@@ -12,7 +12,7 @@ use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout
 use zeroize::Zeroizing;
 
 use crate::{
-    Identities, SessionState, SideState,
+    SessionState, SideState,
     authentication::{Auth, AuthorizedKey, User},
     server::Server,
 };
