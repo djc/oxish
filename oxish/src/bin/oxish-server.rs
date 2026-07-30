@@ -9,7 +9,7 @@ use std::{
 
 use clap::{ArgAction, Parser};
 use listenfd::ListenFd;
-use oxish::{Auth, Config, DEFAULT_PROVIDER, Server};
+use oxish::{Config, DEFAULT_PROVIDER, DefaultStore, Server};
 use proto::{
     key_exchange::HostKeys,
     named::{Named, PublicKeyAlgorithm},
@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
     Arc::new(
         Server::new(
-            Auth::for_id(unsafe { libc::geteuid() }, provider)?,
+            DefaultStore::new(provider)?,
             host_keys,
             session_bin,
             provider,
