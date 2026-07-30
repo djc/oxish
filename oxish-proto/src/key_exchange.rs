@@ -25,8 +25,6 @@ pub struct KeyExchange {
     pub exchange: HandshakeHash,
     /// The negotiated algorithms
     pub negotiated: Negotiated,
-    /// Our `SSH_MSG_EXT_INFO` message, to be sent if the peer supports it
-    pub ext_info: ExtInfo<'static>,
 }
 
 impl KeyExchange {
@@ -39,7 +37,7 @@ impl KeyExchange {
         server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
-    ) -> Result<Self, ProtoError> {
+    ) -> Result<(Self, Option<StrictKeyExchange>, Option<ExtInfo<'static>>), ProtoError> {
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
         exchange.update(&[u8::from(packet.message_type)]);
         exchange.update(packet.payload);
@@ -58,13 +56,6 @@ impl KeyExchange {
         key_exchange_algorithms
             .extend(extensions.map(KeyExchangeAlgorithmOrExtensionId::Extension));
 
-        let ext_info = ExtInfo {
-            extensions: vec![(
-                ExtensionName::ServerSigAlgs,
-                Box::new(OutgoingNameList(supported.public_key)),
-            )],
-        };
-
         let local = KeyExchangeInit {
             cookie,
             key_exchange_algorithms,
@@ -82,14 +73,57 @@ impl KeyExchange {
         };
 
         let negotiated = Negotiated::choose(peer_key_exchange_init, &local)?;
-        Ok(Self {
-            local,
-            exchange: exchange.hash(provider.hash(&negotiated.key_exchange)?),
-            negotiated,
+        let ext_info = negotiated.want_extension_info.then(|| ExtInfo {
+            extensions: vec![(
+                ExtensionName::ServerSigAlgs,
+                Box::new(OutgoingNameList(supported.public_key)),
+            )],
+        });
+        let strict = negotiated
+            .strict_key_exchange
+            .then_some(StrictKeyExchange(()));
+
+        Ok((
+            Self {
+                local,
+                exchange: exchange.hash(provider.hash(&negotiated.key_exchange)?),
+                negotiated,
+            },
+            strict,
             ext_info,
-        })
+        ))
+    }
+
+    /// Complete the key exchange and produce the reply message, exchange hash and derived keys
+    pub fn complete<'h>(
+        self,
+        ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
+        host_keys: &'h HostKeys,
+        provider: &dyn CryptoProvider,
+    ) -> Result<
+        (
+            ServerHostKey<'h>,
+            EcdhKeyExchangeReply,
+            Digest,
+            KeySourceSet,
+        ),
+        CryptoError,
+    > {
+        let host_key = host_keys.key(&self.negotiated)?;
+        let (reply, session_id, keys) = EcdhKeyExchangeReply::new(
+            ecdh_key_exchange_init,
+            &self.negotiated,
+            self.exchange,
+            None,
+            &host_key,
+            provider,
+        )?;
+        Ok((host_key, reply, session_id, keys))
     }
 }
+
+/// Marker type for whether the client requested strict key exchange
+pub struct StrictKeyExchange(());
 
 /// The `SSH_MSG_KEXINIT` message
 ///
@@ -286,22 +320,23 @@ impl EcdhKeyExchangeReply {
     ///
     /// Returns the reply message, the exchange hash and the derived key material
     /// (<https://www.rfc-editor.org/rfc/rfc4253#section-7.2>).
-    pub fn new<'h>(
+    fn new(
         ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
         negotiated: &Negotiated,
         exchange: HandshakeHash,
         session_id: Option<Digest>,
-        host_key: &ServerHostKey<'h>,
+        host_key: &ServerHostKey<'_>,
         provider: &dyn CryptoProvider,
     ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
         let KeyExchangeOutput {
             shared_secret,
             exchange_hash,
-            reply: key_exchange_reply,
-        } = host_key.sign(
+            reply,
+        } = KeyExchangeOutput::new(
             exchange,
             ecdh_key_exchange_init.client_ephemeral_public_key,
             negotiated,
+            &*host_key.key,
             provider,
         )?;
 
@@ -314,7 +349,7 @@ impl EcdhKeyExchangeReply {
         };
 
         Ok((
-            key_exchange_reply,
+            reply,
             exchange_hash,
             KeySourceSet {
                 client_to_server: KeySourceSide::client_to_server(
@@ -392,24 +427,6 @@ impl HostKeys {
 pub struct ServerHostKey<'a> {
     pkcs8: &'a Zeroizing<Vec<u8>>,
     key: &'a dyn SigningKey,
-}
-
-impl ServerHostKey<'_> {
-    fn sign(
-        &self,
-        exchange: HandshakeHash,
-        client_ephemeral_public_key: &[u8],
-        negotiated: &Negotiated,
-        provider: &dyn CryptoProvider,
-    ) -> Result<KeyExchangeOutput, CryptoError> {
-        KeyExchangeOutput::new(
-            exchange,
-            client_ephemeral_public_key,
-            negotiated,
-            self.key,
-            provider,
-        )
-    }
 }
 
 impl Encode for ServerHostKey<'_> {

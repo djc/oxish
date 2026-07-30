@@ -17,8 +17,8 @@ use proto::{
         KeySourceSide,
     },
     key_exchange::{
-        EcdhKeyExchangeInit, EcdhKeyExchangeReply, HostKeys, Identities, KeyExchange, KeySourceSet,
-        NewKeys, ServerHostKey, SessionHostKey,
+        EcdhKeyExchangeInit, HostKeys, Identities, KeyExchange, KeySourceSet, NewKeys,
+        ServerHostKey, SessionHostKey, StrictKeyExchange,
     },
     named::{EncryptionAlgorithm, ExtensionId, MethodName},
 };
@@ -71,7 +71,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Receive and send key exchange init packets
 
         let packet = receive(&mut self.stream, &mut self.read).await?;
-        let mut kx = KeyExchange::start(
+        let (mut kx, strict_kx, ext_info) = KeyExchange::start(
             packet,
             exchange,
             host_keys.algorithms().collect(),
@@ -86,24 +86,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let packet = receive(&mut self.stream, &mut self.read).await?;
         let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
-        let host_key = host_keys.key(&kx.negotiated)?;
-        let (key_exchange_reply, session_id, keys) = EcdhKeyExchangeReply::new(
-            ecdh_key_exchange_init,
-            &kx.negotiated,
-            kx.exchange,
-            None,
-            &host_key,
-            provider,
-        )?;
+        let (host_key, key_exchange_reply, session_id, keys) = kx
+            .complete(ecdh_key_exchange_init, host_keys, provider)
+            .context("key exchange failed")?;
 
         self.send(&key_exchange_reply).await?;
 
         // Exchange new keys packets and install new keys
 
-        self.update_keys(&keys, kx.negotiated.strict_key_exchange, provider)
+        self.update_keys(&keys, strict_kx.as_ref(), provider)
             .await?;
-        if kx.negotiated.want_extension_info {
-            self.send(&kx.ext_info).await?;
+        if let Some(ext_info) = ext_info {
+            self.send(&ext_info).await?;
         }
 
         self.send(&Ignore::default()).await?;
@@ -113,7 +107,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     async fn update_keys(
         &mut self,
         keys: &KeySourceSet,
-        strict: bool,
+        strict_kx: Option<&StrictKeyExchange>,
         provider: &dyn CryptoProvider,
     ) -> Result<(), Error> {
         let packet = receive(&mut self.stream, &mut self.read).await?;
@@ -121,14 +115,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         // Under strict key exchange the sequence numbers are reset to zero once NEWKEYS crosses in
         // each direction, so the first encrypted packet after NEWKEYS uses sequence number zero.
-        if strict {
-            self.read.reset_sequence_number();
-        }
+        self.read.reset_sequence_number(strict_kx);
 
         self.send(&NewKeys).await?;
-        if strict {
-            self.write.reset_sequence_number();
-        }
+        self.write.reset_sequence_number(strict_kx);
 
         self.read.opener = Some(provider.opening_key(0, &keys.client_to_server)?);
         self.write.sealer = Some(provider.sealing_key(0, &keys.server_to_client)?);
