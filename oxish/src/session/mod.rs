@@ -23,7 +23,9 @@ mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
 mod terminal;
 
-/// A single SSH connection
+/// A single SSH session's state
+///
+/// Call [`Session::run()`] to drive the session forward.
 pub struct Session<T> {
     conn: Connection<T>,
     rekey: Rekey,
@@ -31,6 +33,7 @@ pub struct Session<T> {
 }
 
 impl Session<TcpStream> {
+    /// Resume an SSH session from the session state received over the Unix socket `source`
     pub fn from_message(source: &impl AsFd) -> Result<Self, Error> {
         let mut length = None;
         let mut received = Zeroizing::new(Vec::new());
@@ -162,7 +165,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
         }
     }
 
-    /// Drive the connection forward
+    /// Run the session, driving the connection forward and handling channel messages
+    ///
+    /// This function never returns unless the connection is closed or an error occurs.
     #[instrument(name = "connection", skip(self, provider), fields(addr = %self.conn.addr))]
     pub async fn run(mut self, provider: &'static dyn CryptoProvider) -> Result<(), Error> {
         loop {
