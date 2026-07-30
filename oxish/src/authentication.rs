@@ -615,18 +615,15 @@ impl AuthorizedKey {
         algorithm: &PublicKeyAlgorithm<'_>,
         provider: &dyn CryptoProvider,
     ) -> Result<Self, CryptoError> {
-        Ok(Self {
-            key: provider.verifying_key(
-                match algorithm {
-                    PublicKeyAlgorithm::EcdsaSha2Nistp256 => &Self::FAKE_ECDSA_P256_KEY[..],
-                    PublicKeyAlgorithm::Ed25519 => &Self::FAKE_ED25519_KEY[..],
-                    _ => return Err(CryptoError::UnknownAlgorithm),
-                },
-                algorithm,
-            )?,
-            algorithm: algorithm.to_owned(),
-            blob: Vec::new(),
-        })
+        Self::from_str(
+            match algorithm {
+                PublicKeyAlgorithm::EcdsaSha2Nistp256 => Self::FAKE_ECDSA_P256_KEY,
+                PublicKeyAlgorithm::Ed25519 => Self::FAKE_ED25519_KEY,
+                _ => return Err(CryptoError::UnknownAlgorithm),
+            },
+            provider,
+        )
+        .ok_or(CryptoError::KeyRejected)
     }
 
     /// Build an `AuthorizedKey` from a string in the format used in `authorized_keys`
@@ -785,18 +782,11 @@ impl AuthorizedKey {
     }
 
     /// Random ECDSA-P256 key used to mitigate timing attacks during authentication
-    const FAKE_ECDSA_P256_KEY: [u8; 65] = [
-        4, 78, 12, 149, 151, 123, 231, 212, 239, 236, 97, 37, 76, 163, 223, 212, 61, 5, 10, 96,
-        214, 7, 210, 196, 146, 69, 178, 104, 253, 196, 241, 61, 7, 253, 242, 178, 22, 112, 52, 123,
-        76, 129, 155, 245, 233, 144, 111, 94, 173, 252, 107, 114, 3, 36, 2, 237, 66, 51, 119, 181,
-        246, 15, 91, 101, 104,
-    ];
+    const FAKE_ECDSA_P256_KEY: &'static str = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBE4MlZd759Tv7GElTKPf1D0FCmDWB9LEkkWyaP3E8T0H/fKyFnA0e0yBm/XpkG9erfxrcgMkAu1CM3e19g9bZWg=";
 
     /// Random Ed25519 public key used to mitigate timing attacks during authentication
-    const FAKE_ED25519_KEY: [u8; 32] = [
-        53, 254, 24, 208, 158, 138, 72, 33, 71, 112, 54, 108, 176, 116, 42, 105, 104, 190, 172, 93,
-        11, 224, 84, 28, 7, 216, 133, 129, 156, 80, 156, 64,
-    ];
+    const FAKE_ED25519_KEY: &'static str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDX+GNCeikghR3A2bLB0KmlovqxdC+BUHAfYhYGcUJxA";
 }
 
 impl fmt::Debug for AuthorizedKey {
