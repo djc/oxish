@@ -17,6 +17,74 @@ use crate::{
     },
 };
 
+/// State required for a rekeying exchange
+pub struct Rekey {
+    host_key: SessionHostKey,
+    identities: Identities,
+    strict_kx: Option<StrictKeyExchange>,
+    session_id: Digest,
+}
+
+impl Rekey {
+    /// Create a new rekey state from its constituent parts
+    pub fn new(
+        session_id: Digest,
+        strict_kx: Option<StrictKeyExchange>,
+        identities: Identities,
+        host_key: SessionHostKey,
+    ) -> Self {
+        Self {
+            host_key,
+            identities,
+            strict_kx,
+            session_id,
+        }
+    }
+
+    /// Process the client's `SSH_MSG_KEXINIT` and negotiate the new algorithms
+    pub fn start(
+        &self,
+        packet: IncomingPacket<'_>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<KeyExchange, ProtoError> {
+        let mut exchange = HandshakeBuffer::default();
+        exchange.prefixed(&self.identities.client);
+        exchange.prefixed(&self.identities.server);
+        let (kx, _, _) = KeyExchange::start(
+            packet,
+            exchange,
+            vec![self.host_key.algorithm()],
+            [].into_iter(),
+            provider,
+        )?;
+        Ok(kx)
+    }
+
+    /// Complete a client-initiated rekey
+    pub fn complete(
+        &self,
+        ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
+        negotiated: &Negotiated,
+        exchange: HandshakeHash,
+        provider: &dyn CryptoProvider,
+    ) -> Result<(EcdhKeyExchangeReply, KeySourceSet), CryptoError> {
+        let (reply, _, keys) = EcdhKeyExchangeReply::new(
+            ecdh_key_exchange_init,
+            negotiated,
+            exchange,
+            Some(self.session_id.clone()),
+            &*self.host_key.0,
+            provider,
+        )?;
+        Ok((reply, keys))
+    }
+
+    /// Whether we negotiated strict key exchange with the client
+    pub fn strict_key_exchange(&self) -> Option<&StrictKeyExchange> {
+        self.strict_kx.as_ref()
+    }
+}
+
 /// Output from the initial key exchange phase
 pub struct KeyExchange {
     /// Our own `SSH_MSG_KEXINIT` message, to be sent to the peer
@@ -115,7 +183,7 @@ impl KeyExchange {
             &self.negotiated,
             self.exchange,
             None,
-            &host_key,
+            host_key.key,
             provider,
         )?;
         Ok((host_key, reply, session_id, keys))
@@ -124,6 +192,22 @@ impl KeyExchange {
 
 /// Marker type for whether the client requested strict key exchange
 pub struct StrictKeyExchange(());
+
+impl Encode for Option<StrictKeyExchange> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.is_some().encode(buf);
+    }
+}
+
+impl Decode<'_> for Option<StrictKeyExchange> {
+    fn decode(buf: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded { value, next } = bool::decode(buf)?;
+        Ok(Decoded {
+            value: value.then_some(StrictKeyExchange(())),
+            next,
+        })
+    }
+}
 
 /// The `SSH_MSG_KEXINIT` message
 ///
@@ -341,7 +425,7 @@ impl EcdhKeyExchangeReply {
         negotiated: &Negotiated,
         exchange: HandshakeHash,
         session_id: Option<Digest>,
-        host_key: &ServerHostKey<'_>,
+        host_key: &dyn SigningKey,
         provider: &dyn CryptoProvider,
     ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
         let KeyExchangeOutput {
@@ -352,7 +436,7 @@ impl EcdhKeyExchangeReply {
             exchange,
             ecdh_key_exchange_init.client_ephemeral_public_key,
             negotiated,
-            &*host_key.key,
+            host_key,
             provider,
         )?;
 
@@ -466,10 +550,17 @@ impl<'a> From<(&'a Zeroizing<Vec<u8>>, &'a dyn SigningKey)> for ServerHostKey<'a
 }
 
 /// A single host key, used to sign rekeying exchanges
-#[expect(dead_code)]
 pub struct SessionHostKey(Box<dyn SigningKey>);
 
 impl SessionHostKey {
+    /// Create a new session host key from a borrowed server host key
+    pub fn from_server(
+        host_key: ServerHostKey<'_>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, ProtoError> {
+        Ok(Self(provider.signing_key_from_pkcs8(host_key.pkcs8)?))
+    }
+
     /// Decode a host key from encoded PKCS#8 bytes
     pub fn decode<'a>(
         buf: &'a [u8],
@@ -480,6 +571,11 @@ impl SessionHostKey {
             value: Self(provider.signing_key_from_pkcs8(pkcs8)?),
             next,
         })
+    }
+
+    /// The public key algorithm of this host key
+    pub fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
+        self.0.algorithm()
     }
 }
 

@@ -1,4 +1,4 @@
-use oxish::Session;
+use oxish::{DEFAULT_PROVIDER, Session};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -9,5 +9,5 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let session = Session::from_message(&rustix::stdio::stdin())?;
-    Ok(session.run().await?)
+    Ok(session.run(DEFAULT_PROVIDER).await?)
 }

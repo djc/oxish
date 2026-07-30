@@ -6,7 +6,8 @@ use std::{
 
 use proto::{
     Decoded, Disconnect, Encoder, MessageType, Pretty, ReadState, WriteState,
-    key_exchange::SessionHostKey,
+    crypto::CryptoProvider,
+    key_exchange::{Rekey, SessionHostKey},
 };
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
 use tokio::{
@@ -25,6 +26,7 @@ mod terminal;
 /// A single SSH connection
 pub struct Session<T> {
     conn: Connection<T>,
+    rekey: Rekey,
     channels: Channels,
 }
 
@@ -113,9 +115,10 @@ impl Session<TcpStream> {
 
         let SessionState {
             addr,
-            host_key: _,
-            identities: _,
-            session_id: _,
+            host_key,
+            identities,
+            strict_kx,
+            session_id,
             read,
             write,
             read_buf,
@@ -144,15 +147,24 @@ impl Session<TcpStream> {
                 },
                 write: write_state,
             },
+            rekey: Rekey::new(session_id, strict_kx, identities, host_key),
             channels: Channels::default(),
         })
     }
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
+    pub(crate) fn new(conn: Connection<T>, rekey: Rekey) -> Self {
+        Self {
+            conn,
+            channels: Channels::default(),
+            rekey,
+        }
+    }
+
     /// Drive the connection forward
-    #[instrument(name = "connection", skip(self), fields(addr = %self.conn.addr))]
-    pub async fn run(mut self) -> Result<(), Error> {
+    #[instrument(name = "connection", skip(self, provider), fields(addr = %self.conn.addr))]
+    pub async fn run(mut self, provider: &'static dyn CryptoProvider) -> Result<(), Error> {
         loop {
             tokio::select! {
                 result = receive(&mut self.conn.stream, &mut self.conn.read) => {
@@ -168,6 +180,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                                 Err(error) => warn!(%error, "failed to read disconnect packet"),
                             }
                             return Ok(());
+                        }
+                        // The client can start a rekey at any point by sending a fresh
+                        // key exchange init (RFC 4253 section 9).
+                        MessageType::KeyExchangeInit => {
+                            let kx = self.rekey.start(packet, provider)?;
+                            self.conn.rekey(kx, &self.rekey, provider).await?;
+                            continue;
                         }
                         _ => {}
                     }
@@ -205,15 +224,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                     }
                 }
             }
-        }
-    }
-}
-
-impl<T> From<Connection<T>> for Session<T> {
-    fn from(conn: Connection<T>) -> Self {
-        Self {
-            conn,
-            channels: Channels::default(),
         }
     }
 }
