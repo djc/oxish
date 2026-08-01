@@ -33,7 +33,7 @@ use tokio::{
     io::unix::AsyncFd,
     process::{Child, Command},
 };
-use tracing::{debug, trace};
+use tracing::debug;
 
 pub(crate) struct Terminal {
     pty: AsyncFd<OwnedFd>,
@@ -171,10 +171,10 @@ fn apply_terminal_modes_inner<F: AsFd>(fd: F, modes: &BTreeMap<Mode, u32>) -> io
         return Ok(());
     }
 
-    debug!("getting current terminal attributes");
+    // SAFETY: this is called in an async-signal-safe context. Do not leave logging calls
+    // here, because they might allocate memory or otherwise not be async-signal-safe.
     let mut tio = termios::tcgetattr(&fd)?;
     for (&mode, &value) in modes {
-        trace!(?mode, value, "applying terminal mode");
         match mode {
             // Special characters (control characters)
             Mode::VIntr => tio.special_codes[SpecialCodeIndex::VINTR] = value as u8,
