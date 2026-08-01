@@ -29,7 +29,8 @@ async fn handshake_ecdsa_aws_lc() {
         aws_lc::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
     )
-    .await;
+    .await
+    .unwrap();
 }
 
 /// Exercise a full handshake and session against the graviola provider
@@ -40,21 +41,26 @@ async fn handshake_ecdsa_graviola() {
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
     )
-    .await;
+    .await
+    .unwrap();
 }
 
 /// Exercise an ssh-ed25519 client key against the aws-lc-rs provider
 #[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ed25519_aws_lc() {
-    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519)
+        .await
+        .unwrap();
 }
 
 /// Exercise an ssh-ed25519 client key against the graviola provider
 #[cfg(feature = "graviola")]
 #[tokio::test]
 async fn handshake_ed25519_graviola() {
-    handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
+    handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519)
+        .await
+        .unwrap();
 }
 
 #[cfg(feature = "graviola")]
@@ -127,12 +133,13 @@ async fn rekey_graviola() {
     );
 }
 
-async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAlgorithm<'_>) {
+async fn handshake(
+    provider: &'static dyn CryptoProvider,
+    algorithm: PublicKeyAlgorithm<'_>,
+) -> anyhow::Result<()> {
     subscribe();
 
-    let (_key_dir, client, server) = setup(&algorithm, None, provider)
-        .await
-        .expect("failed to set up test");
+    let (_key_dir, client, server) = setup(&algorithm, None, provider).await?;
 
     let (_stdout, _stderr) = client
         .run(
@@ -142,8 +149,9 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
             Duration::from_secs(10),
             server,
         )
-        .await
-        .unwrap();
+        .await?;
+
+    Ok(())
 }
 
 async fn setup(
