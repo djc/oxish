@@ -434,10 +434,10 @@ impl User {
 
         let name = match by {
             UserLookup::Name(name) => name,
-            UserLookup::Id(_) => match (ret, result.is_null()) {
+            UserLookup::Id(_) => match (ret, result.is_null(), pwd.pw_name.is_null()) {
                 // SAFETY: `ret` is 0 and `result` is non-null, so the `pwd.pw_name` points to a
                 // null-terminated C string stored in `buf`, which is still alive.
-                (0, false) => Username::try_from(unsafe { CStr::from_ptr(pwd.pw_name) })?,
+                (0, false, false) => Username::try_from(unsafe { CStr::from_ptr(pwd.pw_name) })?,
                 _ => Username::nobody(),
             },
         };
@@ -479,8 +479,8 @@ impl User {
         };
 
         // SAFETY: if `ret` is 0 (signifying success) and `result` is non-null, `pwd.pw_dir`
-        // and `pwd.pw_shell` were populated by `getpwnam_r`, the `pwd` struct and `buf` are
-        // still alive, so the pointers are valid; otherwise, `home_dir` and `shell` are set
+        // and `pwd.pw_shell` were populated by the `getpw` call and the `pwd` struct and `buf`
+        // are still alive, so the pointers are valid; otherwise, `home_dir` and `shell` are set
         // to static strings. In either case, both are valid pointers to null-terminated C strings.
         let home_dir = PathBuf::from(OsStr::from_bytes(
             unsafe { CStr::from_ptr(home_dir) }.to_bytes(),
