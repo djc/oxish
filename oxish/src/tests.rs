@@ -28,7 +28,6 @@ async fn handshake_ecdsa_aws_lc() {
     handshake(
         aws_lc::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        false,
     )
     .await;
 }
@@ -40,7 +39,6 @@ async fn handshake_ecdsa_graviola() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        false,
     )
     .await;
 }
@@ -49,19 +47,14 @@ async fn handshake_ecdsa_graviola() {
 #[cfg(feature = "aws-lc")]
 #[tokio::test]
 async fn handshake_ed25519_aws_lc() {
-    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519, false).await;
+    handshake(aws_lc::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
 }
 
 /// Exercise an ssh-ed25519 client key against the graviola provider
 #[cfg(feature = "graviola")]
 #[tokio::test]
 async fn handshake_ed25519_graviola() {
-    handshake(
-        graviola::DEFAULT_PROVIDER,
-        PublicKeyAlgorithm::Ed25519,
-        false,
-    )
-    .await;
+    handshake(graviola::DEFAULT_PROVIDER, PublicKeyAlgorithm::Ed25519).await;
 }
 
 #[cfg(feature = "graviola")]
@@ -70,7 +63,6 @@ async fn handshake_ecdsa_graviola_split() {
     handshake(
         graviola::DEFAULT_PROVIDER,
         PublicKeyAlgorithm::EcdsaSha2Nistp256,
-        false,
     )
     .await;
 }
@@ -80,44 +72,23 @@ async fn handshake_ecdsa_graviola_split() {
 #[tokio::test]
 #[ignore = "slow"]
 async fn rekey_graviola() {
-    handshake(
-        graviola::DEFAULT_PROVIDER,
-        PublicKeyAlgorithm::Ed25519,
-        true,
-    )
-    .await;
-}
-
-async fn handshake(
-    provider: &'static dyn CryptoProvider,
-    algorithm: PublicKeyAlgorithm<'_>,
-    rekey: bool,
-) {
     subscribe();
-
-    let (_key_dir, mut client, server) = setup(&algorithm, provider)
-        .await
-        .expect("failed to set up test");
+    let (_key_dir, mut client, server) =
+        setup(&PublicKeyAlgorithm::Ed25519, graviola::DEFAULT_PROVIDER)
+            .await
+            .expect("failed to set up test");
 
     // A short time-based rekey interval makes the client send a fresh SSH_MSG_KEXINIT every
     // couple of seconds, exercising client-initiated rekeying. A time trigger keeps the
     // session near-idle, avoiding the data volume a byte-based trigger would need.
-    if rekey {
-        client.cmd.args(["-o", "RekeyLimit=default 1"]);
-    }
+    client.cmd.args(["-o", "RekeyLimit=default 1"]);
 
     let (_stdout, stderr) = client
         .run(
-            match rekey {
-                true => b"sleep 10\necho OXISH-$((6*7))\nexit\n",
-                false => COMMAND,
-            },
+            b"sleep 10\necho OXISH-$((6*7))\nexit\n",
             // In the rekey scenario, keep the session open long enough for several rekeys before the
             // sentinel; it only arrives if the session survived them.
-            match rekey {
-                true => Duration::from_secs(30),
-                false => Duration::from_secs(10),
-            },
+            Duration::from_secs(30),
             server,
         )
         .await
@@ -126,15 +97,32 @@ async fn handshake(
     // The client logs "SSH2_MSG_KEXINIT received" once per key exchange it observes from the
     // server: once for the initial handshake, then once for each rekey the server answered.
     // More than one proves the server handled a client-initiated rekey.
-    if rekey {
-        let key_exchanges = stderr.matches("SSH2_MSG_KEXINIT received").count();
-        assert!(
-            key_exchanges >= 2,
-            "expected at least one rekey, saw {key_exchanges} key exchange(s).\n\
+    let key_exchanges = stderr.matches("SSH2_MSG_KEXINIT received").count();
+    assert!(
+        key_exchanges >= 2,
+        "expected at least one rekey, saw {key_exchanges} key exchange(s).\n\
              --- stderr ({stderr_len} bytes) ---\n{stderr}",
-            stderr_len = stderr.len(),
-        );
-    }
+        stderr_len = stderr.len(),
+    );
+}
+
+async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAlgorithm<'_>) {
+    subscribe();
+
+    let (_key_dir, client, server) = setup(&algorithm, provider)
+        .await
+        .expect("failed to set up test");
+
+    let (_stdout, _stderr) = client
+        .run(
+            COMMAND,
+            // In the rekey scenario, keep the session open long enough for several rekeys before the
+            // sentinel; it only arrives if the session survived them.
+            Duration::from_secs(10),
+            server,
+        )
+        .await
+        .unwrap();
 }
 
 async fn setup(
