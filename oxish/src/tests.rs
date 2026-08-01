@@ -95,30 +95,17 @@ async fn handshake(
 ) {
     subscribe();
 
-    let (key_dir, store) = store(&algorithm, provider).await.unwrap();
+    let (_key_dir, mut client, server) = setup(&algorithm, provider)
+        .await
+        .expect("failed to set up test");
 
-    // Start the server on a loopback port and serve exactly one connection.
-    let (_, pkcs8) = provider
-        .generate_signing_key(&algorithm)
-        .expect("failed to generate host key");
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    // A short time-based rekey interval makes the client send a fresh SSH_MSG_KEXINIT every
+    // couple of seconds, exercising client-initiated rekeying. A time trigger keeps the
+    // session near-idle, avoiding the data volume a byte-based trigger would need.
+    if rekey {
+        client.cmd.args(["-o", "RekeyLimit=default 1"]);
+    }
 
-    let server = Server::new(
-        store,
-        HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider).unwrap(),
-        session_binary().await,
-        provider,
-    )
-    .unwrap();
-
-    let server = tokio::spawn(async move {
-        let (stream, peer) = listener.accept().await.unwrap();
-        stream.set_nodelay(true).ok();
-        server.accept(stream, peer).await
-    });
-
-    let client = CliClient::new(addr, &key_dir.path().join("key"), rekey);
     let (_stdout, stderr) = client
         .run(
             match rekey {
@@ -150,13 +137,40 @@ async fn handshake(
     }
 }
 
+async fn setup(
+    algorithm: &PublicKeyAlgorithm<'_>,
+    provider: &'static dyn CryptoProvider,
+) -> anyhow::Result<(TempDir, CliClient, JoinHandle<anyhow::Result<()>>)> {
+    let (key_dir, store) = store(algorithm, provider).await?;
+    let (_, pkcs8) = provider.generate_signing_key(algorithm)?;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let client = CliClient::new(addr, &key_dir.path().join("key"));
+
+    let server = Server::new(
+        store,
+        HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider)?,
+        session_binary().await,
+        provider,
+    )?;
+
+    // Start the server and serve exactly one connection
+    let handle = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await?;
+        stream.set_nodelay(true).ok();
+        server.accept(stream, peer).await
+    });
+
+    Ok((key_dir, client, handle))
+}
+
 struct CliClient {
     addr: SocketAddr,
     cmd: Command,
 }
 
 impl CliClient {
-    fn new(addr: SocketAddr, key_path: &Path, rekey: bool) -> Self {
+    fn new(addr: SocketAddr, key_path: &Path) -> Self {
         let mut cmd = Command::new("ssh");
         cmd.arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
             .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
@@ -168,13 +182,6 @@ impl CliClient {
             .args(["-o", "GlobalKnownHostsFile=/dev/null"]) // ignore system known hosts
             .args(["-o", "IdentitiesOnly=yes"]) // don't offer agent keys
             .args(["-o", "LogLevel=DEBUG3"]); // verbose client diagnostics, captured on stderr for failure triage
-
-        // A short time-based rekey interval makes the client send a fresh SSH_MSG_KEXINIT every
-        // couple of seconds, exercising client-initiated rekeying. A time trigger keeps the
-        // session near-idle, avoiding the data volume a byte-based trigger would need.
-        if rekey {
-            cmd.args(["-o", "RekeyLimit=default 1"]);
-        }
 
         Self { addr, cmd }
     }
