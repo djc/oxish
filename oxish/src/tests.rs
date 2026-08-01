@@ -16,7 +16,7 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use crate::{
-    SessionState, SideState, UserStore, Username,
+    Config, SessionState, SideState, UserStore, Username,
     authentication::{SingleUser, User},
     server::Server,
 };
@@ -59,12 +59,30 @@ async fn handshake_ed25519_graviola() {
 
 #[cfg(feature = "graviola")]
 #[tokio::test]
-async fn handshake_ecdsa_graviola_split() {
-    handshake(
+async fn no_spawn() {
+    subscribe();
+
+    let (_key_dir, client, server) = setup(
+        &PublicKeyAlgorithm::Ed25519,
+        Some(Config {
+            spawn: false,
+            ..Config::default()
+        }),
         graviola::DEFAULT_PROVIDER,
-        PublicKeyAlgorithm::EcdsaSha2Nistp256,
     )
-    .await;
+    .await
+    .expect("failed to set up test");
+
+    let (_stdout, _stderr) = client
+        .run(
+            COMMAND,
+            // In the rekey scenario, keep the session open long enough for several rekeys before the
+            // sentinel; it only arrives if the session survived them.
+            Duration::from_secs(10),
+            server,
+        )
+        .await
+        .unwrap();
 }
 
 /// Exercise a client-initiated rekey against the graviola provider
@@ -73,10 +91,13 @@ async fn handshake_ecdsa_graviola_split() {
 #[ignore = "slow"]
 async fn rekey_graviola() {
     subscribe();
-    let (_key_dir, mut client, server) =
-        setup(&PublicKeyAlgorithm::Ed25519, graviola::DEFAULT_PROVIDER)
-            .await
-            .expect("failed to set up test");
+    let (_key_dir, mut client, server) = setup(
+        &PublicKeyAlgorithm::Ed25519,
+        None,
+        graviola::DEFAULT_PROVIDER,
+    )
+    .await
+    .expect("failed to set up test");
 
     // A short time-based rekey interval makes the client send a fresh SSH_MSG_KEXINIT every
     // couple of seconds, exercising client-initiated rekeying. A time trigger keeps the
@@ -109,7 +130,7 @@ async fn rekey_graviola() {
 async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAlgorithm<'_>) {
     subscribe();
 
-    let (_key_dir, client, server) = setup(&algorithm, provider)
+    let (_key_dir, client, server) = setup(&algorithm, None, provider)
         .await
         .expect("failed to set up test");
 
@@ -127,6 +148,7 @@ async fn handshake(provider: &'static dyn CryptoProvider, algorithm: PublicKeyAl
 
 async fn setup(
     algorithm: &PublicKeyAlgorithm<'_>,
+    config: Option<Config>,
     provider: &'static dyn CryptoProvider,
 ) -> anyhow::Result<(TempDir, CliClient, JoinHandle<anyhow::Result<()>>)> {
     let (key_dir, store) = store(algorithm, provider).await?;
@@ -141,6 +163,11 @@ async fn setup(
         session_binary().await,
         provider,
     )?;
+
+    let server = match config {
+        Some(config) => server.with_config(config),
+        None => server,
+    };
 
     // Start the server and serve exactly one connection
     let handle = tokio::spawn(async move {
