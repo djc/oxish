@@ -1,6 +1,7 @@
 use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
 use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
 
+use anyhow::Context;
 use proto::{
     Decoded, Encode,
     auth::AuthorizedKey,
@@ -13,7 +14,7 @@ use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout
 use zeroize::Zeroizing;
 
 use crate::{
-    SessionState, SideState, Username,
+    SessionState, SideState, UserStore, Username,
     authentication::{SingleUser, User},
     server::Server,
 };
@@ -92,33 +93,7 @@ async fn handshake(
 ) {
     subscribe();
 
-    let dir = TempDir::new().unwrap();
-    let key_path = dir.path().join("key");
-
-    // Generate the client key; ssh-keygen writes the private key with 0600
-    // permissions, which the ssh client requires.
-    let status = Command::new("ssh-keygen")
-        .arg("-q") // quiet: suppress the interactive progress output
-        .args(keygen_args(&algorithm)) // key type (and size, where applicable)
-        .args(["-N", ""]) // empty passphrase, so the private key is not encrypted
-        .args(["-C", "oxish-e2e"]) // key comment
-        .arg("-f") // output file for the private key (public key gets a .pub suffix)
-        .arg(&key_path)
-        .status()
-        .await
-        .expect("failed to run ssh-keygen");
-    assert!(status.success(), "ssh-keygen failed");
-
-    let authorized_key = fs::read_to_string(key_path.with_extension("pub")).unwrap();
-    let key = AuthorizedKey::from_str(&authorized_key, provider)
-        .expect("failed to parse generated public key");
-    let user = User {
-        name: Username::try_from(USER.to_string()).unwrap(),
-        id: 1000,
-        gid: 1000,
-        home_dir: PathBuf::from("/var/empty"),
-        shell: PathBuf::from("/bin/sh"),
-    };
+    let (key_dir, store) = store(&algorithm, provider).await.unwrap();
 
     // Start the server on a loopback port and serve exactly one connection.
     let (_, pkcs8) = provider
@@ -128,7 +103,7 @@ async fn handshake(
     let addr = listener.local_addr().unwrap();
 
     let server = Server::new(
-        Box::new(SingleUser::with_keys(user, vec![key])),
+        store,
         HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider).unwrap(),
         session_binary().await,
         provider,
@@ -146,7 +121,7 @@ async fn handshake(
         .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
         .args(["-p", &addr.port().to_string()]) // port to connect to
         .arg("-i") // identity (private key) file to authenticate with
-        .arg(&key_path)
+        .arg(&key_dir.path().join("key"))
         .args(["-o", "StrictHostKeyChecking=no"]) // ignore the host key
         .args(["-o", "UserKnownHostsFile=/dev/null"])
         .args(["-o", "GlobalKnownHostsFile=/dev/null"]) // ignore system known hosts
@@ -202,7 +177,7 @@ async fn handshake(
         Err(_elapsed) => panic!("server still running after client disconnected"),
     };
 
-    let _ = fs::remove_dir_all(&dir);
+    drop(key_dir); // clean up the temporary key directory
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -334,6 +309,46 @@ fn session_state_round_trip() {
     assert_eq!(decoded.write.sequence_number, 23);
 }
 
+async fn store(
+    algorithm: &PublicKeyAlgorithm<'_>,
+    provider: &dyn CryptoProvider,
+) -> anyhow::Result<(TempDir, Box<dyn UserStore>)> {
+    let dir = TempDir::new()?;
+    let key_path = dir.path().join("key");
+
+    // Generate the client key; ssh-keygen writes the private key with 0600
+    // permissions, which the ssh client requires.
+    let status = Command::new("ssh-keygen")
+        .arg("-q") // quiet: suppress the interactive progress output
+        .args(match algorithm {
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => &["-t", "ecdsa", "-b", "256"],
+            PublicKeyAlgorithm::Ed25519 => &["-t", "ed25519"][..],
+            _ => panic!("unsupported key type for ssh-keygen: {algorithm:?}"),
+        }) // key type (and size, where applicable)
+        .args(["-N", ""]) // empty passphrase, so the private key is not encrypted
+        .args(["-C", "oxish-e2e"]) // key comment
+        .arg("-f") // output file for the private key (public key gets a .pub suffix)
+        .arg(&key_path)
+        .status()
+        .await
+        .context("failed to run ssh-keygen")?;
+    assert!(status.success(), "ssh-keygen failed");
+
+    let authorized_key = fs::read_to_string(key_path.with_extension("pub"))?;
+    let key = AuthorizedKey::from_str(&authorized_key, provider)
+        .ok_or_else(|| anyhow::anyhow!("failed to parse generated public key"))?;
+
+    let user = User {
+        name: Username::try_from(USER.to_string())?,
+        id: 1000,
+        gid: 1000,
+        home_dir: PathBuf::from("/var/empty"),
+        shell: PathBuf::from("/bin/sh"),
+    };
+
+    Ok((dir, Box::new(SingleUser::with_keys(user, vec![key]))))
+}
+
 /// Build and locate the `oxish-session` binary
 ///
 /// `cargo test` only builds the crate's binaries as test harnesses, so build the real
@@ -366,14 +381,6 @@ async fn session_binary() -> PathBuf {
         bin.display(),
     );
     bin
-}
-
-fn keygen_args(algorithm: &PublicKeyAlgorithm<'_>) -> &'static [&'static str] {
-    match algorithm {
-        PublicKeyAlgorithm::EcdsaSha2Nistp256 => &["-t", "ecdsa", "-b", "256"],
-        PublicKeyAlgorithm::Ed25519 => &["-t", "ed25519"],
-        _ => panic!("unsupported key type for ssh-keygen: {algorithm:?}"),
-    }
 }
 
 fn subscribe() {
