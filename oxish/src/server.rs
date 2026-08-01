@@ -243,6 +243,9 @@ impl Server {
             let mut groups = vec![0; count as usize];
             loop {
                 #[allow(trivial_numeric_casts)] // platform dependent
+                // SAFETY: `name` is a valid null-terminated C string, and `groups` and `count`
+                // describe a live allocation with capacity for `count` entries; `count` is valid
+                // for writes.
                 let ret = unsafe {
                     libc::getgrouplist(
                         name.as_ptr(),
