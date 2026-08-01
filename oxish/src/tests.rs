@@ -1,5 +1,5 @@
 use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
-use std::{env, fs, panic::resume_unwind, path::PathBuf, process::Stdio, sync::Once};
+use std::{env, fs, panic::resume_unwind, path::Path, path::PathBuf, process::Stdio, sync::Once};
 
 use anyhow::Context;
 use proto::{
@@ -10,7 +10,9 @@ use proto::{
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
 };
 use tempfile::TempDir;
-use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command, time::timeout};
+use tokio::{
+    io::AsyncWriteExt, net::TcpListener, process::Command, task::JoinHandle, time::timeout,
+};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -116,80 +118,23 @@ async fn handshake(
         server.accept(stream, peer).await
     });
 
-    let mut ssh = Command::new("ssh");
-    ssh.arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
-        .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
-        .args(["-p", &addr.port().to_string()]) // port to connect to
-        .arg("-i") // identity (private key) file to authenticate with
-        .arg(&key_dir.path().join("key"))
-        .args(["-o", "StrictHostKeyChecking=no"]) // ignore the host key
-        .args(["-o", "UserKnownHostsFile=/dev/null"])
-        .args(["-o", "GlobalKnownHostsFile=/dev/null"]) // ignore system known hosts
-        .args(["-o", "IdentitiesOnly=yes"]) // don't offer agent keys
-        .args(["-o", "LogLevel=DEBUG3"]); // verbose client diagnostics, captured on stderr for failure triage
-
-    // A short time-based rekey interval makes the client send a fresh SSH_MSG_KEXINIT every
-    // couple of seconds, exercising client-initiated rekeying. A time trigger keeps the
-    // session near-idle, avoiding the data volume a byte-based trigger would need.
-    if rekey {
-        ssh.args(["-o", "RekeyLimit=default 1"]);
-    }
-
-    let mut child = ssh
-        .arg(format!("{USER}@{}", addr.ip()))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("failed to spawn ssh");
-
-    // In the rekey scenario, keep the session open long enough for several rekeys before the
-    // sentinel; it only arrives if the session survived them.
-    let command = match rekey {
-        true => b"sleep 10\necho OXISH-$((6*7))\nexit\n".to_vec(),
-        false => COMMAND.to_vec(),
-    };
-
-    let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(&command).await.unwrap();
-    drop(stdin); // close stdin so the session ends after `exit`
-
-    let client_timeout = match rekey {
-        true => Duration::from_secs(30),
-        false => Duration::from_secs(10),
-    };
-
-    let output = timeout(client_timeout, child.wait_with_output())
+    let client = CliClient::new(addr, &key_dir.path().join("key"), rekey);
+    let (_stdout, stderr) = client
+        .run(
+            match rekey {
+                true => b"sleep 10\necho OXISH-$((6*7))\nexit\n",
+                false => COMMAND,
+            },
+            // In the rekey scenario, keep the session open long enough for several rekeys before the
+            // sentinel; it only arrives if the session survived them.
+            match rekey {
+                true => Duration::from_secs(30),
+                false => Duration::from_secs(10),
+            },
+            server,
+        )
         .await
-        .expect("ssh client timed out")
-        .expect("failed to wait for ssh");
-
-    // The server task completes on its own once the ssh client tears down the connection: cleanly
-    // (Ok) if the client sent a disconnect, or with Err if it just closed the socket. The client
-    // process can be reaped a moment before the server observes that teardown, so give the server a
-    // bounded window to finish rather than aborting it out from under that race. Only a genuine hang
-    // — the server never noticing the disconnect — should fail the test.
-    match timeout(Duration::from_secs(10), server).await {
-        Ok(Ok(Ok(()))) => {}
-        Ok(Ok(Err(error))) => println!("server task yielded {error})"),
-        Ok(Err(err)) => resume_unwind(err.into_panic()),
-        Err(_elapsed) => panic!("server still running after client disconnected"),
-    };
-
-    drop(key_dir); // clean up the temporary key directory
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stdout.contains(OUTPUT),
-        "expected command output {OUTPUT:?} in session output.\n\
-         --- ssh exit status: {status} ---\n\
-         --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
-         --- stderr ({stderr_len} bytes) ---\n{stderr}",
-        status = output.status,
-        stdout_len = output.stdout.len(),
-        stderr_len = output.stderr.len(),
-    );
+        .unwrap();
 
     // The client logs "SSH2_MSG_KEXINIT received" once per key exchange it observes from the
     // server: once for the initial handshake, then once for each rekey the server answered.
@@ -200,8 +145,87 @@ async fn handshake(
             key_exchanges >= 2,
             "expected at least one rekey, saw {key_exchanges} key exchange(s).\n\
              --- stderr ({stderr_len} bytes) ---\n{stderr}",
+            stderr_len = stderr.len(),
+        );
+    }
+}
+
+struct CliClient {
+    addr: SocketAddr,
+    cmd: Command,
+}
+
+impl CliClient {
+    fn new(addr: SocketAddr, key_path: &Path, rekey: bool) -> Self {
+        let mut cmd = Command::new("ssh");
+        cmd.arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
+            .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
+            .args(["-p", &addr.port().to_string()]) // port to connect to
+            .arg("-i") // identity (private key) file to authenticate with
+            .arg(key_path)
+            .args(["-o", "StrictHostKeyChecking=no"]) // ignore the host key
+            .args(["-o", "UserKnownHostsFile=/dev/null"])
+            .args(["-o", "GlobalKnownHostsFile=/dev/null"]) // ignore system known hosts
+            .args(["-o", "IdentitiesOnly=yes"]) // don't offer agent keys
+            .args(["-o", "LogLevel=DEBUG3"]); // verbose client diagnostics, captured on stderr for failure triage
+
+        // A short time-based rekey interval makes the client send a fresh SSH_MSG_KEXINIT every
+        // couple of seconds, exercising client-initiated rekeying. A time trigger keeps the
+        // session near-idle, avoiding the data volume a byte-based trigger would need.
+        if rekey {
+            cmd.args(["-o", "RekeyLimit=default 1"]);
+        }
+
+        Self { addr, cmd }
+    }
+
+    async fn run(
+        mut self,
+        command: &[u8],
+        wait_for: Duration,
+        server: JoinHandle<anyhow::Result<()>>,
+    ) -> anyhow::Result<(String, String)> {
+        let mut child = self
+            .cmd
+            .arg(format!("{USER}@{}", self.addr.ip()))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(command).await?;
+        drop(stdin); // close stdin so the session ends after `exit`
+
+        let output = timeout(wait_for, child.wait_with_output()).await??;
+
+        // The server task completes on its own once the ssh client tears down the connection: cleanly
+        // (Ok) if the client sent a disconnect, or with Err if it just closed the socket. The client
+        // process can be reaped a moment before the server observes that teardown, so give the server a
+        // bounded window to finish rather than aborting it out from under that race. Only a genuine hang
+        // — the server never noticing the disconnect — should fail the test.
+        match timeout(Duration::from_secs(10), server).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => println!("server task yielded {error})"),
+            Ok(Err(err)) => resume_unwind(err.into_panic()),
+            Err(_elapsed) => panic!("server still running after client disconnected"),
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains(OUTPUT),
+            "expected command output {OUTPUT:?} in session output.\n\
+         --- ssh exit status: {status} ---\n\
+         --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
+         --- stderr ({stderr_len} bytes) ---\n{stderr}",
+            status = output.status,
+            stdout_len = output.stdout.len(),
             stderr_len = output.stderr.len(),
         );
+
+        Ok((stdout.into_owned(), stderr.into_owned()))
     }
 }
 
