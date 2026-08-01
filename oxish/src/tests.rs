@@ -160,7 +160,7 @@ async fn setup(
     let server = Server::new(
         store,
         HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider)?,
-        session_binary().await,
+        session_binary().await?,
         provider,
     )?;
 
@@ -400,8 +400,8 @@ async fn store(
 /// `cargo test` only builds the crate's binaries as test harnesses, so build the real
 /// binary here (a no-op when fresh). Unit tests run from `target/<profile>/deps/`, while
 /// cargo places the binary in `target/<profile>/`.
-async fn session_binary() -> PathBuf {
-    let exe = env::current_exe().unwrap();
+async fn session_binary() -> anyhow::Result<PathBuf> {
+    let exe = env::current_exe()?;
     let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
 
@@ -417,7 +417,7 @@ async fn session_binary() -> PathBuf {
         command.arg("--release");
     }
 
-    let status = command.status().await.expect("failed to run cargo build");
+    let status = command.status().await?;
     assert!(status.success(), "failed to build oxish-session");
 
     let bin = profile_dir.join("oxish-session");
@@ -426,7 +426,7 @@ async fn session_binary() -> PathBuf {
         "oxish-session binary not found at `{}`",
         bin.display(),
     );
-    bin
+    Ok(bin)
 }
 
 fn subscribe() {
