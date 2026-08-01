@@ -15,15 +15,12 @@ use std::{
     ffi::{CStr, CString, OsStr},
     fs::File,
     io::{self, Read},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::ffi::OsStrExt,
-    },
+    os::unix::ffi::OsStrExt,
     path::PathBuf,
     str,
 };
 
-use libc::{_SC_GETPW_R_SIZE_MAX, O_DIRECTORY, O_RDONLY, getpwnam_r, getpwuid_r, sysconf};
+use libc::{_SC_GETPW_R_SIZE_MAX, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
     Disconnect, DisconnectReason, MessageType, ProtoError,
     auth::{
@@ -33,6 +30,7 @@ use proto::{
     crypto::{CryptoError, CryptoProvider, Digest},
     named::{PublicKeyAlgorithm, ServiceName},
 };
+use rustix::fs::{Mode, OFlags, openat};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     task::spawn_blocking,
@@ -493,8 +491,14 @@ impl User {
             }
         };
 
-        let ssh_dir = match open_in_dir(&home, ".ssh", O_DIRECTORY) {
-            Ok(file) => file,
+        let result = openat(
+            &home,
+            ".ssh",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        let ssh_dir = match result {
+            Ok(fd) => File::from(fd),
             Err(error) => {
                 warn!(%error, ?home_dir, "failed to open .ssh directory");
                 return Vec::new();
@@ -509,8 +513,14 @@ impl User {
             }
         };
 
-        let mut key_file = match open_in_dir(&ssh_dir, "authorized_keys", O_RDONLY) {
-            Ok(file) => file,
+        let result = openat(
+            &ssh_dir,
+            "authorized_keys",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        let mut key_file = match result {
+            Ok(fd) => File::from(fd),
             Err(error) => {
                 warn!(%error, ?home_dir, "failed to open authorized keys file");
                 return Vec::new();
@@ -599,14 +609,6 @@ impl fmt::Display for Username {
 enum UserLookup {
     Name(Username),
     Id(u32),
-}
-
-fn open_in_dir(dir: &File, name: &str, flags: libc::c_int) -> Result<File, io::Error> {
-    let c_name = CString::new(name)?;
-    match unsafe { libc::openat(dir.as_raw_fd(), c_name.as_ptr(), flags) } {
-        -1 => Err(io::Error::last_os_error()),
-        fd => Ok(unsafe { File::from_raw_fd(fd) }),
-    }
 }
 
 fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
