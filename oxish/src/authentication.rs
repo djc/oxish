@@ -20,7 +20,7 @@ use std::{
     str,
 };
 
-use libc::{_SC_GETPW_R_SIZE_MAX, getpwnam_r, getpwuid_r, sysconf};
+use libc::{_SC_GETPW_R_SIZE_MAX, ERANGE, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
     Disconnect, DisconnectReason, MessageType, ProtoError,
     auth::{
@@ -369,49 +369,66 @@ pub struct User {
 
 impl User {
     fn lookup(by: UserLookup) -> Result<Self, Error> {
+        /// Upper bound on the buffer used to hold the passwd entry
+        const MAX_BUF_LEN: usize = 1_048_576;
+
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
-            n => Ord::min(n as usize, 1_048_576),
+            n => (n as usize).clamp(1024, MAX_BUF_LEN),
+        };
+
+        let c_name = match &by {
+            UserLookup::Name(name) => {
+                Some(CString::new(&**name).map_err(|_| Error::InvalidUsername)?)
+            }
+            UserLookup::Id(_) => None,
         };
 
         let mut buf = vec![0u8; buf_len];
         let mut pwd = unsafe { core::mem::zeroed() };
         let mut result = core::ptr::null_mut();
 
-        let (ret, name) = match by {
-            UserLookup::Name(name) => {
-                let c_name = CString::new(&*name).map_err(|_| Error::InvalidUsername)?;
-
-                let ret = unsafe {
+        // A passwd entry can exceed the initial buffer size (a long GECOS field is
+        // enough); `ERANGE` means the buffer was too small, so grow it and try again,
+        // up to a cap (like the `getgrouplist()` loop in `server.rs`).
+        let ret = loop {
+            let ret = match (&by, &c_name) {
+                (UserLookup::Name(_), Some(c_name)) => unsafe {
                     getpwnam_r(
                         c_name.as_ptr(),
                         &mut pwd,
                         buf.as_mut_ptr().cast::<c_char>(),
-                        buf_len,
+                        buf.len(),
                         &mut result,
                     )
-                };
-
-                (ret, name)
-            }
-            UserLookup::Id(id) => {
-                let ret = unsafe {
+                },
+                (UserLookup::Id(id), _) => unsafe {
                     getpwuid_r(
-                        id,
+                        *id,
                         &mut pwd,
                         buf.as_mut_ptr().cast::<c_char>(),
-                        buf_len,
+                        buf.len(),
                         &mut result,
                     )
-                };
+                },
+                (UserLookup::Name(_), None) => {
+                    unreachable!("`c_name` is set for lookups by name")
+                }
+            };
 
-                let name = match (ret, result.is_null()) {
-                    (0, false) => Username::try_from(unsafe { CStr::from_ptr(pwd.pw_name) })?,
-                    _ => Username::nobody(),
-                };
-
-                (ret, name)
+            if ret != ERANGE || buf.len() >= MAX_BUF_LEN {
+                break ret;
             }
+
+            buf.resize(Ord::min(buf.len() * 2, MAX_BUF_LEN), 0);
+        };
+
+        let name = match by {
+            UserLookup::Name(name) => name,
+            UserLookup::Id(_) => match (ret, result.is_null()) {
+                (0, false) => Username::try_from(unsafe { CStr::from_ptr(pwd.pw_name) })?,
+                _ => Username::nobody(),
+            },
         };
 
         let id = match (ret, result.is_null()) {
