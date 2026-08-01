@@ -4,14 +4,8 @@ use core::{
 };
 use std::{
     collections::BTreeMap,
-    env,
-    ffi::OsStr,
-    fs::OpenOptions,
-    io,
-    os::{
-        fd::{AsFd, OwnedFd},
-        unix::ffi::OsStrExt,
-    },
+    env, io,
+    os::fd::{AsFd, OwnedFd},
     pin::pin,
     task::ready,
 };
@@ -48,15 +42,22 @@ impl Terminal {
         pty::unlockpt(&controller)?;
 
         let user_path = pty::ptsname(&controller, Vec::new())?;
+        let user_fd = rustix::fs::open(
+            &user_path,
+            OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )?;
 
-        // Capture values for pre_exec closure
-        let winsize = Winsize {
-            ws_col: req.cols as u16,
-            ws_row: req.rows as u16,
-            ws_xpixel: req.width_px as u16,
-            ws_ypixel: req.height_px as u16,
-        };
-        let terminal_modes = req.terminal_modes.clone();
+        termios::tcsetwinsize(
+            &user_fd,
+            Winsize {
+                ws_col: req.cols as u16,
+                ws_row: req.rows as u16,
+                ws_xpixel: req.width_px as u16,
+                ws_ypixel: req.height_px as u16,
+            },
+        )?;
+        apply_terminal_modes(&user_fd, &req.terminal_modes)?;
 
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let mut cmd = Command::new(&shell);
@@ -73,11 +74,6 @@ impl Terminal {
         // We only use async-signal-safe operations.
         unsafe {
             cmd.pre_exec(move || {
-                let path = OsStr::from_bytes(user_path.as_bytes());
-                let user_fd = OpenOptions::new().read(true).write(true).open(path)?;
-
-                termios::tcsetwinsize(&user_fd, winsize)?;
-                apply_terminal_modes_inner(&user_fd, &terminal_modes)?;
                 setsid()?;
                 ioctl_tiocsctty(&user_fd)?;
 
@@ -166,13 +162,11 @@ impl Terminal {
 /// Apply SSH terminal modes to a PTY.
 ///
 /// Maps SSH terminal mode opcodes (RFC 4254) to POSIX termios settings.
-fn apply_terminal_modes_inner<F: AsFd>(fd: F, modes: &BTreeMap<Mode, u32>) -> io::Result<()> {
+fn apply_terminal_modes(fd: impl AsFd, modes: &BTreeMap<Mode, u32>) -> io::Result<()> {
     if modes.is_empty() {
         return Ok(());
     }
 
-    // SAFETY: this is called in an async-signal-safe context. Do not leave logging calls
-    // here, because they might allocate memory or otherwise not be async-signal-safe.
     let mut tio = termios::tcgetattr(&fd)?;
     for (&mode, &value) in modes {
         match mode {
