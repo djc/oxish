@@ -453,15 +453,24 @@ impl User {
             debug!(%name, "user not found");
             (Self::FAKE_HOME, Self::DEFAULT_SHELL)
         } else {
+            // POSIX does not promise these values will be non-null
             debug!(%name, "found home dir");
-            (pwd.pw_dir.cast_const(), pwd.pw_shell.cast_const())
+            (
+                match pwd.pw_dir.cast_const() {
+                    home_dir if !home_dir.is_null() => home_dir,
+                    _ => Self::FAKE_HOME,
+                },
+                match pwd.pw_shell.cast_const() {
+                    shell if !shell.is_null() => shell,
+                    _ => Self::DEFAULT_SHELL,
+                },
+            )
         };
 
         // SAFETY: if `ret` is 0 (signifying success) and `result` is non-null, `pwd.pw_dir`
         // and `pwd.pw_shell` were populated by `getpwnam_r`, the `pwd` struct and `buf` are
         // still alive, so the pointers are valid; otherwise, `home_dir` and `shell` are set
-        // to static strings. In either case, both are valid pointers to null-terminated C
-        // strings.
+        // to static strings. In either case, both are valid pointers to null-terminated C strings.
         let home_dir = PathBuf::from(OsStr::from_bytes(
             unsafe { CStr::from_ptr(home_dir) }.to_bytes(),
         ));
