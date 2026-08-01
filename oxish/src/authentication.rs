@@ -270,7 +270,7 @@ impl DefaultStore {
         Ok(match unsafe { libc::geteuid() } {
             0 => Box::new(SystemStore) as Box<dyn UserStore>,
             uid => {
-                let data = User::lookup(UserLookup::Id(uid))?;
+                let data = UserLookup::Id(uid).resolve()?;
                 let keys = data.authorized_keys(provider);
                 Box::new(SingleUser(CachedUser { data, keys }))
             }
@@ -283,7 +283,7 @@ struct SystemStore;
 
 impl UserStore for SystemStore {
     fn lookup(&self, name: Username) -> Option<User> {
-        match User::lookup(UserLookup::Name(name)) {
+        match UserLookup::Name(name).resolve() {
             Ok(user) => Some(user),
             Err(error) => {
                 error!(%error, "failed to get user information");
@@ -352,24 +352,14 @@ struct CachedUser {
     keys: Vec<AuthorizedKey>,
 }
 
-/// User data as retrieved from the system database
-#[non_exhaustive]
-#[derive(Clone, Debug)]
-pub struct User {
-    /// The user's name
-    pub name: Username,
-    /// The user's UID
-    pub id: u32,
-    /// The user's GID
-    pub gid: u32,
-    /// The user's home directory
-    pub home_dir: PathBuf,
-    /// The user's shell
-    pub shell: PathBuf,
+#[derive(Debug)]
+enum UserLookup {
+    Name(Username),
+    Id(u32),
 }
 
-impl User {
-    fn lookup(by: UserLookup) -> Result<Self, Error> {
+impl UserLookup {
+    fn resolve(self) -> Result<User, Error> {
         /// Upper bound on the buffer used to hold the passwd entry
         const MAX_BUF_LEN: usize = 1_048_576;
 
@@ -379,7 +369,7 @@ impl User {
             n => (n as usize).clamp(1024, MAX_BUF_LEN),
         };
 
-        let c_name = match &by {
+        let c_name = match &self {
             UserLookup::Name(name) => {
                 Some(CString::new(&**name).map_err(|_| Error::InvalidUsername)?)
             }
@@ -396,7 +386,7 @@ impl User {
         // enough); `ERANGE` means the buffer was too small, so grow it and try again,
         // up to a cap (like the `getgrouplist()` loop in `server.rs`).
         let ret = loop {
-            let ret = match (&by, &c_name) {
+            let ret = match (&self, &c_name) {
                 (UserLookup::Name(_), Some(c_name)) => unsafe {
                     // SAFETY: `c_name` is a valid null-terminated C string, `pwd` and `result` are
                     // valid for writes, and the buffer pointer and length describe the live
@@ -432,7 +422,7 @@ impl User {
             buf.resize(Ord::min(buf.len() * 2, MAX_BUF_LEN), 0);
         };
 
-        let name = match by {
+        let name = match self {
             UserLookup::Name(name) => name,
             UserLookup::Id(_) => match (ret, result.is_null(), pwd.pw_name.is_null()) {
                 // SAFETY: `ret` is 0 and `result` is non-null, so the `pwd.pw_name` points to a
@@ -497,7 +487,7 @@ impl User {
             bytes => PathBuf::from(OsStr::from_bytes(bytes)),
         };
 
-        Ok(Self {
+        Ok(User {
             name,
             id,
             gid,
@@ -506,6 +496,27 @@ impl User {
         })
     }
 
+    const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
+    const DEFAULT_SHELL: *const c_char = c"/bin/sh".as_ptr().cast::<c_char>();
+}
+
+/// User data as retrieved from the system database
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct User {
+    /// The user's name
+    pub name: Username,
+    /// The user's UID
+    pub id: u32,
+    /// The user's GID
+    pub gid: u32,
+    /// The user's home directory
+    pub home_dir: PathBuf,
+    /// The user's shell
+    pub shell: PathBuf,
+}
+
+impl User {
     /// Read and parse the `authorized_keys` file for a user
     ///
     /// This is pretty finicky because we need to check that
@@ -591,9 +602,6 @@ impl User {
 
         keys
     }
-
-    const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
-    const DEFAULT_SHELL: *const c_char = c"/bin/sh".as_ptr().cast::<c_char>();
 }
 
 /// A validated username
@@ -643,12 +651,6 @@ impl fmt::Display for Username {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
-}
-
-#[derive(Debug)]
-enum UserLookup {
-    Name(Username),
-    Id(u32),
 }
 
 fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
