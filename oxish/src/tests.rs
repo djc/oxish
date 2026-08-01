@@ -237,7 +237,7 @@ impl CliClient {
         // — the server never noticing the disconnect — should fail the test.
         match timeout(Duration::from_secs(10), server).await {
             Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(error))) => println!("server task yielded {error})"),
+            Ok(Ok(Err(error))) => println!("server task yielded {error}"),
             Ok(Err(err)) => resume_unwind(err.into_panic()),
             Err(_elapsed) => panic!("server still running after client disconnected"),
         };
@@ -247,9 +247,9 @@ impl CliClient {
         assert!(
             stdout.contains(OUTPUT),
             "expected command output {OUTPUT:?} in session output.\n\
-         --- ssh exit status: {status} ---\n\
-         --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
-         --- stderr ({stderr_len} bytes) ---\n{stderr}",
+            --- ssh exit status: {status} ---\n\
+            --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
+            --- stderr ({stderr_len} bytes) ---\n{stderr}",
             status = output.status,
             stdout_len = output.stdout.len(),
             stderr_len = output.stderr.len(),
