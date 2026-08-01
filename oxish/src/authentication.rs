@@ -266,6 +266,7 @@ impl DefaultStore {
     /// Construct a new [`DefaultStore`] from the current process's effective UID
     #[expect(clippy::new_ret_no_self)]
     pub fn new(provider: &dyn CryptoProvider) -> Result<Box<dyn UserStore>, Error> {
+        // SAFETY: `geteuid()` takes no arguments, cannot fail and has no preconditions.
         Ok(match unsafe { libc::geteuid() } {
             0 => Box::new(SystemStore) as Box<dyn UserStore>,
             uid => {
@@ -372,6 +373,7 @@ impl User {
         /// Upper bound on the buffer used to hold the passwd entry
         const MAX_BUF_LEN: usize = 1_048_576;
 
+        // SAFETY: `sysconf()` only reads its integer argument and has no other preconditions.
         let buf_len = match unsafe { sysconf(_SC_GETPW_R_SIZE_MAX) } {
             -1 => 1024,
             n => (n as usize).clamp(1024, MAX_BUF_LEN),
@@ -385,6 +387,8 @@ impl User {
         };
 
         let mut buf = vec![0u8; buf_len];
+        // SAFETY: `passwd` is a plain C struct of integers and pointers, for which
+        // all-zeros (including null pointers) is a valid bit pattern.
         let mut pwd = unsafe { core::mem::zeroed() };
         let mut result = core::ptr::null_mut();
 
@@ -394,6 +398,9 @@ impl User {
         let ret = loop {
             let ret = match (&by, &c_name) {
                 (UserLookup::Name(_), Some(c_name)) => unsafe {
+                    // SAFETY: `c_name` is a valid null-terminated C string, `pwd` and `result` are
+                    // valid for writes, and the buffer pointer and length describe the live
+                    // allocation in `buf`.
                     getpwnam_r(
                         c_name.as_ptr(),
                         &mut pwd,
@@ -403,6 +410,8 @@ impl User {
                     )
                 },
                 (UserLookup::Id(id), _) => unsafe {
+                    // SAFETY: `pwd` and `result` are valid for writes, and the buffer pointer
+                    // and length describe the live allocation in `buf`.
                     getpwuid_r(
                         *id,
                         &mut pwd,
@@ -426,6 +435,8 @@ impl User {
         let name = match by {
             UserLookup::Name(name) => name,
             UserLookup::Id(_) => match (ret, result.is_null()) {
+                // SAFETY: `ret` is 0 and `result` is non-null, so the `pwd.pw_name` points to a
+                // null-terminated C string stored in `buf`, which is still alive.
                 (0, false) => Username::try_from(unsafe { CStr::from_ptr(pwd.pw_name) })?,
                 _ => Username::nobody(),
             },
@@ -476,8 +487,11 @@ impl User {
         ));
 
         // An empty `pw_shell` means the system default shell.
+        // SAFETY: `shell` is a valid pointer to a null-terminated C string,
+        // per the same reasoning as for `home_dir` above.
         let shell = match unsafe { CStr::from_ptr(shell) }.to_bytes() {
             b"" => PathBuf::from(OsStr::from_bytes(
+                // SAFETY: `DEFAULT_SHELL` points to a static null-terminated C string literal.
                 unsafe { CStr::from_ptr(Self::DEFAULT_SHELL) }.to_bytes(),
             )),
             bytes => PathBuf::from(OsStr::from_bytes(bytes)),
