@@ -46,3 +46,8 @@ std_instead_of_core = "warn"
 undocumented_unsafe_blocks = "warn"
 upper_case_acronyms = "warn"
 use_self = "warn"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
