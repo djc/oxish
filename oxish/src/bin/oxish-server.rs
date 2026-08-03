@@ -7,7 +7,9 @@ use std::{
     sync::Arc,
 };
 
-use clap::{ArgAction, Parser};
+#[cfg(debug_assertions)]
+use clap::ArgAction;
+use clap::Parser;
 use listenfd::ListenFd;
 use oxish::{Config, DEFAULT_PROVIDER, DefaultStore, Server};
 use proto::{
@@ -80,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(addr = %listener.local_addr()?, "listening for connections");
 
+    #[cfg_attr(not(debug_assertions), expect(unused_mut))]
     let mut config = Config::default();
     #[cfg(debug_assertions)]
     {
