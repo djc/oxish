@@ -135,8 +135,8 @@ impl Server {
         let user = authenticate(&session_id, &mut conn, &*self.store, self.provider)
             .await
             .context("authentication failed")?;
-
         drop(authenticating);
+
         if !self.config.spawn {
             let host_key = SessionHostKey::from_server(host_key, self.provider)?;
             let session = Session::new(

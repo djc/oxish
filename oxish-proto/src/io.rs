@@ -6,8 +6,10 @@ use zeroize::Zeroize;
 use crate::{
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
     ProtoError,
+    auth::UserAuthFailure,
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     key_exchange::StrictKeyExchange,
+    named::MethodName,
 };
 
 /// The reader and decryption state for an SSH connection
@@ -187,6 +189,14 @@ impl Encoder<'_> {
     /// Create a new encoder for the given write state
     pub fn new(write: &mut WriteState) -> Encoder<'_> {
         Encoder { write }
+    }
+
+    /// Send a `SSH_MSG_USERAUTH_FAILURE` message to the client
+    pub fn send_auth_failed(&mut self, can_continue: &[MethodName<'_>]) -> Result<(), ProtoError> {
+        self.enqueue(&UserAuthFailure {
+            can_continue,
+            partial_success: false,
+        })
     }
 
     /// Encode and enqueue a packet for sending

@@ -1,6 +1,7 @@
 use core::{
     ffi::c_char,
     fmt,
+    future::poll_fn,
     ops::{ControlFlow, Deref},
     time::Duration,
 };
@@ -22,13 +23,13 @@ use std::{
 
 use libc::{_SC_GETPW_R_SIZE_MAX, ERANGE, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
-    Disconnect, DisconnectReason, MessageType, ProtoError,
+    Disconnect, DisconnectReason, Encoder, IncomingPacket, MessageType, ProtoError,
     auth::{
         AuthorizedKey, Method, ServiceAccept, ServiceRequest, SignatureData, UserAuthPkOk,
         UserAuthRequest,
     },
     crypto::{CryptoError, CryptoProvider, Digest},
-    named::{PublicKeyAlgorithm, ServiceName},
+    named::{MethodName, PublicKeyAlgorithm, ServiceName},
 };
 use rustix::fs::{Mode, OFlags, openat};
 use tokio::{
@@ -38,23 +39,48 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{Connection, Error, receive};
+use crate::{Connection, Error, receive, send};
 
-/// Authenticate a user over the given SSH connection
 #[instrument(name = "authentication", skip(session_id, conn, store, provider), fields(addr = %conn.addr))]
 pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
     session_id: &Digest,
     conn: &mut Connection<T>,
     store: &dyn UserStore,
     provider: &dyn CryptoProvider,
-) -> Result<User, Error> {
-    let future = inner(session_id, conn, store, provider);
-    if let Ok(result) = timeout(Duration::from_secs(60), future).await {
-        if let Err(error) = &result {
-            let disconnect = match error {
+) -> anyhow::Result<User> {
+    let mut state = AuthenticationState::default();
+    let future = async {
+        loop {
+            let packet = receive(&mut conn.stream, &mut conn.read).await?;
+            let mut encoder = Encoder::new(&mut conn.write);
+            let handled = state
+                .handle(packet, session_id, &mut encoder, store, provider)
+                .await;
+
+            let sent = poll_fn(|cx| send(&mut conn.stream, encoder.write, cx)).await;
+            match (handled, sent) {
+                (Ok(AuthenticationState::Complete(user)), Ok(())) => return Ok(user),
+                (Ok(next), Ok(())) => state = next,
+                (Err(error), _) | (_, Err(error)) => return Err(error),
+            }
+        }
+    };
+
+    let (error, disconnect) = match timeout(Duration::from_secs(60), future).await {
+        Ok(Ok(user)) => return Ok(user),
+        Ok(Err(error)) => {
+            let disconnect = match &error {
                 Error::Auth(AuthError::TooManyAttempts) => Disconnect {
                     reason_code: DisconnectReason::ByApplication,
                     description: "too many authentication attempts",
+                },
+                Error::InvalidState(description) => Disconnect {
+                    reason_code: DisconnectReason::ByApplication,
+                    description,
+                },
+                Error::InvalidUsername => Disconnect {
+                    reason_code: DisconnectReason::IllegalUserName,
+                    description: "invalid username",
                 },
                 Error::Proto(ProtoError::ServiceNotAvailable(description)) => Disconnect {
                     reason_code: DisconnectReason::ServiceNotAvailable,
@@ -66,176 +92,205 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
                 },
             };
 
-            conn.send(&disconnect).await?;
+            (error, disconnect)
         }
-
-        return result;
-    }
-
-    error!("authentication timed out");
-    let disconnect = Disconnect {
-        reason_code: DisconnectReason::ByApplication,
-        description: "authentication timed out",
+        Err(_) => (
+            Error::Io(io::Error::from(io::ErrorKind::TimedOut)),
+            Disconnect {
+                reason_code: DisconnectReason::ByApplication,
+                description: "authentication timed out",
+            },
+        ),
     };
 
     let _ = timeout(Duration::from_secs(1), conn.send(&disconnect)).await;
-    Err(Error::Io(io::Error::from(io::ErrorKind::TimedOut)))
+    Err(error.into())
 }
 
-async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
-    session_id: &Digest,
-    conn: &mut Connection<T>,
-    store: &dyn UserStore,
-    provider: &dyn CryptoProvider,
-) -> Result<User, Error> {
-    let packet = receive(&mut conn.stream, &mut conn.read).await?;
-    let service_request = ServiceRequest::try_from(packet)?;
-    if service_request.service_name != ServiceName::UserAuth {
-        error!(
-            service_name = ?service_request.service_name,
-            "unsupported service requested"
-        );
+#[derive(Default)]
+enum AuthenticationState {
+    #[default]
+    AwaitServiceRequest,
+    AwaitAuthRequest {
+        cached: Option<CachedUser>,
+        attempts: u8,
+    },
+    Complete(User),
+}
 
-        return Err(ProtoError::ServiceNotAvailable(
-            "only user authentication service is supported",
-        )
-        .into());
-    }
-
-    let service_accept = ServiceAccept {
-        service_name: ServiceName::UserAuth,
-    };
-    conn.send(&service_accept).await?;
-
-    let mut cached_user = None::<CachedUser>;
-    let mut attempts = 6;
-    loop {
-        attempts -= 1;
-        if attempts == 0 {
-            return Err(AuthError::TooManyAttempts.into());
-        }
-
-        let packet = receive(&mut conn.stream, &mut conn.read).await?;
-        if matches!(
-            packet.message_type,
-            MessageType::Ignore | MessageType::Debug
-        ) {
-            continue;
-        }
-
-        let user_auth_request = UserAuthRequest::try_from(packet)?;
-        debug!(?user_auth_request, "received user auth request");
-        if user_auth_request.service_name != ServiceName::Connection {
-            error!(
-                service_name = ?user_auth_request.service_name,
-                "unsupported service requested"
-            );
-
-            return Err(
-                ProtoError::ServiceNotAvailable("only connection service is supported").into(),
-            );
-        }
-
-        let Method::PublicKey(public_key) = user_auth_request.method else {
-            warn!(
-                method = ?user_auth_request.method,
-                "unsupported authentication method requested"
-            );
-            conn.send_auth_failed().await?;
-            continue;
-        };
-
-        let user = match &mut cached_user {
-            Some(user) if &*user.data.name == user_auth_request.user_name => user,
-            _ => {
-                let Ok(name) = Username::try_from(user_auth_request.user_name.to_owned()) else {
-                    conn.send_auth_failed().await?;
-                    continue;
-                };
-
-                let Some(user) = store.lookup(name) else {
-                    conn.send_auth_failed().await?;
-                    continue;
-                };
-
-                let keys = store.keys(&user, provider);
-                cached_user.insert(CachedUser { data: user, keys })
-            }
-        };
-
-        let authorized_key = user.keys.iter().find(|key| key.matches(&public_key));
-        let (sig, authorized_key) = match (public_key.signature, authorized_key) {
-            // Signature, authorized key => verify signature
-            (Some(sig), Some(key)) if &sig.algorithm == key.algorithm() => (sig, key.clone()),
-            // Signature, no authorized key => verify signature against fake key
-            (Some(sig), None) => (
-                sig,
-                match fake_key(&public_key.algorithm, provider) {
-                    Ok(key) => key,
-                    Err(_) => {
-                        warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
-                        conn.send_auth_failed().await?;
-                        continue;
+impl AuthenticationState {
+    pub(crate) async fn handle(
+        self,
+        packet: IncomingPacket<'_>,
+        session_id: &Digest,
+        encoder: &mut Encoder<'_>,
+        store: &dyn UserStore,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, Error> {
+        match (self, packet.message_type) {
+            (state, MessageType::Ignore | MessageType::Debug) => Ok(state),
+            (_, MessageType::Disconnect) => Err(AuthError::Canceled.into()),
+            (Self::AwaitServiceRequest, MessageType::ServiceRequest) => {
+                match ServiceRequest::try_from(packet)?.service_name {
+                    ServiceName::UserAuth => {
+                        encoder.enqueue(&ServiceAccept {
+                            service_name: ServiceName::UserAuth,
+                        })?;
+                        Ok(Self::AwaitAuthRequest {
+                            cached: None,
+                            attempts: 6,
+                        })
                     }
+                    service_name => {
+                        error!(?service_name, "unsupported service requested");
+                        Err(ProtoError::ServiceNotAvailable(
+                            "only user authentication service is supported",
+                        )
+                        .into())
+                    }
+                }
+            }
+            (
+                Self::AwaitAuthRequest {
+                    mut cached,
+                    mut attempts,
                 },
-            ),
-            // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
-            (Some(_), Some(_)) => {
-                warn!(
-                    algorithm = ?public_key.algorithm,
-                    "mismatched signature algorithm in authentication request"
+                MessageType::UserAuthRequest,
+            ) => {
+                attempts -= 1;
+                if attempts == 0 {
+                    error!("too many authentication attempts");
+                    return Err(AuthError::TooManyAttempts.into());
+                }
+
+                let user_auth_request = UserAuthRequest::try_from(packet)?;
+                debug!(?user_auth_request, "received user auth request");
+                if user_auth_request.service_name != ServiceName::Connection {
+                    error!(
+                        service_name = ?user_auth_request.service_name,
+                        "unsupported service requested"
+                    );
+
+                    return Err(ProtoError::ServiceNotAvailable(
+                        "only connection service is supported",
+                    )
+                    .into());
+                }
+
+                let Method::PublicKey(public_key) = user_auth_request.method else {
+                    warn!(
+                        method = ?user_auth_request.method,
+                        "unsupported authentication method requested"
+                    );
+                    encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                    return Ok(Self::AwaitAuthRequest { cached, attempts });
+                };
+
+                let user = match &mut cached {
+                    Some(user) if &*user.data.name == user_auth_request.user_name => user,
+                    _ => {
+                        let Ok(name) = Username::try_from(user_auth_request.user_name.to_owned())
+                        else {
+                            encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                            return Ok(Self::AwaitAuthRequest { cached, attempts });
+                        };
+
+                        let Some(user) = store.lookup(name) else {
+                            encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                            return Ok(Self::AwaitAuthRequest { cached, attempts });
+                        };
+
+                        let keys = store.keys(&user, provider);
+                        cached.insert(CachedUser { data: user, keys })
+                    }
+                };
+
+                let authorized_key = user.keys.iter().find(|key| key.matches(&public_key));
+                let (sig, authorized_key) = match (public_key.signature, authorized_key) {
+                    // Signature, authorized key => verify signature
+                    (Some(sig), Some(key)) if &sig.algorithm == key.algorithm() => {
+                        (sig, key.clone())
+                    }
+                    // Signature, no authorized key => verify signature against fake key
+                    (Some(sig), None) => (
+                        sig,
+                        match fake_key(&public_key.algorithm, provider) {
+                            Ok(key) => key,
+                            Err(_) => {
+                                warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
+                                encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                                return Ok(Self::AwaitAuthRequest { cached, attempts });
+                            }
+                        },
+                    ),
+                    // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
+                    (Some(_), Some(_)) => {
+                        warn!(
+                            algorithm = ?public_key.algorithm,
+                            "mismatched signature algorithm in authentication request"
+                        );
+                        encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                        return Ok(Self::AwaitAuthRequest { cached, attempts });
+                    }
+                    // No signature, authorized key => send pk-ok and wait for signature
+                    (None, Some(_)) => {
+                        let pk_ok = UserAuthPkOk {
+                            algorithm: public_key.algorithm.to_owned(),
+                            key_blob: Cow::Owned(public_key.key_blob.to_vec()),
+                        };
+                        debug!(ok = ?pk_ok, "sending pk-ok for user");
+                        encoder.enqueue(&pk_ok)?;
+                        return Ok(Self::AwaitAuthRequest { cached, attempts });
+                    }
+                    // No signature, no authorized key => fail authentication
+                    (None, None) => {
+                        encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                        return Ok(Self::AwaitAuthRequest { cached, attempts });
+                    }
+                };
+
+                let message = SignatureData {
+                    session_id: session_id.as_ref(),
+                    user_name: &user.data.name,
+                    service_name: user_auth_request.service_name,
+                    algorithm: public_key.algorithm,
+                    public_key: public_key.key_blob,
+                }
+                .encode();
+
+                let signature = match sig.encode() {
+                    Ok(signature) => signature,
+                    Err(error) => {
+                        debug!(%error, "failed to encode signature");
+                        encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                        return Ok(Self::AwaitAuthRequest { cached, attempts });
+                    }
+                };
+
+                match spawn_blocking(move || authorized_key.verify(message, signature)).await {
+                    Ok(Ok(())) => {
+                        let Some(user) = cached else {
+                            return Err(ProtoError::Unreachable("must have cached user").into());
+                        };
+
+                        info!(user = %user.data.name, "authentication successful");
+                        encoder.enqueue(&MessageType::UserAuthSuccess)?;
+                        Ok(Self::Complete(user.data))
+                    }
+                    _ => {
+                        encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                        Ok(Self::AwaitAuthRequest { cached, attempts })
+                    }
+                }
+            }
+            (_, _) => {
+                error!(
+                    message_type = ?packet.message_type,
+                    "unexpected packet received during authentication"
                 );
-                conn.send_auth_failed().await?;
-                continue;
-            }
-            // No signature, authorized key => send pk-ok and wait for signature
-            (None, Some(_)) => {
-                let pk_ok = UserAuthPkOk {
-                    algorithm: public_key.algorithm.to_owned(),
-                    key_blob: Cow::Owned(public_key.key_blob.to_vec()),
-                };
-                debug!(ok = ?pk_ok, "sending pk-ok for user");
-                conn.send(&pk_ok).await?;
-                continue;
-            }
-            // No signature, no authorized key => fail authentication
-            (None, None) => {
-                conn.send_auth_failed().await?;
-                continue;
-            }
-        };
-
-        let message = SignatureData {
-            session_id: session_id.as_ref(),
-            user_name: &user.data.name,
-            service_name: user_auth_request.service_name,
-            algorithm: public_key.algorithm,
-            public_key: public_key.key_blob,
-        }
-        .encode();
-
-        let signature = match sig.encode() {
-            Ok(signature) => signature,
-            Err(error) => {
-                debug!(%error, "failed to encode signature");
-                conn.send_auth_failed().await?;
-                continue;
-            }
-        };
-
-        match spawn_blocking(move || authorized_key.verify(message, signature)).await {
-            Ok(Ok(())) => {
-                let Some(user) = cached_user else {
-                    return Err(ProtoError::Unreachable("must have cached user").into());
-                };
-
-                info!(user = %user.data.name, "authentication successful");
-                conn.send(&MessageType::UserAuthSuccess).await?;
-                break Ok(user.data);
-            }
-            _ => {
-                conn.send_auth_failed().await?;
-                continue;
+                Err(Error::InvalidState(
+                    "unexpected packet received during authentication",
+                ))
             }
         }
     }
@@ -674,10 +729,15 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
 /// Errors that can occur during authentication
 #[derive(Debug, Error)]
 pub enum AuthError {
+    /// The client canceled the authentication process
+    #[error("canceled by the client")]
+    Canceled,
     /// Too many authentication attempts for a single connection
     #[error("too many authentication attempts")]
     TooManyAttempts,
 }
+
+const SUPPORTED_METHODS: &[MethodName<'_>] = &[MethodName::PublicKey];
 
 #[cfg(test)]
 mod tests {
