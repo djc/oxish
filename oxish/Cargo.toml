@@ -1,6 +1,6 @@
 [package]
 name = "oxish"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0 OR MIT"
@@ -13,14 +13,14 @@ graviola = ["dep:graviola"]
 
 [dependencies]
 anyhow = { workspace = true }
-aws-lc = { package = "oxish-aws-lc", version = "0.1.0", path = "../oxish-aws-lc", optional = true }
+aws-lc = { package = "oxish-aws-lc", version = "=0.1.0-rc.1", path = "../oxish-aws-lc", optional = true }
 bitflags = { workspace = true }
 clap = { workspace = true }
 data-encoding = { workspace = true }
-graviola = { package = "oxish-graviola", version = "0.1.0", path = "../oxish-graviola", optional = true }
+graviola = { package = "oxish-graviola", version = "=0.1.0-rc.1", path = "../oxish-graviola", optional = true }
 libc = { workspace = true }
 listenfd = { workspace = true }
-proto = { package = "oxish-proto", version = "0.1", path = "../oxish-proto" }
+proto = { package = "oxish-proto", version = "=0.1.0-rc.1", path = "../oxish-proto" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
