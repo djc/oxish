@@ -15,7 +15,6 @@ use anyhow::Context as _;
 use proto::{
     Completion, Decode, Decoded, Encode, Identification, IdentificationError, Ignore,
     IncomingPacket, PROTOCOL, ProtoError, ReadState, WriteState,
-    auth::UserAuthFailure,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyLengths,
         KeySourceSide,
@@ -24,7 +23,7 @@ use proto::{
         EcdhKeyExchangeInit, HostKeys, Identities, KeyExchange, KeySourceSet, NewKeys, Rekey,
         ServerHostKey, SessionHostKey, StrictKeyExchange,
     },
-    named::{EncryptionAlgorithm, ExtensionId, MethodName},
+    named::{EncryptionAlgorithm, ExtensionId},
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -220,14 +219,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // The ident was written to the stream directly, so drop it from the outgoing buffer
         self.write.clear();
         Ok((exchange, identities))
-    }
-
-    async fn send_auth_failed(&mut self) -> Result<(), Error> {
-        self.send(&UserAuthFailure {
-            can_continue: &[MethodName::PublicKey],
-            partial_success: false,
-        })
-        .await
     }
 
     async fn send(&mut self, payload: &impl Encode) -> Result<(), Error> {
