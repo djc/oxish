@@ -522,7 +522,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "oxish"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "anyhow",
  "bitflags",
@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "oxish-aws-lc"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "aws-lc-rs",
  "oxish-proto",
@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "oxish-graviola"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "graviola",
  "oxish-proto",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "oxish-proto"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "data-encoding",
  "sha1",
