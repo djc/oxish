@@ -4,6 +4,11 @@ version = "0.1.0-rc.1"
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0 OR MIT"
+description = "aws-lc-rs crypto provider for OxiSH"
+repository = "https://github.com/djc/oxish"
+readme = "../README.md"
+keywords = ["ssh", "protocol", "cryptography"]
+categories = ["network-programming", "cryptography"]
 
 [features]
 default = ["aws-lc-rs/default"]
