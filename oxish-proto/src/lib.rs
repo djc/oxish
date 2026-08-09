@@ -645,6 +645,9 @@ pub enum ProtoError {
     /// An internal invariant was violated (this is a bug)
     #[error("unreachable code: {0}")]
     Unreachable(&'static str),
+    /// The requested service was not available in the current state
+    #[error("service not available: {0}")]
+    ServiceNotAvailable(&'static str),
 }
 
 /// An error parsing the peer's identification string

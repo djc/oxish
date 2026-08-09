@@ -50,6 +50,25 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
 ) -> Result<User, Error> {
     let future = inner(session_id, conn, store, provider);
     if let Ok(result) = timeout(Duration::from_secs(60), future).await {
+        if let Err(error) = &result {
+            let disconnect = match error {
+                Error::Auth(AuthError::TooManyAttempts) => Disconnect {
+                    reason_code: DisconnectReason::ByApplication,
+                    description: "too many authentication attempts",
+                },
+                Error::Proto(ProtoError::ServiceNotAvailable(description)) => Disconnect {
+                    reason_code: DisconnectReason::ServiceNotAvailable,
+                    description,
+                },
+                _ => Disconnect {
+                    reason_code: DisconnectReason::ByApplication,
+                    description: "authentication failed",
+                },
+            };
+
+            conn.send(&disconnect).await?;
+        }
+
         return result;
     }
 
@@ -77,13 +96,10 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
             "unsupported service requested"
         );
 
-        let disconnect = Disconnect {
-            reason_code: DisconnectReason::ServiceNotAvailable,
-            description: "only user authentication service is supported",
-        };
-
-        conn.send(&disconnect).await?;
-        return Err(Error::InvalidState("unsupported service requested"));
+        return Err(ProtoError::ServiceNotAvailable(
+            "only user authentication service is supported",
+        )
+        .into());
     }
 
     let service_accept = ServiceAccept {
@@ -96,14 +112,7 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
     loop {
         attempts -= 1;
         if attempts == 0 {
-            error!("too many authentication attempts");
-            let disconnect = Disconnect {
-                reason_code: DisconnectReason::ProtocolError,
-                description: "too many authentication attempts",
-            };
-
-            conn.send(&disconnect).await?;
-            return Err(Error::InvalidState("too many authentication attempts"));
+            return Err(AuthError::TooManyAttempts.into());
         }
 
         let packet = receive(&mut conn.stream, &mut conn.read).await?;
@@ -122,13 +131,9 @@ async fn inner<T: AsyncRead + AsyncWrite + Unpin>(
                 "unsupported service requested"
             );
 
-            let disconnect = Disconnect {
-                reason_code: DisconnectReason::ServiceNotAvailable,
-                description: "only connection service is supported",
-            };
-
-            conn.send(&disconnect).await?;
-            return Err(Error::InvalidState("unsupported service requested"));
+            return Err(
+                ProtoError::ServiceNotAvailable("only connection service is supported").into(),
+            );
         }
 
         let Method::PublicKey(public_key) = user_auth_request.method else {
@@ -664,6 +669,14 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
         true => ControlFlow::Continue(()),
         false => ControlFlow::Break(()),
     }
+}
+
+/// Errors that can occur during authentication
+#[derive(Debug, Error)]
+pub enum AuthError {
+    /// Too many authentication attempts for a single connection
+    #[error("too many authentication attempts")]
+    TooManyAttempts,
 }
 
 #[cfg(test)]

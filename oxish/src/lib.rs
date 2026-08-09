@@ -48,7 +48,7 @@ pub use graviola::DEFAULT_PROVIDER;
 compile_error!("no crypto providers enabled -- enable at least one to fix this error");
 
 mod authentication;
-pub use authentication::{DefaultStore, User, UserStore, Username};
+pub use authentication::{AuthError, DefaultStore, User, UserStore, Username};
 mod session;
 pub use session::Session;
 mod server;
@@ -488,6 +488,9 @@ async fn buffer<'a>(
 /// Error type for SSH connections
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Authentication errors
+    #[error("authentication error: {0}")]
+    Auth(#[from] AuthError),
     /// Invalid state encountered during SSH session
     #[error("invalid state: {0}")]
     InvalidState(&'static str),
