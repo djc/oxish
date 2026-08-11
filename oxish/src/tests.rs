@@ -63,6 +63,37 @@ async fn handshake_ed25519_graviola() {
         .unwrap();
 }
 
+/// Exercise the curve25519-sha256 key exchange against the aws-lc-rs provider
+#[cfg(feature = "aws-lc")]
+#[tokio::test]
+async fn handshake_x25519_aws_lc() {
+    handshake_x25519(aws_lc::DEFAULT_PROVIDER).await.unwrap();
+}
+
+/// Exercise the curve25519-sha256 key exchange against the graviola provider
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn handshake_x25519_graviola() {
+    handshake_x25519(graviola::DEFAULT_PROVIDER).await.unwrap();
+}
+
+async fn handshake_x25519(provider: &'static dyn CryptoProvider) -> anyhow::Result<()> {
+    subscribe();
+
+    let (_key_dir, mut client, server) =
+        setup(&PublicKeyAlgorithm::Ed25519, None, provider).await?;
+    // Restrict the client to the non-PQ key exchange so the test fails if the
+    // server no longer supports it.
+    client.cmd.args(["-o", "KexAlgorithms=curve25519-sha256"]);
+
+    let (_stdout, stderr) = client.run(COMMAND, Duration::from_secs(10), server).await?;
+    anyhow::ensure!(
+        stderr.contains("kex: algorithm: curve25519-sha256"),
+        "client did not negotiate curve25519-sha256"
+    );
+    Ok(())
+}
+
 #[cfg(feature = "graviola")]
 #[tokio::test]
 async fn no_spawn() {

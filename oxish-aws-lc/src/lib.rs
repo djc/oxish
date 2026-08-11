@@ -118,20 +118,26 @@ impl CryptoProvider for Provider {
     ) -> Result<&'static dyn KeyExchange, CryptoError> {
         match algorithm {
             KeyExchangeAlgorithm::MlKem768X25519Sha256 => Ok(&Mlkem768X25519Kx),
+            KeyExchangeAlgorithm::Curve25519Sha256 => Ok(&X25519Kx),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, CryptoError> {
         match algorithm {
-            KeyExchangeAlgorithm::MlKem768X25519Sha256 => Ok(&Sha256),
+            KeyExchangeAlgorithm::MlKem768X25519Sha256 | KeyExchangeAlgorithm::Curve25519Sha256 => {
+                Ok(&Sha256)
+            }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn supported_algorithms(&self) -> SupportedAlgorithms {
         SupportedAlgorithms {
-            key_exchange: &[KeyExchangeAlgorithm::MlKem768X25519Sha256],
+            key_exchange: &[
+                KeyExchangeAlgorithm::MlKem768X25519Sha256,
+                KeyExchangeAlgorithm::Curve25519Sha256,
+            ],
             public_key: &[
                 PublicKeyAlgorithm::EcdsaSha2Nistp256,
                 PublicKeyAlgorithm::Ed25519,
@@ -326,6 +332,43 @@ impl ActiveKeyExchange for Mlkem768X25519KeyExchange {
             Vec::with_capacity(ciphertext.as_ref().len() + classic_public_key.len());
         public_key.extend_from_slice(ciphertext.as_ref());
         public_key.extend_from_slice(&classic_public_key);
+
+        Ok(AgreedKey {
+            public_key,
+            shared_secret,
+        })
+    }
+}
+
+/// The `curve25519-sha256` key exchange
+struct X25519Kx;
+
+impl KeyExchange for X25519Kx {
+    fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, CryptoError> {
+        Ok(Box::new(X25519KeyExchange))
+    }
+}
+
+struct X25519KeyExchange;
+
+impl ActiveKeyExchange for X25519KeyExchange {
+    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<AgreedKey, CryptoError> {
+        let random = rand::SystemRandom::new();
+        let private_key = EphemeralPrivateKey::generate(&X25519, &random)
+            .map_err(|_| CryptoError::KeyGenerationFailed)?;
+        let public_key = private_key
+            .compute_public_key()
+            .map_err(|_| CryptoError::Unspecified)?
+            .as_ref()
+            .to_vec();
+
+        let peer = agreement::UnparsedPublicKey::new(&X25519, peer_public_key);
+        let shared_secret = agreement::agree_ephemeral(
+            private_key,
+            peer,
+            CryptoError::KeyAgreementFailed,
+            |shared_secret| Ok(SharedSecret::from(shared_secret.to_vec())),
+        )?;
 
         Ok(AgreedKey {
             public_key,
