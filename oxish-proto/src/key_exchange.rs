@@ -614,8 +614,15 @@ impl KeyExchangeOutput {
         // Write the server's reply public value (`Q_S` / `S_REPLY`) to the exchange hash
         exchange.prefixed(&completed.public_key);
         let secret_bytes = completed.shared_secret.secret_bytes();
-        let mut shared_secret = Vec::with_capacity(secret_bytes.len() + 4);
-        secret_bytes.encode(&mut shared_secret);
+        let mut shared_secret = Vec::with_capacity(secret_bytes.len() + 5);
+        match negotiated.key_exchange {
+            // RFC 8731 section 3: `K` is the raw X25519 output encoded as an mpint
+            KeyExchangeAlgorithm::Curve25519Sha256 => {
+                encode_mpint(secret_bytes, &mut shared_secret)
+            }
+            // The PQ hybrid draft encodes `K` (a fixed-length hash output) as a string
+            _ => secret_bytes.encode(&mut shared_secret),
+        }
         exchange.update(&shared_secret);
 
         let exchange_hash = exchange.finish();

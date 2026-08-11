@@ -126,20 +126,26 @@ impl CryptoProvider for Provider {
     ) -> Result<&'static dyn KeyExchange, CryptoError> {
         match algorithm {
             KeyExchangeAlgorithm::MlKem768X25519Sha256 => Ok(&Mlkem768X25519Kx),
+            KeyExchangeAlgorithm::Curve25519Sha256 => Ok(&X25519Kx),
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn hash(&self, algorithm: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, CryptoError> {
         match algorithm {
-            KeyExchangeAlgorithm::MlKem768X25519Sha256 => Ok(&Sha256),
+            KeyExchangeAlgorithm::MlKem768X25519Sha256 | KeyExchangeAlgorithm::Curve25519Sha256 => {
+                Ok(&Sha256)
+            }
             _ => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
     fn supported_algorithms(&self) -> SupportedAlgorithms {
         SupportedAlgorithms {
-            key_exchange: &[KeyExchangeAlgorithm::MlKem768X25519Sha256],
+            key_exchange: &[
+                KeyExchangeAlgorithm::MlKem768X25519Sha256,
+                KeyExchangeAlgorithm::Curve25519Sha256,
+            ],
             public_key: &[
                 PublicKeyAlgorithm::EcdsaSha2Nistp256,
                 PublicKeyAlgorithm::Ed25519,
@@ -321,6 +327,36 @@ impl ActiveKeyExchange for Mlkem768X25519KeyExchange {
         Ok(AgreedKey {
             public_key,
             shared_secret,
+        })
+    }
+}
+
+/// The `curve25519-sha256` key exchange
+struct X25519Kx;
+
+impl KeyExchange for X25519Kx {
+    fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, CryptoError> {
+        Ok(Box::new(X25519KeyExchange))
+    }
+}
+
+struct X25519KeyExchange;
+
+impl ActiveKeyExchange for X25519KeyExchange {
+    fn complete(self: Box<Self>, peer_public_key: &[u8]) -> Result<AgreedKey, CryptoError> {
+        let private_key =
+            x25519::PrivateKey::new_random().map_err(|_| CryptoError::NoRandomness)?;
+        let public_key = private_key.public_key().as_bytes().to_vec();
+
+        let peer = x25519::PublicKey::try_from_slice(peer_public_key)
+            .map_err(|_| CryptoError::KeyRejected)?;
+        let shared = private_key
+            .diffie_hellman(&peer)
+            .map_err(|_| CryptoError::KeyAgreementFailed)?;
+
+        Ok(AgreedKey {
+            public_key,
+            shared_secret: SharedSecret::from(shared.as_bytes().to_vec()),
         })
     }
 }

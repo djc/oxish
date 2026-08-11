@@ -180,6 +180,10 @@ pub enum KeyExchangeAlgorithm<'a> {
     ///
     /// As defined in <https://datatracker.ietf.org/doc/draft-kampanakis-curdle-ssh-pq-ke/>.
     MlKem768X25519Sha256,
+    /// `curve25519-sha256` key exchange algorithm: ECDH using X25519
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc8731>.
+    Curve25519Sha256,
     /// A key exchange algorithm not known to this implementation
     Unknown(&'a str),
 }
@@ -188,6 +192,7 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {
             "mlkem768x25519-sha256" => Self::MlKem768X25519Sha256,
+            "curve25519-sha256" => Self::Curve25519Sha256,
             _ => Self::Unknown(name),
         }
     }
@@ -195,6 +200,7 @@ impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
     fn name(&self) -> &str {
         match self {
             Self::MlKem768X25519Sha256 => "mlkem768x25519-sha256",
+            Self::Curve25519Sha256 => "curve25519-sha256",
             Self::Unknown(name) => name,
         }
     }
