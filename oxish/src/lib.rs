@@ -76,6 +76,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         Option<StrictKeyExchange>,
         Digest,
         KeySourceSet,
+        bool,
     )> {
         let (exchange, identities) = self.identify().await.context("identification failed")?;
 
@@ -97,6 +98,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let packet = receive(&mut self.stream, &mut self.read).await?;
         let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
+        let post_quantum_kex = kx.negotiated.key_exchange.post_quantum_secure();
         let (host_key, key_exchange_reply, session_id, keys) = kx
             .complete(ecdh_key_exchange_init, host_keys, provider)
             .context("key exchange failed")?;
@@ -110,7 +112,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         self.send(&Ignore::default()).await?;
-        Ok((identities, host_key, strict_kx, session_id, keys))
+        Ok((
+            identities,
+            host_key,
+            strict_kx,
+            session_id,
+            keys,
+            post_quantum_kex,
+        ))
     }
 
     /// Complete a client-initiated rekey after its `SSH_MSG_KEXINIT` has been parsed
@@ -245,6 +254,7 @@ struct SessionState<H> {
     addr: SocketAddr,
     host_key: H,
     identities: Identities,
+    post_quantum_kx: bool,
     strict_kx: Option<StrictKeyExchange>,
     session_id: Digest,
     read: SideState,
@@ -259,6 +269,7 @@ impl Encode for SessionState<ServerHostKey<'_>> {
             addr,
             host_key,
             identities,
+            post_quantum_kx,
             strict_kx,
             session_id,
             read,
@@ -269,6 +280,7 @@ impl Encode for SessionState<ServerHostKey<'_>> {
         addr.to_string().as_bytes().encode(buf);
         host_key.encode(buf);
         identities.encode(buf);
+        post_quantum_kx.encode(buf);
         strict_kx.encode(buf);
         session_id.as_ref().encode(buf);
         read.encode(buf);
@@ -302,6 +314,11 @@ impl SessionState<SessionHostKey> {
         } = Identities::decode(next)?;
 
         let Decoded {
+            value: post_quantum_kx,
+            next,
+        } = bool::decode(next)?;
+
+        let Decoded {
             value: strict_kx,
             next,
         } = Option::<StrictKeyExchange>::decode(next)?;
@@ -323,6 +340,7 @@ impl SessionState<SessionHostKey> {
                 addr,
                 host_key,
                 identities,
+                post_quantum_kx,
                 strict_kx,
                 session_id: Digest::new(session_id),
                 read,
