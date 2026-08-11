@@ -83,6 +83,11 @@ impl Rekey {
     pub fn strict_key_exchange(&self) -> Option<&StrictKeyExchange> {
         self.strict_kx.as_ref()
     }
+
+    /// The client's identity
+    pub fn client_identity(&self) -> &[u8] {
+        &self.identities.client
+    }
 }
 
 /// Output from the initial key exchange phase
@@ -746,7 +751,8 @@ impl fmt::Debug for TaggedSignature<'_> {
 /// See <https://www.rfc-editor.org/rfc/rfc4253#section-7.1> for the negotiation procedure.
 #[derive(Debug)]
 pub struct Negotiated {
-    key_exchange: KeyExchangeAlgorithm<'static>,
+    /// Negotiated key exchange algorithm
+    pub key_exchange: KeyExchangeAlgorithm<'static>,
     server_host_key: PublicKeyAlgorithm<'static>,
     encryption_client_to_server: EncryptionAlgorithm<'static>,
     encryption_server_to_client: EncryptionAlgorithm<'static>,

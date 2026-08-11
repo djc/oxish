@@ -188,6 +188,16 @@ pub enum KeyExchangeAlgorithm<'a> {
     Unknown(&'a str),
 }
 
+impl KeyExchangeAlgorithm<'_> {
+    /// Whether it's secure against attacks with a cryptographically relevant quantum computer
+    pub fn post_quantum_secure(&self) -> bool {
+        match self {
+            Self::MlKem768X25519Sha256 => true,
+            Self::Curve25519Sha256 | Self::Unknown(_) => false,
+        }
+    }
+}
+
 impl<'a> Named<'a> for KeyExchangeAlgorithm<'a> {
     fn typed(name: &'a str) -> Self {
         match name {

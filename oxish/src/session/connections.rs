@@ -69,6 +69,7 @@ impl Channels {
         &mut self,
         request: ChannelRequest<'_>,
         encoder: &mut Encoder<'_>,
+        banner: Option<&str>,
     ) -> Result<(), Error> {
         let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
             return Err(ProtoError::InvalidPacket("channel request for unknown channel ID").into());
@@ -121,6 +122,19 @@ impl Channels {
             encoder.enqueue(&channel.success())?;
         }
 
+        let Some(banner) = banner else {
+            return Ok(());
+        };
+
+        let Some(window) = channel.send_window.checked_sub(banner.len() as u32) else {
+            return Ok(());
+        };
+
+        channel.send_window = window;
+        encoder.enqueue(&ChannelData {
+            recipient_channel: channel.remote_id,
+            data: Cow::Borrowed(banner.as_bytes()),
+        })?;
         Ok(())
     }
 

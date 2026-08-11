@@ -86,10 +86,16 @@ async fn handshake_x25519(provider: &'static dyn CryptoProvider) -> anyhow::Resu
     // server no longer supports it.
     client.cmd.args(["-o", "KexAlgorithms=curve25519-sha256"]);
 
-    let (_stdout, stderr) = client.run(COMMAND, Duration::from_secs(10), server).await?;
+    let (stdout, stderr) = client.run(COMMAND, Duration::from_secs(10), server).await?;
     anyhow::ensure!(
         stderr.contains("kex: algorithm: curve25519-sha256"),
         "client did not negotiate curve25519-sha256"
+    );
+
+    // A non-post-quantum key exchange must surface a warning banner in the terminal
+    anyhow::ensure!(
+        stdout.contains(KX_WARNING_MARKER),
+        "expected key exchange warning banner in session output:\n{stdout}"
     );
     Ok(())
 }
@@ -172,7 +178,7 @@ async fn handshake(
 
     let (_key_dir, client, server) = setup(&algorithm, None, provider).await?;
 
-    let (_stdout, _stderr) = client
+    let (stdout, stderr) = client
         .run(
             COMMAND,
             // In the rekey scenario, keep the session open long enough for several rekeys before the
@@ -181,6 +187,13 @@ async fn handshake(
             server,
         )
         .await?;
+
+    if stderr.contains("kex: algorithm: mlkem768x25519-sha256") {
+        anyhow::ensure!(
+            !stdout.contains(KX_WARNING_MARKER),
+            "unexpected key exchange warning banner in session output:\n{stdout}"
+        );
+    }
 
     Ok(())
 }
@@ -337,6 +350,7 @@ fn session_state_round_trip() {
             client: b"client-identity".to_vec(),
             server: b"server-identity".to_vec(),
         },
+        post_quantum_kx: false,
         strict_kx: None,
         host_key,
         session_id: Digest::new(b"session-id"),
@@ -374,6 +388,7 @@ fn session_state_round_trip() {
     assert_eq!(decoded.identities.client, state.identities.client);
     assert_eq!(decoded.identities.server, state.identities.server);
     assert_eq!(decoded.strict_kx.is_some(), state.strict_kx.is_some());
+    assert_eq!(decoded.post_quantum_kx, state.post_quantum_kx);
     assert_eq!(decoded.session_id.as_ref(), state.session_id.as_ref());
     assert_eq!(decoded.read_buf, state.read_buf);
     assert_eq!(
@@ -482,3 +497,4 @@ fn subscribe() {
 const USER: &str = "oxish-e2e";
 const COMMAND: &[u8] = b"echo OXISH-$((6*7))\nexit\n";
 const OUTPUT: &str = "OXISH-42";
+const KX_WARNING_MARKER: &str = "post-quantum secure";

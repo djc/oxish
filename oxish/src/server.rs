@@ -126,7 +126,7 @@ impl Server {
         };
 
         let future = conn.exchange_keys(&self.host_keys, self.provider);
-        let (identities, host_key, strict_kx, session_id, keys) =
+        let (identities, host_key, strict_kx, session_id, keys, post_quantum_kx) =
             match timeout(Duration::from_secs(30), future).await {
                 Ok(result) => result.context("key exchange failed")?,
                 Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
@@ -142,6 +142,7 @@ impl Server {
             let session = Session::new(
                 conn,
                 Rekey::new(session_id, strict_kx, identities, host_key),
+                post_quantum_kx,
             );
             return session.run(self.provider).await.context("session failed");
         }
@@ -169,6 +170,7 @@ impl Server {
             addr,
             host_key,
             identities,
+            post_quantum_kx,
             strict_kx,
             session_id,
             read: SideState {
