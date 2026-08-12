@@ -20,8 +20,8 @@ use proto::{
         KeySourceSide,
     },
     key_exchange::{
-        EcdhKeyExchangeInit, HostKeys, Identities, KeyExchange, KeySourceSet, NewKeys, Rekey,
-        ServerHostKey, SessionHostKey, StrictKeyExchange,
+        EcdhKeyExchangeInit, HostKeys, Identities, KeyExchange, KeyExchangeOutput, KeySourceSet,
+        NewKeys, Rekey, ServerHostKey, SessionHostKey, StrictKeyExchange,
     },
     named::{EncryptionAlgorithm, ExtensionId},
 };
@@ -70,14 +70,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         &mut self,
         host_keys: &'h HostKeys,
         provider: &dyn CryptoProvider,
-    ) -> anyhow::Result<(
-        Identities,
-        ServerHostKey<'h>,
-        Option<StrictKeyExchange>,
-        Digest,
-        KeySourceSet,
-        bool,
-    )> {
+    ) -> anyhow::Result<KeyExchangeOutput<'h>> {
         let (exchange, identities) = self.identify().await.context("identification failed")?;
 
         // Receive and send key exchange init packets
@@ -98,7 +91,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
         let packet = receive(&mut self.stream, &mut self.read).await?;
         let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
-        let post_quantum_kex = kx.negotiated.key_exchange.post_quantum_secure();
+        let post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
         let (host_key, key_exchange_reply, session_id, keys) = kx
             .complete(ecdh_key_exchange_init, host_keys, provider)
             .context("key exchange failed")?;
@@ -112,14 +105,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         self.send(&Ignore::default()).await?;
-        Ok((
+        Ok(KeyExchangeOutput {
             identities,
             host_key,
             strict_kx,
             session_id,
             keys,
-            post_quantum_kex,
-        ))
+            post_quantum_kx,
+        })
     }
 
     /// Complete a client-initiated rekey after its `SSH_MSG_KEXINIT` has been parsed

@@ -433,11 +433,11 @@ impl EcdhKeyExchangeReply {
         host_key: &dyn SigningKey,
         provider: &dyn CryptoProvider,
     ) -> Result<(Self, Digest, KeySourceSet), CryptoError> {
-        let KeyExchangeOutput {
+        let KeyExchangeStarted {
             shared_secret,
             exchange_hash,
             reply,
-        } = KeyExchangeOutput::new(
+        } = KeyExchangeStarted::new(
             exchange,
             ecdh_key_exchange_init.client_ephemeral_public_key,
             negotiated,
@@ -584,13 +584,13 @@ impl SessionHostKey {
     }
 }
 
-struct KeyExchangeOutput {
+struct KeyExchangeStarted {
     shared_secret: SharedSecret,
     exchange_hash: Digest,
     reply: EcdhKeyExchangeReply,
 }
 
-impl KeyExchangeOutput {
+impl KeyExchangeStarted {
     fn new(
         mut exchange: HandshakeHash,
         client_ephemeral_public_key: &[u8],
@@ -931,6 +931,22 @@ impl Encode for ExtInfo<'_> {
             value.encode(buf);
         }
     }
+}
+
+/// Output of the initial key exchange
+pub struct KeyExchangeOutput<'a> {
+    /// The identities exchanged after connection acceptance
+    pub identities: Identities,
+    /// The host key used for the connection
+    pub host_key: ServerHostKey<'a>,
+    /// The strict key exchange state, if negotiated
+    pub strict_kx: Option<StrictKeyExchange>,
+    /// The session ID for the connection
+    pub session_id: Digest,
+    /// The keys derived for the connection
+    pub keys: KeySourceSet,
+    /// Whether post-quantum key exchange was negotiated
+    pub post_quantum_kx: bool,
 }
 
 /// The raw hashes from which we will derive the crypto keys.
