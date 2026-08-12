@@ -618,7 +618,7 @@ pub struct Decoded<'a, T> {
 }
 
 /// An error in the SSH protocol layer
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum ProtoError {
     /// A cryptographic operation failed
     #[error("crypto error: {0}")]
@@ -626,12 +626,18 @@ pub enum ProtoError {
     /// The peer's identification string was malformed
     #[error("failed to parse identification: {0}")]
     Identification(#[from] IdentificationError),
+    /// An I/O error occurred
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
     /// The input was too short to decode a complete message
     ///
     /// The payload, if known, is the number of additional bytes needed beyond the end of the
     /// current input (`required - available`).
     #[error("incomplete message: {0:?}")]
     Incomplete(Option<usize>),
+    /// A host key file could not be used; the payload describes why
+    #[error("invalid host key: {0}")]
+    InvalidHostKey(&'static str),
     /// A packet violated the protocol; the payload describes how
     #[error("invalid packet: {0}")]
     InvalidPacket(&'static str),
