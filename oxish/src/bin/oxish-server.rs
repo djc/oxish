@@ -3,7 +3,7 @@ use std::{
     env,
     fs::{self, File},
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -49,8 +49,17 @@ async fn main() -> anyhow::Result<()> {
             Err(err) => return Err(err.into()),
         }
     } else {
-        let pkcs8 = Zeroizing::new(fs::read(&args.host_key_file)?);
-        HostKeys::new([pkcs8].into_iter(), provider)?
+        match HostKeys::from_dir(Path::new("/etc/ssh"), provider) {
+            Ok(host_keys) => {
+                info!(len = host_keys.len(), "loaded host keys from /etc/ssh");
+                host_keys
+            }
+            Err(error) => {
+                eprintln!("failed to load host keys from /etc/ssh: {error}");
+                let pkcs8 = Zeroizing::new(fs::read(&args.host_key_file)?);
+                HostKeys::new([pkcs8].into_iter(), provider)?
+            }
+        }
     };
 
     let session_bin = match args.session_bin {
