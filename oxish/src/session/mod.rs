@@ -23,7 +23,7 @@ use tokio::{
 use tracing::{debug, info, instrument, trace, warn};
 use zeroize::Zeroizing;
 
-use crate::{Connection, DEFAULT_PROVIDER, Error, SessionState, receive, send};
+use crate::{Connection, DEFAULT_PROVIDER, Error, KeyExchangeOutput, SessionState, receive, send};
 
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
@@ -166,13 +166,22 @@ impl Session<TcpStream> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
-    pub(crate) fn new(conn: Connection<T>, rekey: Rekey, post_quantum_kx: bool) -> Self {
-        Self {
+    pub(crate) fn new(
+        kx: KeyExchangeOutput<'_>,
+        conn: Connection<T>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, Error> {
+        Ok(Self {
             conn,
             channels: Channels::default(),
-            rekey,
-            post_quantum_kx,
-        }
+            rekey: Rekey::new(
+                kx.session_id,
+                kx.strict_kx,
+                kx.identities,
+                SessionHostKey::from_server(kx.host_key, provider)?,
+            ),
+            post_quantum_kx: kx.post_quantum_kx,
+        })
     }
 
     /// Run the session, driving the connection forward and handling channel messages

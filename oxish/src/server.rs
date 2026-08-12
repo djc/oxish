@@ -21,7 +21,7 @@ use anyhow::Context as _;
 use proto::{
     Encode, ReadState, WriteState,
     crypto::CryptoProvider,
-    key_exchange::{HostKeys, Rekey, ServerHostKey, SessionHostKey},
+    key_exchange::{HostKeys, ServerHostKey},
 };
 use rustix::net::{
     RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
@@ -126,24 +126,18 @@ impl Server {
         };
 
         let future = conn.exchange_keys(&self.host_keys, self.provider);
-        let (identities, host_key, strict_kx, session_id, keys, post_quantum_kx) =
-            match timeout(Duration::from_secs(30), future).await {
-                Ok(result) => result.context("key exchange failed")?,
-                Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
-            };
+        let kx = match timeout(Duration::from_secs(30), future).await {
+            Ok(result) => result.context("key exchange failed")?,
+            Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
+        };
 
-        let user = authenticate(&session_id, &mut conn, &*self.store, self.provider)
+        let user = authenticate(&kx.session_id, &mut conn, &*self.store, self.provider)
             .await
             .context("authentication failed")?;
         drop(authenticating);
 
         if !self.config.spawn {
-            let host_key = SessionHostKey::from_server(host_key, self.provider)?;
-            let session = Session::new(
-                conn,
-                Rekey::new(session_id, strict_kx, identities, host_key),
-                post_quantum_kx,
-            );
+            let session = Session::new(kx, conn, self.provider)?;
             return session.run(self.provider).await.context("session failed");
         }
 
@@ -168,18 +162,18 @@ impl Server {
 
         let state = SessionState {
             addr,
-            host_key,
-            identities,
-            post_quantum_kx,
-            strict_kx,
-            session_id,
+            host_key: kx.host_key,
+            identities: kx.identities,
+            post_quantum_kx: kx.post_quantum_kx,
+            strict_kx: kx.strict_kx,
+            session_id: kx.session_id,
             read: SideState {
-                source: keys.client_to_server,
+                source: kx.keys.client_to_server,
                 counter: read.opener.as_ref().map_or(0, |opener| opener.counter()),
                 sequence_number: read.sequence_number,
             },
             write: SideState {
-                source: keys.server_to_client,
+                source: kx.keys.server_to_client,
                 counter: write.sealer.as_ref().map_or(0, |sealer| sealer.counter()),
                 sequence_number: write.sequence_number,
             },
