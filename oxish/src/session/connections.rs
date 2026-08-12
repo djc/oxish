@@ -336,6 +336,9 @@ impl Channel {
     }
 }
 
+// On Windows `Terminal` holds a process handle and three pipes, but with at most a
+// handful of terminals per session the size difference is not worth indirection.
+#[cfg_attr(windows, expect(clippy::large_enum_variant))]
 enum TerminalState {
     Requested(PtyReq<'static>),
     Running(Terminal),

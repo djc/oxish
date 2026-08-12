@@ -540,6 +540,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+ "windows-sys",
  "zeroize",
 ]
 

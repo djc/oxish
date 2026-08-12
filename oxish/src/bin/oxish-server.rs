@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
             let Some(dir) = exe.parent() else {
                 anyhow::bail!("cannot determine directory of current executable");
             };
-            dir.join("oxish-session")
+            dir.join(format!("oxish-session{}", env::consts::EXE_SUFFIX))
         }
     };
 

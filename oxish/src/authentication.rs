@@ -1,26 +1,24 @@
-use core::{
-    ffi::c_char,
-    fmt,
-    future::poll_fn,
-    ops::{ControlFlow, Deref},
-    time::Duration,
-};
+#[cfg(unix)]
+use core::{ffi::c_char, ops::ControlFlow};
+use core::{fmt, future::poll_fn, ops::Deref, time::Duration};
 #[cfg(target_vendor = "apple")]
 use std::os::darwin::fs::MetadataExt;
 #[cfg(target_os = "linux")]
 use std::os::linux::fs::MetadataExt;
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "linux")))]
 use std::os::unix::fs::MetadataExt;
+use std::{borrow::Cow, io, path::PathBuf, str};
+#[cfg(windows)]
+use std::{env, fs};
+#[cfg(unix)]
 use std::{
-    borrow::Cow,
     ffi::{CStr, CString, OsStr},
     fs::File,
-    io::{self, Read},
+    io::Read,
     os::unix::ffi::OsStrExt,
-    path::PathBuf,
-    str,
 };
 
+#[cfg(unix)]
 use libc::{_SC_GETPW_R_SIZE_MAX, ERANGE, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
     Disconnect, DisconnectReason, Encoder, IncomingPacket, MessageType, ProtoError,
@@ -31,6 +29,7 @@ use proto::{
     crypto::{CryptoError, CryptoProvider, Digest},
     named::{MethodName, PublicKeyAlgorithm, ServiceName},
 };
+#[cfg(unix)]
 use rustix::fs::{Mode, OFlags, openat};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -324,6 +323,7 @@ pub struct DefaultStore(());
 
 impl DefaultStore {
     /// Construct a new [`DefaultStore`] from the current process's effective UID
+    #[cfg(unix)]
     #[expect(clippy::new_ret_no_self)]
     pub fn new(provider: &dyn CryptoProvider) -> Result<Box<dyn UserStore>, Error> {
         // SAFETY: `geteuid()` takes no arguments, cannot fail and has no preconditions.
@@ -336,11 +336,25 @@ impl DefaultStore {
             }
         })
     }
+
+    /// Construct a new [`DefaultStore`] for the user the server runs as
+    ///
+    /// Windows has no equivalent of the passwd database or privilege dropping, so the
+    /// store only ever authenticates the server's own user.
+    #[cfg(windows)]
+    #[expect(clippy::new_ret_no_self)]
+    pub fn new(provider: &dyn CryptoProvider) -> Result<Box<dyn UserStore>, Error> {
+        let data = User::current()?;
+        let keys = data.authorized_keys(provider);
+        Ok(Box::new(SingleUser(CachedUser { data, keys })))
+    }
 }
 
 /// User store backed by the system database
+#[cfg(unix)]
 struct SystemStore;
 
+#[cfg(unix)]
 impl UserStore for SystemStore {
     fn lookup(&self, name: Username) -> Option<User> {
         match User::lookup(UserLookup::Name(name)) {
@@ -429,6 +443,7 @@ pub struct User {
 }
 
 impl User {
+    #[cfg(unix)]
     fn lookup(by: UserLookup) -> Result<Self, Error> {
         /// Upper bound on the buffer used to hold the passwd entry
         const MAX_BUF_LEN: usize = 1_048_576;
@@ -566,6 +581,30 @@ impl User {
         })
     }
 
+    /// Look up the current user from the process environment
+    ///
+    /// Windows has no numeric user or group IDs, so `id` and `gid` are set to sentinel
+    /// values; they are never used because privileges are not dropped on Windows.
+    #[cfg(windows)]
+    fn current() -> Result<Self, Error> {
+        let name = env::var("USERNAME").map_err(|_| Error::InvalidUsername)?;
+        let Some(home_dir) = env::var_os("USERPROFILE").map(PathBuf::from) else {
+            return Err(Error::InvalidState("USERPROFILE is not set"));
+        };
+
+        let shell = env::var_os("ComSpec")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("cmd.exe"));
+
+        Ok(Self {
+            name: Username::try_from(name)?,
+            id: u32::MAX,
+            gid: u32::MAX,
+            home_dir,
+            shell,
+        })
+    }
+
     /// Read and parse the `authorized_keys` file for a user
     ///
     /// This is pretty finicky because we need to check that
@@ -573,6 +612,7 @@ impl User {
     /// - None of the path components have group or other write permissions
     /// - Each of the path components are owned by root or the target user
     /// - Avoid TOCTOU issues when opening each path component
+    #[cfg(unix)]
     fn authorized_keys(&self, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
         let home_dir = &self.home_dir;
         let home = match File::open(home_dir) {
@@ -641,19 +681,42 @@ impl User {
             return Vec::new();
         };
 
-        let mut keys = Vec::new();
-        for (line, key) in contents.lines().enumerate() {
-            match AuthorizedKey::from_str(key, provider) {
-                Some(key) => keys.push(key),
-                None => debug!(line = line + 1, "no valid authorized key found on line"),
-            }
-        }
-
-        keys
+        parse_authorized_keys(&contents, provider)
     }
 
+    /// Read and parse the `authorized_keys` file for a user
+    // TODO: validate the ownership and ACLs of each path component (as Win32-OpenSSH
+    // does) before trusting the file's contents.
+    #[cfg(windows)]
+    fn authorized_keys(&self, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
+        let path = self.home_dir.join(".ssh").join("authorized_keys");
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                warn!(%error, ?path, "failed to read authorized keys file");
+                return Vec::new();
+            }
+        };
+
+        parse_authorized_keys(&contents, provider)
+    }
+
+    #[cfg(unix)]
     const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
+    #[cfg(unix)]
     const DEFAULT_SHELL: *const c_char = c"/bin/sh".as_ptr().cast::<c_char>();
+}
+
+fn parse_authorized_keys(contents: &str, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
+    let mut keys = Vec::new();
+    for (line, key) in contents.lines().enumerate() {
+        match AuthorizedKey::from_str(key, provider) {
+            Some(key) => keys.push(key),
+            None => debug!(line = line + 1, "no valid authorized key found on line"),
+        }
+    }
+
+    keys
 }
 
 /// A validated username
@@ -663,11 +726,13 @@ impl User {
 pub struct Username(String);
 
 impl Username {
+    #[cfg(unix)]
     fn nobody() -> Self {
         Self("nobody".to_owned())
     }
 }
 
+#[cfg(unix)]
 impl TryFrom<&CStr> for Username {
     type Error = Error;
 
@@ -705,12 +770,14 @@ impl fmt::Display for Username {
     }
 }
 
+#[cfg(unix)]
 #[derive(Debug)]
 enum UserLookup {
     Name(Username),
     Id(u32),
 }
 
+#[cfg(unix)]
 fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
     let meta = match file.metadata() {
         Ok(meta) => meta,

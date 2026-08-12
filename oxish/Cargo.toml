@@ -23,7 +23,6 @@ bitflags = { workspace = true }
 clap = { workspace = true }
 data-encoding = { workspace = true }
 graviola = { package = "oxish-graviola", version = "=0.1.0-rc.1", path = "../oxish-graviola", optional = true }
-libc = { workspace = true }
 listenfd = { workspace = true }
 proto = { package = "oxish-proto", version = "=0.1.0-rc.1", path = "../oxish-proto" }
 thiserror = { workspace = true }
@@ -34,7 +33,11 @@ tracing-subscriber = { workspace = true }
 zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 rustix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -68,6 +68,16 @@ async fn handshake_ed25519_graviola() {
 async fn no_spawn() {
     subscribe();
 
+    // The in-process session spawns the shell named by the `SHELL` environment variable,
+    // which is usually not set on Windows; point it at the test shell explicitly.
+    //
+    // SAFETY: on Windows the environment lives behind the Win32 API, which is thread-safe;
+    // the aliasing concerns of `set_var` only apply to platforms using POSIX `getenv`.
+    #[cfg(windows)]
+    unsafe {
+        env::set_var("SHELL", shell())
+    };
+
     let (_key_dir, client, server) = setup(
         &PublicKeyAlgorithm::Ed25519,
         Some(Config {
@@ -194,7 +204,7 @@ struct CliClient {
 
 impl CliClient {
     fn new(addr: SocketAddr, key_path: &Path) -> Self {
-        let mut cmd = Command::new("ssh");
+        let mut cmd = Command::new(openssh_binary("ssh"));
         cmd.arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
             .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
             .args(["-p", &addr.port().to_string()]) // port to connect to
@@ -372,7 +382,7 @@ async fn store(
 
     // Generate the client key; ssh-keygen writes the private key with 0600
     // permissions, which the ssh client requires.
-    let status = Command::new("ssh-keygen")
+    let status = Command::new(openssh_binary("ssh-keygen"))
         .arg("-q") // quiet: suppress the interactive progress output
         .args(match algorithm {
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => &["-t", "ecdsa", "-b", "256"],
@@ -397,7 +407,7 @@ async fn store(
         id: 1000,
         gid: 1000,
         home_dir: PathBuf::from("/var/empty"),
-        shell: PathBuf::from("/bin/sh"),
+        shell: shell(),
     };
 
     Ok((dir, Box::new(SingleUser::with_keys(user, vec![key]))))
@@ -428,7 +438,7 @@ async fn session_binary() -> anyhow::Result<PathBuf> {
     let status = command.status().await?;
     assert!(status.success(), "failed to build oxish-session");
 
-    let bin = profile_dir.join("oxish-session");
+    let bin = profile_dir.join(format!("oxish-session{}", env::consts::EXE_SUFFIX));
     assert!(
         bin.is_file(),
         "oxish-session binary not found at `{}`",
@@ -446,6 +456,48 @@ fn subscribe() {
             .finish();
         tracing::subscriber::set_global_default(subscriber).unwrap();
     });
+}
+
+/// The shell the test user's sessions run
+#[cfg(unix)]
+fn shell() -> PathBuf {
+    PathBuf::from("/bin/sh")
+}
+
+/// The shell the test user's sessions run
+///
+/// [`COMMAND`] relies on POSIX shell arithmetic, so use Git for Windows' bash.
+#[cfg(windows)]
+fn shell() -> PathBuf {
+    git_for_windows("bin", "bash.exe")
+}
+
+/// Locate the OpenSSH binary `name` (e.g. `ssh` or `ssh-keygen`)
+#[cfg(unix)]
+fn openssh_binary(name: &str) -> PathBuf {
+    PathBuf::from(name)
+}
+
+/// Locate the OpenSSH binary `name` (e.g. `ssh` or `ssh-keygen`)
+///
+/// Prefer Git for Windows' OpenSSH over the one bundled with Windows (which comes first
+/// on `PATH` but is generally too old to support oxish's key exchange algorithm). Its
+/// MSYS runtime also understands the `/dev/null` paths the tests pass.
+#[cfg(windows)]
+fn openssh_binary(name: &str) -> PathBuf {
+    git_for_windows("usr/bin", &format!("{name}.exe"))
+}
+
+/// Locate `name` in Git for Windows' `dir`, falling back to `PATH` lookup
+///
+/// Git for Windows is present on GitHub's runners and most development machines.
+#[cfg(windows)]
+fn git_for_windows(dir: &str, name: &str) -> PathBuf {
+    let path = Path::new(r"C:\Program Files\Git").join(dir).join(name);
+    match path.is_file() {
+        true => path,
+        false => PathBuf::from(name),
+    }
 }
 
 const USER: &str = "oxish-e2e";

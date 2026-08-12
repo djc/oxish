@@ -1,21 +1,20 @@
-use core::{
-    mem::{self, MaybeUninit},
-    net::SocketAddr,
-    time::Duration,
-};
+#[cfg(unix)]
+use core::mem::MaybeUninit;
+use core::{mem, net::SocketAddr, time::Duration};
 #[cfg(coverage)]
 use std::env;
+#[cfg(windows)]
+use std::os::windows::io::AsRawSocket;
+#[cfg(unix)]
 use std::{
     ffi::CString,
-    io::{self, IoSlice, IoSliceMut},
+    io::{IoSlice, IoSliceMut},
     os::{
         fd::{AsFd, OwnedFd},
         unix::{ffi::OsStrExt, net::UnixStream},
     },
-    path::PathBuf,
-    process::Stdio,
-    sync::Arc,
 };
+use std::{io, path::PathBuf, process::Stdio, sync::Arc};
 
 use anyhow::Context as _;
 use proto::{
@@ -23,9 +22,12 @@ use proto::{
     crypto::CryptoProvider,
     key_exchange::{HostKeys, Rekey, ServerHostKey, SessionHostKey},
 };
+#[cfg(unix)]
 use rustix::net::{
     RecvAncillaryBuffer, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
 };
+#[cfg(windows)]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{
     net::{TcpListener, TcpStream},
     process::{Child, Command},
@@ -33,6 +35,10 @@ use tokio::{
     time::timeout,
 };
 use tracing::{debug, instrument, warn};
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock::{
+    SOCKET, WSADuplicateSocketW, WSAGetLastError, WSAPROTOCOL_INFOW,
+};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -206,6 +212,7 @@ impl Server {
     /// any shell it spawns) runs as the authenticated user. The caller sets this only when the
     /// server is privileged enough to change the process owner; when it is not, authentication
     /// is already restricted to the user the server runs as, so there's no need to drop privileges.
+    #[cfg(unix)]
     async fn spawn(
         &self,
         state: SessionState<ServerHostKey<'_>>,
@@ -347,6 +354,81 @@ impl Server {
             _ => Ok(child),
         }
     }
+
+    /// Spawn a child process for the authenticated session
+    ///
+    /// Windows has no `SCM_RIGHTS` equivalent, so the connection's socket is duplicated into
+    /// the child with `WSADuplicateSocketW()`; the resulting `WSAPROTOCOL_INFOW` travels after
+    /// the session state over the child's stdin pipe, and the child acknowledges the handoff
+    /// on its stdout pipe. Privileges are never dropped: [`UserStore`] implementations on
+    /// Windows authenticate only the user the server runs as.
+    #[cfg(windows)]
+    async fn spawn(
+        &self,
+        state: SessionState<ServerHostKey<'_>>,
+        stream: TcpStream,
+        user: User,
+    ) -> Result<Child, Error> {
+        let tcp = stream.into_std()?;
+
+        let mut command = Command::new(&self.session);
+        command
+            // Unlike on Unix, the environment is not cleared: Windows processes need system
+            // variables like `SystemRoot` and `PATH` to initialize Winsock and find binaries.
+            .env("HOME", &user.home_dir)
+            .env("USER", &*user.name)
+            .env("LOGNAME", &*user.name)
+            .env("SHELL", &user.shell)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+
+        #[cfg(coverage)]
+        if let Some(file) = env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", file);
+        }
+
+        let mut child = command.spawn()?;
+        let Some(pid) = child.id() else {
+            return Err(Error::InvalidState("session process has no PID"));
+        };
+
+        // SAFETY: `info` is a plain-old-data struct for which all-zeros is a valid bit pattern.
+        let mut info = unsafe { mem::zeroed::<WSAPROTOCOL_INFOW>() };
+        // SAFETY: `tcp` is a valid socket and `info` is valid for writes.
+        if unsafe { WSADuplicateSocketW(tcp.as_raw_socket() as SOCKET, pid, &mut info) } != 0 {
+            // SAFETY: `WSAGetLastError()` takes no arguments and has no preconditions.
+            return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }).into());
+        }
+
+        // The `[u8]` encoding yields the `u32` length prefix followed by the state itself.
+        let mut message = Zeroizing::new(vec![0; 4]);
+        state.encode(&mut message);
+        let payload_len = (message.len() - 4) as u32;
+        message[..4].copy_from_slice(&payload_len.to_be_bytes());
+        // SAFETY: `WSAPROTOCOL_INFOW` is a plain-old-data struct, so its bytes can be read.
+        message.extend_from_slice(unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::from_ref(&info).cast::<u8>(),
+                size_of::<WSAPROTOCOL_INFOW>(),
+            )
+        });
+
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        stdin.write_all(&message).await?;
+        drop(stdin);
+
+        // Keep the connection's socket open until the child acknowledges the handoff: the
+        // underlying socket must stay referenced while the duplicated descriptor is imported.
+        let mut stdout = child.stdout.take().expect("stdout was piped");
+        let mut ack = [0];
+        match stdout.read(&mut ack).await? {
+            0 => Err(Error::InvalidState(
+                "session process exited before acknowledging handoff",
+            )),
+            _ => Ok(child),
+        }
+    }
 }
 
 /// Additional configuration for the SSH server
@@ -368,5 +450,5 @@ impl Default for Config {
 /// Element type of the group list passed to `getgrouplist()`, which differs by platform
 #[cfg(target_os = "macos")]
 type RawGroupId = libc::c_int;
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 type RawGroupId = libc::gid_t;
