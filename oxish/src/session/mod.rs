@@ -10,7 +10,8 @@ use std::{
 };
 
 use proto::{
-    Decoded, Disconnect, Encoder, MessageType, Pretty, ReadState, SessionHostKey, WriteState,
+    Decoded, Disconnect, Encoder, GlobalRequest, MessageType, Pretty, ReadState, SessionHostKey,
+    WriteState,
     channels::{ChannelRequest, ChannelRequestType},
     crypto::CryptoProvider,
     key_exchange::Rekey,
@@ -212,6 +213,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                             let post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
                             self.conn.rekey(kx, &self.rekey, provider).await?;
                             self.post_quantum_kx = post_quantum_kx;
+                            continue;
+                        }
+                        MessageType::GlobalRequest => {
+                            let request = GlobalRequest::try_from(packet)?;
+                            debug!(name = %String::from_utf8_lossy(request.name), "refusing unsupported global request");
+                            if request.want_reply {
+                                self.conn.send(&MessageType::RequestFailure).await?;
+                            }
+                            continue;
+                        }
+                        MessageType::RequestSuccess | MessageType::RequestFailure => {
+                            trace!(?packet.message_type, "ignoring unexpected global request reply");
                             continue;
                         }
                         _ => {}

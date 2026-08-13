@@ -492,6 +492,39 @@ impl Encode for Ignore<'_> {
     }
 }
 
+/// The `SSH_MSG_GLOBAL_REQUEST` message
+///
+/// Requests that apply to the connection as a whole rather than to a single channel, such as
+/// the client's `keepalive@openssh.com` liveness probe.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-4>.
+#[derive(Debug)]
+pub struct GlobalRequest<'a> {
+    /// The name of the request
+    pub name: &'a [u8],
+    /// Whether the sender wants a `SSH_MSG_REQUEST_SUCCESS` or `SSH_MSG_REQUEST_FAILURE` reply
+    pub want_reply: bool,
+}
+
+impl<'a> TryFrom<IncomingPacket<'a>> for GlobalRequest<'a> {
+    type Error = ProtoError;
+
+    fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
+        if packet.message_type != MessageType::GlobalRequest {
+            return Err(ProtoError::InvalidPacket("expected global request packet"));
+        }
+
+        let Decoded { value: name, next } = <&[u8]>::decode(packet.payload)?;
+        // Request-specific data follows `want_reply`, but we don't act on any request, so
+        // parsing the boolean is enough to know whether the sender expects a reply.
+        let Decoded {
+            value: want_reply, ..
+        } = bool::decode(next)?;
+
+        Ok(Self { name, want_reply })
+    }
+}
+
 impl<'a> Decode<'a> for &'a [u8] {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let len = u32::decode(bytes)?;
