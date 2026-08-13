@@ -635,6 +635,9 @@ pub enum ProtoError {
     /// current input (`required - available`).
     #[error("incomplete message: {0:?}")]
     Incomplete(Option<usize>),
+    /// An unknown or unsupported channel type was requested
+    #[error("invalid packet: {0}")]
+    InvalidChannelType(String),
     /// A host key file could not be used; the payload describes why
     #[error("invalid host key: {0}")]
     InvalidHostKey(&'static str),
