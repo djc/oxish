@@ -16,7 +16,10 @@ use proto::{
     crypto::CryptoProvider,
     key_exchange::Rekey,
 };
-use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
+use rustix::{
+    io::FdFlags,
+    net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags},
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -112,6 +115,9 @@ impl Session<TcpStream> {
         let Some(fd) = tcp else {
             return Err(Error::InvalidState("no file descriptor received"));
         };
+
+        // Mark the connection close-on-exec so the session does not inherit a copy of the socket.
+        rustix::io::fcntl_setfd(&fd, FdFlags::CLOEXEC).map_err(io::Error::from)?;
 
         let provider = DEFAULT_PROVIDER;
         let Decoded { value: state, next } =
