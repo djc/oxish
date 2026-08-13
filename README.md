@@ -9,8 +9,6 @@
 OxiSH is an SSH server written in Rust. It is currently a minimum viable product and
 not yet ready for production use. It is intended to be a secure, modern SSH server that supports post-quantum key exchange and FIPS-validated cryptography.
 
-Please don't publicize this project at its current stage. Funding to advance its development is welcome.
-
 ## Features
 
 - Only support modern cryptography, including hybrid post-quantum key exchange
