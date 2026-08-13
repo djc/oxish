@@ -328,8 +328,12 @@ impl DefaultStore {
     pub fn new(provider: &dyn CryptoProvider) -> Result<Box<dyn UserStore>, Error> {
         // SAFETY: `geteuid()` takes no arguments, cannot fail and has no preconditions.
         Ok(match unsafe { libc::geteuid() } {
-            0 => Box::new(SystemStore) as Box<dyn UserStore>,
+            0 => {
+                debug!("using system user store");
+                Box::new(SystemStore) as Box<dyn UserStore>
+            }
             uid => {
+                debug!(uid, "using single-user store");
                 let data = User::lookup(UserLookup::Id(uid))?;
                 let keys = data.authorized_keys(provider);
                 Box::new(SingleUser(CachedUser { data, keys }))
