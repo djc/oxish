@@ -243,18 +243,15 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                 }
             }
             b"auth-agent-req@openssh.com" => ChannelRequestType::AuthAgentReq,
-            _ => {
-                return Err(match str::from_utf8(r#type) {
-                    Ok(r#type) => {
-                        warn!(%r#type, "unknown channel request type");
-                        ProtoError::InvalidChannelType(r#type.to_owned())
-                    }
-                    Err(_) => {
-                        warn!(?r#type, "unknown channel request type");
-                        ProtoError::InvalidPacket("unknown channel request type (invalid UTF-8)")
-                    }
-                });
-            }
+            _ => match str::from_utf8(r#type) {
+                Ok(r#type) => ChannelRequestType::Unknown(r#type),
+                Err(_) => {
+                    warn!(?r#type, "unknown channel request type");
+                    return Err(ProtoError::InvalidPacket(
+                        "unknown channel request type (invalid UTF-8)",
+                    ));
+                }
+            },
         };
 
         Ok(ChannelRequest {
@@ -288,6 +285,8 @@ pub enum ChannelRequestType<'a> {
     ///
     /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.7>.
     WindowChange(WindowChange),
+    /// Unknown channel request type; the string is the request type name
+    Unknown(&'a str),
 }
 
 /// Type-specific data for the `window-change` channel request
