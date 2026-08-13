@@ -244,12 +244,16 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
             }
             b"auth-agent-req@openssh.com" => ChannelRequestType::AuthAgentReq,
             _ => {
-                match str::from_utf8(r#type) {
-                    Ok(r#type) => warn!(%r#type, "unknown channel request type"),
-                    Err(_) => warn!(?r#type, "unknown channel request type"),
-                }
-
-                return Err(ProtoError::InvalidPacket("unknown channel request type"));
+                return Err(match str::from_utf8(r#type) {
+                    Ok(r#type) => {
+                        warn!(%r#type, "unknown channel request type");
+                        ProtoError::InvalidChannelType(r#type.to_owned())
+                    }
+                    Err(_) => {
+                        warn!(?r#type, "unknown channel request type");
+                        ProtoError::InvalidPacket("unknown channel request type (invalid UTF-8)")
+                    }
+                });
             }
         };
 
