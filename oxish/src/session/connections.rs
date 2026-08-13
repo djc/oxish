@@ -117,7 +117,7 @@ impl Channels {
                 _ => warn!("window-change request without running terminal"),
             },
             // Agent forwarding is not supported -- only reply when asked
-            ChannelRequestType::AuthAgentReq => {
+            ChannelRequestType::AuthAgentReq | ChannelRequestType::Unknown(_) => {
                 if request.want_reply {
                     encoder.enqueue(&channel.failure())?;
                 }
