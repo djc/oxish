@@ -116,6 +116,13 @@ impl Channels {
                 Some(TerminalState::Running(terminal)) => terminal.resize(&window_change)?,
                 _ => warn!("window-change request without running terminal"),
             },
+            // Agent forwarding is not supported -- only reply when asked
+            ChannelRequestType::AuthAgentReq => {
+                if request.want_reply {
+                    encoder.enqueue(&channel.failure())?;
+                }
+                return Ok(());
+            }
         }
 
         if request.want_reply {

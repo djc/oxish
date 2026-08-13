@@ -242,6 +242,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     }
                 }
             }
+            b"auth-agent-req@openssh.com" => ChannelRequestType::AuthAgentReq,
             _ => {
                 match str::from_utf8(r#type) {
                     Ok(r#type) => warn!(%r#type, "unknown channel request type"),
@@ -263,6 +264,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
 /// Request type-specific data from a [`ChannelRequest`]
 #[derive(Debug)]
 pub enum ChannelRequestType<'a> {
+    /// `auth-agent-req@openssh.com`
+    ///
+    /// Not currently supported.
+    AuthAgentReq,
     /// `pty-req`, request a pseudo-terminal
     ///
     /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.2>.
