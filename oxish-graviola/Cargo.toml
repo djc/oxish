@@ -1,6 +1,6 @@
 [package]
 name = "oxish-graviola"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0 OR MIT"
@@ -12,7 +12,7 @@ categories = ["network-programming", "cryptography"]
 
 [dependencies]
 graviola = { workspace = true }
-proto = { package = "oxish-proto", version = "=0.1.0-rc.1", path = "../oxish-proto" }
+proto = { package = "oxish-proto", version = "0.1", path = "../oxish-proto" }
 zeroize = { workspace = true }
 
 [lints]
