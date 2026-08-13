@@ -4,6 +4,7 @@
 [![codecov](https://codecov.io/gh/djc/oxish/branch/main/graph/badge.svg)](https://codecov.io/gh/djc/oxish)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
+[![Chat](https://img.shields.io/discord/976380008299917365?logo=discord)](https://discord.gg/HQE4w5BaKD)
 
 OxiSH is an SSH server written in Rust. It is currently a minimum viable product and
 not yet ready for production use. It is intended to be a secure, modern SSH server that supports post-quantum key exchange and FIPS-validated cryptography.
