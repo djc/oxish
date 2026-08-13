@@ -16,6 +16,8 @@ pub mod channels;
 /// Traits abstracting over cryptographic primitives and key derivation
 pub mod crypto;
 use crypto::CryptoError;
+mod host_keys;
+pub use host_keys::{HostKeys, ServerHostKey, SessionHostKey};
 mod io;
 pub use io::{Encoder, ReadState, WriteState};
 /// Key exchange messages and negotiation (RFC 4253 section 7, RFC 5656)

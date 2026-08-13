@@ -13,7 +13,7 @@ use clap::Parser;
 use listenfd::ListenFd;
 use oxish::{Config, DEFAULT_PROVIDER, DefaultStore, Server};
 use proto::{
-    key_exchange::HostKeys,
+    HostKeys,
     named::{Named, PublicKeyAlgorithm},
 };
 use tokio::net::TcpListener;

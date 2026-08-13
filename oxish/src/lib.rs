@@ -13,15 +13,15 @@ use std::{io, str, task::ready};
 
 use anyhow::Context as _;
 use proto::{
-    Completion, Decode, Decoded, Encode, Identification, IdentificationError, Ignore,
-    IncomingPacket, PROTOCOL, ProtoError, ReadState, WriteState,
+    Completion, Decode, Decoded, Encode, HostKeys, Identification, IdentificationError, Ignore,
+    IncomingPacket, PROTOCOL, ProtoError, ReadState, ServerHostKey, SessionHostKey, WriteState,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyLengths,
         KeySourceSide,
     },
     key_exchange::{
-        EcdhKeyExchangeInit, HostKeys, Identities, KeyExchange, KeyExchangeOutput, KeySourceSet,
-        NewKeys, Rekey, ServerHostKey, SessionHostKey, StrictKeyExchange,
+        EcdhKeyExchangeInit, Identities, KeyExchange, KeyExchangeOutput, KeySourceSet, NewKeys,
+        Rekey, StrictKeyExchange,
     },
     named::{EncryptionAlgorithm, ExtensionId},
 };
