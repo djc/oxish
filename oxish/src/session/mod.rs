@@ -10,10 +10,10 @@ use std::{
 };
 
 use proto::{
-    Decoded, Disconnect, Encoder, MessageType, Pretty, ReadState, WriteState,
+    Decoded, Disconnect, Encoder, MessageType, Pretty, ReadState, SessionHostKey, WriteState,
     channels::{ChannelRequest, ChannelRequestType},
     crypto::CryptoProvider,
-    key_exchange::{Rekey, SessionHostKey},
+    key_exchange::Rekey,
 };
 use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags};
 use tokio::{

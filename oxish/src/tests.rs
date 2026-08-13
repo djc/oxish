@@ -3,10 +3,10 @@ use std::{env, fs, panic::resume_unwind, path::Path, path::PathBuf, process::Std
 
 use anyhow::Context;
 use proto::{
-    Decoded, Encode,
+    Decoded, Encode, HostKeys, ServerHostKey,
     auth::AuthorizedKey,
     crypto::{CryptoProvider, Digest, KeySourceSide},
-    key_exchange::{HostKeys, Identities, ServerHostKey},
+    key_exchange::Identities,
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
 };
 use tempfile::TempDir;
