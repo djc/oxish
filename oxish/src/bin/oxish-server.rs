@@ -57,11 +57,10 @@ async fn main() -> anyhow::Result<()> {
             }
             Err(error) => {
                 eprintln!("failed to load host keys from /etc/ssh: {error}");
-                let pkcs8 = Zeroizing::new(fs::read(&args.host_key_file).context(format!(
-                    "failed to read host key from {}",
-                    args.host_key_file
-                ))?);
-                HostKeys::new([pkcs8].into_iter(), provider)?
+                let pem = Zeroizing::new(fs::read_to_string(&args.host_key_file).context(
+                    format!("failed to read host key from {}", args.host_key_file),
+                )?);
+                HostKeys::from_openssh_v1(&pem, provider)?
             }
         }
     };
