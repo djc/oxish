@@ -1,7 +1,7 @@
 use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm};
 
@@ -425,6 +425,17 @@ pub trait SigningKey: Send + Sync {
 
     /// The public key algorithm of this key
     fn algorithm(&self) -> PublicKeyAlgorithm<'static>;
+
+    /// The private key material, in the form the key is stored in
+    ///
+    /// For Ed25519 this is the 32-byte seed, not the derived signing
+    /// scalar. For ECDSA, it is the scalar `d` as a big-endian
+    /// fixed-length integer.
+    ///
+    /// Returns `Err` for keys held in hardware or by an agent.
+    fn private_key(&self) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        Err(CryptoError::Unspecified)
+    }
 }
 
 /// A public key that can verify signatures

@@ -385,6 +385,12 @@ impl SigningKey for Ed25519Key {
     fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
         PublicKeyAlgorithm::Ed25519
     }
+
+    fn private_key(&self) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        // as_seed() returns an owned copy, so wrap it too
+        let seed = Zeroizing::new(self.key.as_seed());
+        Ok(Zeroizing::new(seed.to_vec()))
+    }
 }
 
 struct EcdsaP256Key {
@@ -417,6 +423,12 @@ impl SigningKey for EcdsaP256Key {
 
     fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
         PublicKeyAlgorithm::EcdsaSha2Nistp256
+    }
+
+    fn private_key(&self) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        // as_bytes() returns an owned copy, so wrap it too
+        let d = Zeroizing::new(self.key.private_key.as_bytes());
+        Ok(Zeroizing::new(d.to_vec()))
     }
 }
 
