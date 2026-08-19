@@ -4,11 +4,22 @@ use data_encoding::BASE64;
 use zeroize::Zeroizing;
 
 use crate::{
-    Encode, ProtoError, PublicKeyAlgorithm, crypto::SigningKey, key_exchange::encode_mpint,
+    Encode, ProtoError, PublicKeyAlgorithm,
+    crypto::{CryptoProvider, GeneratedKey},
+    key_exchange::encode_mpint,
 };
 
+/// Generate fresh signing key and return it with OpenSSH v1 pem
+pub fn generate(
+    algorithm: &PublicKeyAlgorithm<'_>,
+    provider: &dyn CryptoProvider,
+) -> Result<Zeroizing<String>, ProtoError> {
+    let gkey = provider.generate_signing_key(algorithm)?;
+    encode(&gkey)
+}
+
 /// Encode SigningKey as an unencrypted OpenSSH v1 private key file
-pub fn encode(key: &dyn SigningKey, seckey: &[u8]) -> Result<Zeroizing<String>, ProtoError> {
+fn encode(gkey: &GeneratedKey) -> Result<Zeroizing<String>, ProtoError> {
     /// Block size of the `none` cipher
     const BLOCK_SIZE: usize = 8;
     /// Check value, written twice at the head of the private section
@@ -20,7 +31,9 @@ pub fn encode(key: &dyn SigningKey, seckey: &[u8]) -> Result<Zeroizing<String>, 
     /// start of the encrypted blob.
     const CHECK: u32 = 0x5353_4831;
 
+    let key = &gkey.0;
     let pubkey = key.public_key();
+    let seckey = &gkey.1;
 
     let mut private = Zeroizing::new(Vec::with_capacity(512));
     CHECK.encode(&mut private);
@@ -39,7 +52,7 @@ pub fn encode(key: &dyn SigningKey, seckey: &[u8]) -> Result<Zeroizing<String>, 
             private.extend_from_slice(&public);
 
             64u32.encode(&mut private);
-            private.extend_from_slice(&seckey);
+            private.extend_from_slice(seckey);
             private.extend_from_slice(pubkey);
         }
         PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
@@ -48,7 +61,7 @@ pub fn encode(key: &dyn SigningKey, seckey: &[u8]) -> Result<Zeroizing<String>, 
             pubkey.encode(&mut public);
             private.extend_from_slice(&public);
 
-            encode_mpint(&seckey, &mut private);
+            encode_mpint(seckey, &mut private);
         }
         PublicKeyAlgorithm::Unknown(_) => {
             return Err(ProtoError::InvalidHostKey("unsupported key type"));

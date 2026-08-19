@@ -568,6 +568,7 @@ version = "0.2.0"
 dependencies = [
  "aws-lc-rs",
  "oxish-proto",
+ "zeroize",
 ]
 
 [[package]]

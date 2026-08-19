@@ -10,17 +10,17 @@ use std::{
 
 use anyhow::Context;
 use proto::{
-    Decoded, Encode, HostKeys, ServerHostKey,
+    Decoded, Encode, HostKeys,
     auth::AuthorizedKey,
     crypto::{CryptoProvider, Digest, KeySourceSide},
     key_exchange::Identities,
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
+    openssh,
 };
 use tempfile::TempDir;
 use tokio::{
     io::AsyncWriteExt, net::TcpListener, process::Command, task::JoinHandle, time::timeout,
 };
-use zeroize::Zeroizing;
 
 use crate::{
     Config, SessionState, SideState, UserStore, Username,
@@ -224,14 +224,14 @@ async fn setup(
     provider: &'static dyn CryptoProvider,
 ) -> anyhow::Result<(TempDir, CliClient, JoinHandle<anyhow::Result<()>>)> {
     let (key_dir, store) = store(algorithm, provider).await?;
-    let (_, pkcs8) = provider.generate_signing_key(algorithm)?;
+    let pem = openssh::generate(algorithm, provider)?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let client = CliClient::new(addr, &key_dir.path().join("key"));
 
     let server = Server::new(
         store,
-        HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider)?,
+        HostKeys::from_openssh_v1(&pem, provider)?,
         session_binary().await?,
         provider,
     )?;
@@ -406,11 +406,10 @@ async fn verify_keys() {
 #[test]
 fn session_state_round_trip() {
     use crate::DEFAULT_PROVIDER;
-    let (key, pkcs8) = DEFAULT_PROVIDER
-        .generate_signing_key(&PublicKeyAlgorithm::Ed25519)
+    let pem = openssh::generate(&PublicKeyAlgorithm::Ed25519, DEFAULT_PROVIDER)
         .expect("failed to generate signing key");
-    let pkcs8 = Zeroizing::new(pkcs8);
-    let host_key = ServerHostKey::from((&pkcs8, &*key));
+    let host_keys = HostKeys::from_openssh_v1(&pem, DEFAULT_PROVIDER).unwrap();
+    let host_key = host_keys.sole();
 
     let state = SessionState {
         addr: SocketAddr::from(([192, 0, 2, 7], 22022)),

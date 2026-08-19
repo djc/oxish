@@ -4,6 +4,7 @@ use ::aws_lc_rs::{
     aead::{AES_128_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey},
     agreement::{self, EphemeralPrivateKey, X25519},
     digest,
+    encoding::{AsBigEndian, Curve25519SeedBin, EcPrivateKeyBin},
     kem::ML_KEM_768,
     rand,
     signature::{self, EcdsaKeyPair, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
@@ -17,6 +18,7 @@ use proto::{
     },
     named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm},
 };
+use zeroize::Zeroizing;
 
 pub const DEFAULT_PROVIDER: &'static dyn CryptoProvider = &Provider;
 
@@ -28,33 +30,34 @@ impl CryptoProvider for Provider {
     fn generate_signing_key(
         &self,
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<(Box<dyn SigningKey>, Vec<u8>), CryptoError> {
+    ) -> Result<(Box<dyn SigningKey>, Zeroizing<Vec<u8>>), CryptoError> {
         match algorithm {
             PublicKeyAlgorithm::Ed25519 => {
                 let key_pair =
                     Ed25519KeyPair::generate().map_err(|_| CryptoError::KeyGenerationFailed)?;
 
-                let pkcs8 = key_pair
-                    .to_pkcs8v1()
-                    .map_err(|_| CryptoError::Unspecified)?
-                    .as_ref()
-                    .to_vec();
+                let seed = key_pair.seed().map_err(|_| CryptoError::KeyNotExportable)?;
+                let be = AsBigEndian::<Curve25519SeedBin<'_>>::as_be_bytes(&seed)
+                    .map_err(|_| CryptoError::KeyNotExportable)?;
 
-                Ok((Box::new(Ed25519SigningKey::new(key_pair)), pkcs8))
+                Ok((
+                    Box::new(Ed25519SigningKey::new(key_pair)),
+                    Zeroizing::new(be.as_ref().to_vec()),
+                ))
             }
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
                 let key_pair = EcdsaKeyPair::generate(&signature::ECDSA_P256_SHA256_FIXED_SIGNING)
                     .map_err(|_| CryptoError::KeyGenerationFailed)?;
 
-                let pkcs8 = key_pair
-                    .to_pkcs8v1()
-                    .map_err(|_| CryptoError::Unspecified)?
-                    .as_ref()
-                    .to_vec();
+                let d = AsBigEndian::<EcPrivateKeyBin<'_>>::as_be_bytes(&key_pair.private_key())
+                    .map_err(|_| CryptoError::KeyNotExportable)?;
 
-                Ok((Box::new(EcdsaP256SigningKey::new(key_pair)), pkcs8))
+                Ok((
+                    Box::new(EcdsaP256SigningKey::new(key_pair)),
+                    Zeroizing::new(d.as_ref().to_vec()),
+                ))
             }
-            _ => Err(CryptoError::UnknownAlgorithm),
+            PublicKeyAlgorithm::Unknown(_) => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
