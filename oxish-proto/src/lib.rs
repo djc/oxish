@@ -25,6 +25,7 @@ pub mod key_exchange;
 /// Named algorithms, services and methods, and name-list encoding (RFC 4251 section 5)
 pub mod named;
 use named::PublicKeyAlgorithm;
+pub mod openssh;
 
 /// Protocol version exchange identification string
 ///
