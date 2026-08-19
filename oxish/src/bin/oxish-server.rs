@@ -32,15 +32,15 @@ async fn main() -> anyhow::Result<()> {
     let host_keys = if args.generate_host_key {
         match File::create_new(&args.host_key_file) {
             Ok(mut host_key_file) => {
-                let Ok((_, pkcs8)) = provider.generate_signing_key(&args.host_key_type) else {
+                let Ok((key, pkcs8)) = provider.generate_signing_key(&args.host_key_type) else {
                     anyhow::bail!("failed to generate host key");
                 };
+                let _pkcs8 = Zeroizing::new(pkcs8);
 
                 // FIXME ensure the host key is only readable by the ssh server user
-                let pkcs8 = Zeroizing::new(pkcs8);
-                let result = host_key_file.write_all(&pkcs8);
-                result?;
+                let pem = proto::openssh::encode(&*key)?;
 
+                host_key_file.write_all(pem.as_bytes())?;
                 eprintln!("generated host key at {}", args.host_key_file);
                 return Ok(());
             }
