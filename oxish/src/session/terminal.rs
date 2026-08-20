@@ -146,8 +146,9 @@ impl Terminal {
             });
 
             match result {
+                Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => return Poll::Ready(Ok(0)),
                 Ok(result) => return Poll::Ready(result),
-                Err(_would_block) => continue,
+                Err(_) => continue,
             }
         }
     }
