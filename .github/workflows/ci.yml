@@ -28,6 +28,16 @@ jobs:
       - run: cargo check -p oxish --no-default-features --features aws-lc
       - run: cargo test --features graviola,aws-lc -- --include-ignored
 
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-freebsd
+      - run: cargo check --target x86_64-unknown-freebsd -p oxish
+
   msrv:
     runs-on: ubuntu-latest
     steps:

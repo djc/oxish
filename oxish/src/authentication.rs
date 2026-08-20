@@ -5,11 +5,7 @@ use core::{
     ops::{ControlFlow, Deref},
     time::Duration,
 };
-#[cfg(target_vendor = "apple")]
-use std::os::darwin::fs::MetadataExt;
-#[cfg(target_os = "linux")]
-use std::os::linux::fs::MetadataExt;
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "linux")))]
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::{
     borrow::Cow,
@@ -724,7 +720,7 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
         }
     };
 
-    match meta.st_mode() & 0o022 == 0 && (meta.st_uid() == 0 || meta.st_uid() == uid) {
+    match meta.mode() & 0o022 == 0 && (meta.uid() == 0 || meta.uid() == uid) {
         true => ControlFlow::Continue(()),
         false => ControlFlow::Break(()),
     }
