@@ -44,9 +44,15 @@ mod server;
 pub use server::{Config, RootPolicy, Server};
 #[cfg(unix)]
 mod unix;
-pub use platform::{DefaultStore, resume};
+#[cfg(windows)]
+mod windows;
+pub use platform::DefaultStore;
+#[cfg(unix)]
+pub use platform::resume;
 #[cfg(unix)]
 use unix as platform;
+#[cfg(windows)]
+use windows as platform;
 
 #[cfg(test)]
 mod tests;

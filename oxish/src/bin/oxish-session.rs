@@ -1,5 +1,7 @@
+#[cfg(unix)]
 use oxish::{DEFAULT_PROVIDER, resume};
 
+#[cfg(unix)]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -9,4 +11,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     Ok(resume(DEFAULT_PROVIDER)?.run().await?)
+}
+
+#[cfg(not(unix))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("session handoff is not supported on this platform")
 }
