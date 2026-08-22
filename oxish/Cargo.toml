@@ -38,6 +38,9 @@ rustix = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 listenfd = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

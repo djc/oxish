@@ -185,6 +185,14 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { spawn: true }
+        Self { spawn: SPAWN }
     }
 }
+
+/// What [`Config::spawn`] defaults to
+#[cfg(unix)]
+const SPAWN: bool = true;
+
+/// TODO: set this once Windows can hand a connection to a session process
+#[cfg(windows)]
+const SPAWN: bool = false;
