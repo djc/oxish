@@ -42,6 +42,8 @@ compile_error!("no crypto providers enabled -- enable at least one to fix this e
 
 mod authentication;
 pub use authentication::{AuthError, DefaultStore, User, UserStore, Username};
+mod platform;
+pub use platform::DEFAULT_HOST_KEY_DIR;
 mod session;
 pub use session::Session;
 mod server;

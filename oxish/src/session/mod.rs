@@ -1,12 +1,4 @@
-use core::{
-    cmp::Ordering,
-    mem::MaybeUninit,
-    str::{self, FromStr},
-};
-use std::{
-    io::{self, IoSliceMut},
-    os::fd::AsFd,
-};
+use core::str::{self, FromStr};
 
 use proto::{
     Decoded, Disconnect, GlobalRequest, MessageType, Pretty, ReadState, SessionHostKey, WriteState,
@@ -14,22 +6,16 @@ use proto::{
     crypto::CryptoProvider,
     key_exchange::{EcdhKeyExchangeInit, KeyExchange, Rekey},
 };
-use rustix::{
-    io::FdFlags,
-    net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendFlags},
-};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
 };
 use tracing::{debug, info, instrument, trace, warn};
-use zeroize::Zeroizing;
 
-use crate::{Connection, Error, KeyExchangeOutput, SessionState, receive};
+use crate::{Connection, Error, KeyExchangeOutput, SessionState, platform, receive};
 
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
-mod terminal;
 
 /// A single SSH session's state
 ///
@@ -43,83 +29,12 @@ pub struct Session<T> {
 }
 
 impl Session<TcpStream> {
-    /// Resume an SSH session from the session state received over the Unix socket `source`
-    pub fn from_message(
-        source: &impl AsFd,
-        provider: &'static dyn CryptoProvider,
-    ) -> Result<Self, Error> {
-        let mut length = None;
-        let mut received = Zeroizing::new(Vec::new());
-        let mut tcp = None;
-        let mut space = [MaybeUninit::<u8>::uninit(); rustix::cmsg_space!(ScmRights(1))];
-        let mut chunk = vec![0; 16_384];
-
-        loop {
-            let mut control = RecvAncillaryBuffer::new(&mut space);
-            let mut iov = [IoSliceMut::new(&mut chunk)];
-            let message = rustix::net::recvmsg(source, &mut iov, &mut control, RecvFlags::empty())
-                .map_err(io::Error::from)?;
-
-            let Some((buffered, _)) = chunk.split_at_checked(message.bytes) else {
-                return Err(Error::InvalidState("invalid message length received"));
-            };
-
-            if buffered.is_empty() {
-                return Err(Error::Io(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "EOF while receiving handoff message",
-                )));
-            }
-
-            for ancillary in control.drain() {
-                if let RecvAncillaryMessage::ScmRights(fds) = ancillary {
-                    if tcp.is_none() {
-                        tcp = fds.into_iter().next();
-                    }
-                }
-            }
-
-            match length {
-                Some(len) => match (received.len() + buffered.len()).cmp(&len) {
-                    Ordering::Greater => {
-                        return Err(Error::InvalidState("received more bytes than expected"));
-                    }
-                    Ordering::Equal => {
-                        received.extend_from_slice(&chunk[..message.bytes]);
-                        break;
-                    }
-                    Ordering::Less => received.extend_from_slice(&chunk[..message.bytes]),
-                },
-                None => match buffered.split_first_chunk::<4>() {
-                    Some((len, rest)) => {
-                        let len = u32::from_be_bytes(*len) as usize;
-                        length = Some(len);
-                        received.extend_from_slice(rest);
-                        match received.len().cmp(&len) {
-                            Ordering::Greater => {
-                                return Err(Error::InvalidState(
-                                    "received more bytes than expected",
-                                ));
-                            }
-                            Ordering::Equal => break,
-                            Ordering::Less => continue,
-                        }
-                    }
-                    None => {
-                        return Err(Error::InvalidState(
-                            "received fewer than 4 bytes for length prefix",
-                        ));
-                    }
-                },
-            }
-        }
-
-        let Some(fd) = tcp else {
-            return Err(Error::InvalidState("no file descriptor received"));
-        };
-
-        // Mark the connection close-on-exec so the session does not inherit a copy of the socket.
-        rustix::io::fcntl_setfd(&fd, FdFlags::CLOEXEC).map_err(io::Error::from)?;
+    /// Resume an SSH session from the handoff message on this process's standard input
+    ///
+    /// The server passes the client's connection and the encoded session state to the session
+    /// process over standard input; this reconstructs the connection from them.
+    pub fn from_stdin(provider: &'static dyn CryptoProvider) -> Result<Self, Error> {
+        let (received, stream) = platform::receive_handoff()?;
 
         let Decoded { value: state, next } =
             SessionState::<SessionHostKey>::decode(&received, provider)?;
@@ -127,8 +42,7 @@ impl Session<TcpStream> {
             return Err(Error::InvalidState("trailing bytes after message"));
         }
 
-        // Acknowledge the handoff so the parent releases its copy of the descriptor
-        rustix::net::send(source, &[1], SendFlags::empty()).map_err(io::Error::from)?;
+        platform::acknowledge_handoff()?;
         debug!(?state, "received session state, reconstructing connection");
 
         let SessionState {
@@ -150,7 +64,6 @@ impl Session<TcpStream> {
         write_state.sequence_number = write.sequence_number;
         write_state.sealer = Some(sealer);
 
-        let stream = std::net::TcpStream::from(fd);
         stream.set_nonblocking(true)?;
         let stream = TcpStream::from_std(stream)?;
 

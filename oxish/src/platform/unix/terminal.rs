@@ -1,3 +1,5 @@
+//! PTY-backed terminal for a session channel
+
 use core::{
     future::Future,
     task::{Context, Poll},

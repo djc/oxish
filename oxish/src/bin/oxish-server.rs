@@ -12,7 +12,7 @@ use anyhow::Context;
 use clap::ArgAction;
 use clap::Parser;
 use listenfd::ListenFd;
-use oxish::{Config, DEFAULT_PROVIDER, DefaultStore, Server};
+use oxish::{Config, DEFAULT_HOST_KEY_DIR, DEFAULT_PROVIDER, DefaultStore, Server};
 use proto::{
     HostKeys,
     named::{Named, PublicKeyAlgorithm},
@@ -50,13 +50,17 @@ async fn main() -> anyhow::Result<()> {
             Err(err) => return Err(err.into()),
         }
     } else {
-        match HostKeys::from_dir(Path::new("/etc/ssh"), provider) {
+        match HostKeys::from_dir(Path::new(DEFAULT_HOST_KEY_DIR), provider) {
             Ok(host_keys) => {
-                info!(len = host_keys.len(), "loaded host keys from /etc/ssh");
+                info!(
+                    len = host_keys.len(),
+                    dir = DEFAULT_HOST_KEY_DIR,
+                    "loaded host keys"
+                );
                 host_keys
             }
             Err(error) => {
-                eprintln!("failed to load host keys from /etc/ssh: {error}");
+                eprintln!("failed to load host keys from {DEFAULT_HOST_KEY_DIR}: {error}");
                 let pkcs8 = Zeroizing::new(fs::read(&args.host_key_file).context(format!(
                     "failed to read host key from {}",
                     args.host_key_file
