@@ -67,6 +67,18 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # cargo-fuzz needs nightly for the sanitizer instrumentation
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # the prebuilt cargo-fuzz defaults to a musl target, which sanitizers can't use
+      - run: cargo fuzz build --target x86_64-unknown-linux-gnu
+
   coverage:
     runs-on: ubuntu-26.04
     steps:

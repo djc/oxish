@@ -2,9 +2,10 @@
 
 use libfuzzer_sys::fuzz_target;
 use proto::{
-    ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelRequest, Completion, Disconnect,
-    EcdhKeyExchangeInit, KeyExchangeInit, MessageType, NewKeys, ReadState,
-    ServiceRequest, UserAuthRequest,
+    Completion, Disconnect, MessageType, ReadState,
+    auth::{ServiceRequest, UserAuthRequest},
+    channels::{ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelRequest},
+    key_exchange::{EcdhKeyExchangeInit, KeyExchangeInit, NewKeys},
 };
 
 fuzz_target!(|data: &[u8]| {
