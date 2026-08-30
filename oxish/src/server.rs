@@ -134,7 +134,7 @@ impl Server {
 
         if !self.config.spawn {
             let session = Session::new(kx, conn, self.provider)?;
-            return session.run(self.provider).await.context("session failed");
+            return session.run().await.context("session failed");
         }
 
         let Connection {
