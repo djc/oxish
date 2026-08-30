@@ -14,7 +14,7 @@ use proto::{
     WriteState,
     channels::{ChannelRequest, ChannelRequestType},
     crypto::CryptoProvider,
-    key_exchange::Rekey,
+    key_exchange::{EcdhKeyExchangeInit, KeyExchange, Rekey},
 };
 use rustix::{
     io::FdFlags,
@@ -222,7 +222,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         MessageType::KeyExchangeInit => {
                             let kx = self.rekey.start(packet, self.provider)?;
                             let post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
-                            self.conn.rekey(kx, &self.rekey, self.provider).await?;
+                            rekey(kx, &mut self.conn, &self.rekey, self.provider).await?;
                             self.post_quantum_kx = post_quantum_kx;
                             continue;
                         }
@@ -279,6 +279,35 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
             }
         }
     }
+}
+
+/// Complete a client-initiated rekey after its `SSH_MSG_KEXINIT` has been parsed
+async fn rekey(
+    mut kx: KeyExchange,
+    conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
+    rekey: &Rekey,
+    provider: &dyn CryptoProvider,
+) -> Result<(), Error> {
+    debug!("starting client-initiated rekey");
+
+    conn.send_handshake(&kx.local, Some(&mut kx.exchange))
+        .await?;
+
+    let packet = receive(&mut conn.stream, &mut conn.read).await?;
+    let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
+    let (key_exchange_reply, keys) = rekey.complete(
+        ecdh_key_exchange_init,
+        &kx.negotiated,
+        kx.exchange,
+        provider,
+    )?;
+
+    conn.send(&key_exchange_reply).await?;
+    conn.update_keys(&keys, rekey.strict_key_exchange(), provider)
+        .await?;
+
+    debug!("completed client-initiated rekey");
+    Ok(())
 }
 
 fn banner(
