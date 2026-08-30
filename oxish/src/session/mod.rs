@@ -27,7 +27,7 @@ use tokio::{
 use tracing::{debug, info, instrument, trace, warn};
 use zeroize::Zeroizing;
 
-use crate::{Connection, DEFAULT_PROVIDER, Error, KeyExchangeOutput, SessionState, receive, send};
+use crate::{Connection, Error, KeyExchangeOutput, SessionState, receive, send};
 
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
@@ -37,6 +37,7 @@ mod terminal;
 ///
 /// Call [`Session::run()`] to drive the session forward.
 pub struct Session<T> {
+    provider: &'static dyn CryptoProvider,
     conn: Connection<T>,
     rekey: Rekey,
     channels: Channels,
@@ -45,7 +46,10 @@ pub struct Session<T> {
 
 impl Session<TcpStream> {
     /// Resume an SSH session from the session state received over the Unix socket `source`
-    pub fn from_message(source: &impl AsFd) -> Result<Self, Error> {
+    pub fn from_message(
+        source: &impl AsFd,
+        provider: &'static dyn CryptoProvider,
+    ) -> Result<Self, Error> {
         let mut length = None;
         let mut received = Zeroizing::new(Vec::new());
         let mut tcp = None;
@@ -119,7 +123,6 @@ impl Session<TcpStream> {
         // Mark the connection close-on-exec so the session does not inherit a copy of the socket.
         rustix::io::fcntl_setfd(&fd, FdFlags::CLOEXEC).map_err(io::Error::from)?;
 
-        let provider = DEFAULT_PROVIDER;
         let Decoded { value: state, next } =
             SessionState::<SessionHostKey>::decode(&received, provider)?;
         if !next.is_empty() {
@@ -154,6 +157,7 @@ impl Session<TcpStream> {
         let stream = TcpStream::from_std(stream)?;
 
         Ok(Self {
+            provider,
             conn: Connection {
                 stream,
                 addr,
@@ -176,9 +180,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
     pub(crate) fn new(
         kx: KeyExchangeOutput<'_>,
         conn: Connection<T>,
-        provider: &dyn CryptoProvider,
+        provider: &'static dyn CryptoProvider,
     ) -> Result<Self, Error> {
         Ok(Self {
+            provider,
             conn,
             channels: Channels::default(),
             rekey: Rekey::new(
@@ -194,8 +199,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
     /// Run the session, driving the connection forward and handling channel messages
     ///
     /// This function never returns unless the connection is closed or an error occurs.
-    #[instrument(name = "connection", skip(self, provider), fields(addr = %self.conn.addr))]
-    pub async fn run(mut self, provider: &'static dyn CryptoProvider) -> Result<(), Error> {
+    #[instrument(name = "connection", skip(self), fields(addr = %self.conn.addr))]
+    pub async fn run(mut self) -> Result<(), Error> {
         loop {
             tokio::select! {
                 result = receive(&mut self.conn.stream, &mut self.conn.read) => {
@@ -215,9 +220,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         // The client can start a rekey at any point by sending a fresh
                         // key exchange init (RFC 4253 section 9).
                         MessageType::KeyExchangeInit => {
-                            let kx = self.rekey.start(packet, provider)?;
+                            let kx = self.rekey.start(packet, self.provider)?;
                             let post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
-                            self.rekey(kx, provider).await?;
+                            self.rekey(kx, self.provider).await?;
                             self.post_quantum_kx = post_quantum_kx;
                             continue;
                         }
