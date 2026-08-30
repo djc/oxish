@@ -153,6 +153,16 @@ impl Terminal {
         }
     }
 
+    /// Wait for the shell process to exit and reap it
+    pub(crate) fn poll_wait(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<std::process::ExitStatus>> {
+        let future = self.child.wait();
+        let pinned = pin!(future);
+        pinned.poll(cx)
+    }
+
     pub(crate) fn poll_kill(mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         let future = self.child.kill();
         let pinned = pin!(future);
