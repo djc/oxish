@@ -21,7 +21,7 @@ use proto::{
     },
     key_exchange::{
         EcdhKeyExchangeInit, Identities, KeyExchange, KeyExchangeOutput, KeySourceSet, NewKeys,
-        Rekey, StrictKeyExchange,
+        StrictKeyExchange,
     },
     named::{EncryptionAlgorithm, ExtensionId},
 };
@@ -113,35 +113,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             keys,
             post_quantum_kx,
         })
-    }
-
-    /// Complete a client-initiated rekey after its `SSH_MSG_KEXINIT` has been parsed
-    async fn rekey(
-        &mut self,
-        mut kx: KeyExchange,
-        rekey: &Rekey,
-        provider: &dyn CryptoProvider,
-    ) -> Result<(), Error> {
-        debug!("starting client-initiated rekey");
-
-        self.send_handshake(&kx.local, Some(&mut kx.exchange))
-            .await?;
-
-        let packet = receive(&mut self.stream, &mut self.read).await?;
-        let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
-        let (key_exchange_reply, keys) = rekey.complete(
-            ecdh_key_exchange_init,
-            &kx.negotiated,
-            kx.exchange,
-            provider,
-        )?;
-
-        self.send(&key_exchange_reply).await?;
-        self.update_keys(&keys, rekey.strict_key_exchange(), provider)
-            .await?;
-
-        debug!("completed client-initiated rekey");
-        Ok(())
     }
 
     async fn update_keys(
