@@ -24,9 +24,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelOpen<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelOpen {
-            return Err(ProtoError::InvalidPacket("expected channel open packet"));
-        }
+        packet.expect(&[MessageType::ChannelOpen])?;
 
         let Decoded {
             value: r#type,
@@ -181,9 +179,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelRequest {
-            return Err(ProtoError::InvalidPacket("expected channel request packet"));
-        }
+        packet.expect(&[MessageType::ChannelRequest])?;
 
         let Decoded {
             value: recipient_channel,
@@ -699,9 +695,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelData<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelData {
-            return Err(ProtoError::InvalidPacket("expected channel data packet"));
-        }
+        packet.expect(&[MessageType::ChannelData])?;
 
         let Decoded {
             value: recipient_channel,
@@ -772,11 +766,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelWindowAdjust {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelWindowAdjust {
-            return Err(ProtoError::InvalidPacket(
-                "expected channel window adjust packet",
-            ));
-        }
+        packet.expect(&[MessageType::ChannelWindowAdjust])?;
 
         let Decoded {
             value: recipient_channel,
@@ -815,9 +805,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelEof {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelEof {
-            return Err(ProtoError::InvalidPacket("expected channel eof packet"));
-        }
+        packet.expect(&[MessageType::ChannelEof])?;
 
         let Decoded {
             value: recipient_channel,
@@ -854,9 +842,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelClose {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ChannelClose {
-            return Err(ProtoError::InvalidPacket("expected channel close packet"));
-        }
+        packet.expect(&[MessageType::ChannelClose])?;
 
         let Decoded {
             value: recipient_channel,

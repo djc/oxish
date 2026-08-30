@@ -247,9 +247,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::KeyExchangeInit {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
-        }
+        packet.expect(&[MessageType::KeyExchangeInit])?;
 
         let Decoded {
             value: cookie,
@@ -389,9 +387,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::KeyExchangeEcdhInit {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
-        }
+        packet.expect(&[MessageType::KeyExchangeEcdhInit])?;
 
         let Decoded {
             value: client_ephemeral_public_key,
@@ -754,9 +750,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::NewKeys {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
-        }
+        packet.expect(&[MessageType::NewKeys])?;
 
         if !packet.payload.is_empty() {
             debug!(bytes = ?packet.payload, "unexpected trailing bytes");
