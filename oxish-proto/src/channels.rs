@@ -293,6 +293,7 @@ impl Encode for ChannelRequest<'_> {
 }
 
 /// Request type-specific data from a [`ChannelRequest`]
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum ChannelRequestType<'a> {
     /// `auth-agent-req@openssh.com`

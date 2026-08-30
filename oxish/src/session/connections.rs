@@ -123,6 +123,15 @@ impl Channels {
                 }
                 return Ok(());
             }
+            // Should be sent by the server only, ignore if received from the client
+            ChannelRequestType::ExitStatus(_) => {}
+            _ => {
+                warn!(request_type = ?request.r#type, "ignoring channel request");
+                if request.want_reply {
+                    encoder.encode(&channel.failure())?;
+                }
+                return Ok(());
+            }
         }
 
         if request.want_reply {
