@@ -7,6 +7,7 @@ use std::{
     env, io,
     os::fd::{AsFd, OwnedFd},
     pin::pin,
+    process,
     task::ready,
 };
 
@@ -27,7 +28,7 @@ use tokio::{
     io::unix::AsyncFd,
     process::{Child, Command},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub(crate) struct Terminal {
     pty: AsyncFd<OwnedFd>,
@@ -153,10 +154,23 @@ impl Terminal {
         }
     }
 
-    pub(crate) fn poll_kill(mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        let future = self.child.kill();
+    /// Wait for the shell process to exit and reap it
+    pub(crate) fn poll_wait(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<process::ExitStatus>> {
+        let future = self.child.wait();
         let pinned = pin!(future);
         pinned.poll(cx)
+    }
+
+    /// Send `SIGKILL` to the shell process
+    ///
+    /// Use [`Self::poll_wait()`] after calling this to reap the zombie process.
+    pub(crate) fn start_kill(&mut self) {
+        if let Err(error) = self.child.start_kill() {
+            warn!(%error, "error killing terminal");
+        }
     }
 }
 
