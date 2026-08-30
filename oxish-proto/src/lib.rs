@@ -121,9 +121,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for Disconnect<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::Disconnect {
-            return Err(ProtoError::InvalidPacket("expected disconnect packet"));
-        }
+        packet.expect(&[MessageType::Disconnect])?;
 
         let Decoded {
             value: reason_code,
@@ -241,6 +239,16 @@ pub struct IncomingPacket<'a> {
     /// The message type from the first byte of the payload
     pub message_type: MessageType,
     pub(crate) payload: &'a [u8],
+}
+
+impl IncomingPacket<'_> {
+    /// Check that `self` is one of the expected message types
+    pub fn expect(&self, expected: &'static [MessageType]) -> Result<(), ProtoError> {
+        match expected.contains(&self.message_type) {
+            true => Ok(()),
+            false => Err(ProtoError::UnexpectedMessage(self.message_type, expected)),
+        }
+    }
 }
 
 impl fmt::Debug for IncomingPacket<'_> {
@@ -510,9 +518,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for GlobalRequest<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::GlobalRequest {
-            return Err(ProtoError::InvalidPacket("expected global request packet"));
-        }
+        packet.expect(&[MessageType::GlobalRequest])?;
 
         let Decoded { value: name, next } = <&[u8]>::decode(packet.payload)?;
         // Request-specific data follows `want_reply`, but we don't act on any request, so
@@ -686,6 +692,9 @@ pub enum ProtoError {
     /// Too many host keys were specified
     #[error("too many host keys specified")]
     TooManyHostKeys,
+    /// Received message type was not expected in the current state
+    #[error("unexpected message: {0:?}, expected one of {1:?}")]
+    UnexpectedMessage(MessageType, &'static [MessageType]),
     /// An internal invariant was violated (this is a bug)
     #[error("unreachable code: {0}")]
     Unreachable(&'static str),

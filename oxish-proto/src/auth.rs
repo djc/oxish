@@ -166,11 +166,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for UserAuthRequest<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::UserAuthRequest {
-            return Err(ProtoError::InvalidPacket(
-                "expected user auth request packet",
-            ));
-        }
+        packet.expect(&[MessageType::UserAuthRequest])?;
 
         let Decoded {
             value: user_name,
@@ -531,9 +527,7 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
     type Error = ProtoError;
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
-        if packet.message_type != MessageType::ServiceRequest {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
-        }
+        packet.expect(&[MessageType::ServiceRequest])?;
 
         let Decoded {
             value: service_name,
