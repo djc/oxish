@@ -1,5 +1,12 @@
 use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
-use std::{env, fs, panic::resume_unwind, path::Path, path::PathBuf, process::Stdio, sync::Once};
+use std::{
+    env, fs,
+    panic::resume_unwind,
+    path::Path,
+    path::PathBuf,
+    process::{ExitStatus, Stdio},
+    sync::Once,
+};
 
 use anyhow::Context;
 use proto::{
@@ -86,7 +93,7 @@ async fn handshake_x25519(provider: &'static dyn CryptoProvider) -> anyhow::Resu
     // server no longer supports it.
     client.cmd.args(["-o", "KexAlgorithms=curve25519-sha256"]);
 
-    let (stdout, stderr) = client.run(COMMAND, Duration::from_secs(10), server).await?;
+    let (_, stdout, stderr) = client.run(COMMAND, Duration::from_secs(10), server).await?;
     anyhow::ensure!(
         stderr.contains("kex: algorithm: curve25519-sha256"),
         "client did not negotiate curve25519-sha256"
@@ -116,7 +123,7 @@ async fn no_spawn() {
     .await
     .expect("failed to set up test");
 
-    let (_stdout, _stderr) = client
+    client
         .run(
             COMMAND,
             // In the rekey scenario, keep the session open long enough for several rekeys before the
@@ -147,7 +154,7 @@ async fn rekey_graviola() {
     // session near-idle, avoiding the data volume a byte-based trigger would need.
     client.cmd.args(["-o", "RekeyLimit=default 1"]);
 
-    let (_stdout, stderr) = client
+    let (status, _stdout, stderr) = client
         .run(
             b"sleep 10\necho OXISH-$((6*7))\nexit\n",
             // In the rekey scenario, keep the session open long enough for several rekeys before the
@@ -158,13 +165,26 @@ async fn rekey_graviola() {
         .await
         .unwrap();
 
-    // The client logs "SSH2_MSG_KEXINIT received" once per key exchange it observes from the
-    // server: once for the initial handshake, then once for each rekey the server answered.
-    // More than one proves the server handled a client-initiated rekey.
-    let key_exchanges = stderr.matches("SSH2_MSG_KEXINIT received").count();
+    // The client logs "SSH2_MSG_KEXINIT received" once per key exchange the server answered,
+    // but the matching "SSH2_MSG_NEWKEYS received" line only appears when a key exchange ran
+    // to completion. One of each belongs to the initial handshake, so two or more completed
+    // exchanges prove the server carried a client-initiated rekey through NEWKEYS.
+    let started = stderr.matches("SSH2_MSG_KEXINIT received").count();
+    let completed = stderr.matches("SSH2_MSG_NEWKEYS received").count();
     assert!(
-        key_exchanges >= 2,
-        "expected at least one rekey, saw {key_exchanges} key exchange(s).\n\
+        started >= 2 && completed >= 2,
+        "expected at least one completed rekey, saw {started} started and {completed} completed \
+             key exchange(s).\n\
+             --- stderr ({stderr_len} bytes) ---\n{stderr}",
+        stderr_len = stderr.len(),
+    );
+
+    // A protocol violation during a rekey (e.g. the server sending channel data between
+    // KEXINIT and NEWKEYS) makes the client abort with a fatal error instead of tearing the
+    // session down cleanly after `exit`, which surfaces as a non-zero exit status.
+    assert!(
+        status.success(),
+        "client exited with {status}.\n\
              --- stderr ({stderr_len} bytes) ---\n{stderr}",
         stderr_len = stderr.len(),
     );
@@ -178,7 +198,7 @@ async fn handshake(
 
     let (_key_dir, client, server) = setup(&algorithm, None, provider).await?;
 
-    let (stdout, stderr) = client
+    let (_, stdout, stderr) = client
         .run(
             COMMAND,
             // In the rekey scenario, keep the session open long enough for several rekeys before the
@@ -258,7 +278,7 @@ impl CliClient {
         command: &[u8],
         wait_for: Duration,
         server: JoinHandle<anyhow::Result<()>>,
-    ) -> anyhow::Result<(String, String)> {
+    ) -> anyhow::Result<(ExitStatus, String, String)> {
         let mut child = self
             .cmd
             .arg(format!("{USER}@{}", self.addr.ip()))
@@ -299,7 +319,7 @@ impl CliClient {
             stderr_len = output.stderr.len(),
         );
 
-        Ok((stdout.into_owned(), stderr.into_owned()))
+        Ok((output.status, stdout.into_owned(), stderr.into_owned()))
     }
 }
 
