@@ -27,7 +27,7 @@ use tokio::{
     io::unix::AsyncFd,
     process::{Child, Command},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub(crate) struct Terminal {
     pty: AsyncFd<OwnedFd>,
@@ -153,10 +153,24 @@ impl Terminal {
         }
     }
 
-    pub(crate) fn poll_kill(mut self, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        let future = self.child.kill();
+    /// Wait for the shell process to exit and reap it
+    pub(crate) fn poll_wait(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<std::process::ExitStatus>> {
+        let future = self.child.wait();
         let pinned = pin!(future);
         pinned.poll(cx)
+    }
+
+    /// Kill the shell process
+    ///
+    /// Best-effort: the signal is sent synchronously and the process is reaped
+    /// by tokio's orphan reaper once the `Child` is dropped.
+    pub(crate) fn kill(mut self) {
+        if let Err(error) = self.child.start_kill() {
+            warn!(%error, "error killing terminal");
+        }
     }
 }
 
