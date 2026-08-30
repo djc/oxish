@@ -1,7 +1,7 @@
 use core::str::{self, FromStr};
 
 use proto::{
-    Disconnect, GlobalRequest, MessageType, Pretty, SessionHostKey,
+    Disconnect, GlobalRequest, MessageType, Pretty, ProtoError, SessionHostKey,
     channels::{ChannelRequest, ChannelRequestType},
     crypto::CryptoProvider,
     key_exchange::{EcdhKeyExchangeInit, KeyExchange, Rekey},
@@ -24,6 +24,7 @@ pub struct Session<T> {
     pub(crate) rekey: Rekey,
     pub(crate) channels: Channels,
     pub(crate) post_quantum_kx: bool,
+    pub(crate) kx: Option<KeyExchange>,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
@@ -35,7 +36,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
         Ok(Self {
             provider,
             conn,
-            channels: Channels::default(),
             rekey: Rekey::new(
                 kx.session_id,
                 kx.strict_kx,
@@ -43,6 +43,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                 SessionHostKey::from_server(kx.host_key, provider)?,
             ),
             post_quantum_kx: kx.post_quantum_kx,
+            kx: None,
+            channels: Channels::default(),
         })
     }
 
@@ -55,12 +57,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
             tokio::select! {
                 result = receive(&mut self.conn.stream, &mut self.conn.read) => {
                     let packet = result?;
-                    match packet.message_type {
-                        MessageType::Ignore | MessageType::Debug => {
+                    match (&mut self.kx, packet.message_type) {
+                        (_, MessageType::Ignore | MessageType::Debug) => {
                             trace!(?packet.message_type, "ignoring transport-layer message");
                             continue;
                         }
-                        MessageType::Disconnect => {
+                        (_, MessageType::Disconnect) => {
                             match Disconnect::try_from(packet) {
                                 Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
                                 Err(error) => warn!(%error, "failed to read disconnect packet"),
@@ -69,14 +71,36 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         }
                         // The client can start a rekey at any point by sending a fresh
                         // key exchange init (RFC 4253 section 9).
-                        MessageType::KeyExchangeInit => {
-                            let kx = self.rekey.start(packet, self.provider)?;
-                            let post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
-                            rekey(kx, &mut self.conn, &self.rekey, self.provider).await?;
-                            self.post_quantum_kx = post_quantum_kx;
+                        (None, MessageType::KeyExchangeInit) => {
+                            debug!("starting client-initiated rekey");
+                            let mut kx = self.rekey.start(packet, self.provider)?;
+                            self.conn.send_handshake(&kx.local, Some(&mut kx.exchange)).await?;
+                            self.kx = Some(kx);
                             continue;
                         }
-                        MessageType::GlobalRequest => {
+                        (Some(_), MessageType::KeyExchangeEcdhInit) => {
+                            let kx = self.kx.take().expect("key exchange state should be present");
+                            let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
+                            let (key_exchange_reply, keys) = self.rekey.complete(
+                                ecdh_key_exchange_init,
+                                &kx.negotiated,
+                                kx.exchange,
+                                self.provider,
+                            )?;
+
+                            self.conn.send(&key_exchange_reply).await?;
+                            self.conn.update_keys(&keys, self.rekey.strict_key_exchange(), self.provider)
+                                .await?;
+
+                            debug!("completed client-initiated rekey");
+                            self.post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
+                            continue;
+                        }
+                        (Some(_), r#type) => return Err(ProtoError::UnexpectedMessage(
+                            r#type,
+                            &[MessageType::KeyExchangeEcdhInit],
+                        ).into()),
+                        (None, MessageType::GlobalRequest) => {
                             let request = GlobalRequest::try_from(packet)?;
                             debug!(name = %String::from_utf8_lossy(request.name), "refusing unsupported global request");
                             if request.want_reply {
@@ -84,11 +108,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                             }
                             continue;
                         }
-                        MessageType::RequestSuccess | MessageType::RequestFailure => {
+                        (None, MessageType::RequestSuccess | MessageType::RequestFailure) => {
                             trace!(?packet.message_type, "ignoring unexpected global request reply");
                             continue;
                         }
-                        _ => {}
+                        (None, _) => {}
                     }
 
                     let channel_message = IncomingChannelMessage::try_from(packet)?;
@@ -114,42 +138,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
 
                     self.conn.flush().await?;
                 }
-                result = TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write) => {
+                result = TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write), if self.kx.is_none() => {
                     result?;
                     self.conn.flush().await?;
                 }
             }
         }
     }
-}
-
-/// Complete a client-initiated rekey after its `SSH_MSG_KEXINIT` has been parsed
-async fn rekey(
-    mut kx: KeyExchange,
-    conn: &mut Connection<impl AsyncRead + AsyncWrite + Unpin>,
-    rekey: &Rekey,
-    provider: &dyn CryptoProvider,
-) -> Result<(), Error> {
-    debug!("starting client-initiated rekey");
-
-    conn.send_handshake(&kx.local, Some(&mut kx.exchange))
-        .await?;
-
-    let packet = receive(&mut conn.stream, &mut conn.read).await?;
-    let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
-    let (key_exchange_reply, keys) = rekey.complete(
-        ecdh_key_exchange_init,
-        &kx.negotiated,
-        kx.exchange,
-        provider,
-    )?;
-
-    conn.send(&key_exchange_reply).await?;
-    conn.update_keys(&keys, rekey.strict_key_exchange(), provider)
-        .await?;
-
-    debug!("completed client-initiated rekey");
-    Ok(())
 }
 
 fn banner(
