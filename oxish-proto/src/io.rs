@@ -193,15 +193,15 @@ impl Encoder<'_> {
 
     /// Send a `SSH_MSG_USERAUTH_FAILURE` message to the client
     pub fn send_auth_failed(&mut self, can_continue: &[MethodName<'_>]) -> Result<(), ProtoError> {
-        self.enqueue(&UserAuthFailure {
+        self.encode(&UserAuthFailure {
             can_continue,
             partial_success: false,
         })
     }
 
     /// Encode and enqueue a packet for sending
-    pub fn enqueue(&mut self, payload: &impl Encode) -> Result<(), ProtoError> {
-        self.write.handle_packet(payload, None)
+    pub fn encode(&mut self, payload: &impl Encode) -> Result<(), ProtoError> {
+        self.write.encode(payload, None)
     }
 }
 
@@ -241,7 +241,7 @@ impl WriteState {
     ///
     /// Applies padding and encryption per <https://www.rfc-editor.org/rfc/rfc4253#section-6>; if
     /// `exchange_hash` is given, the packet payload is also fed into it.
-    pub fn handle_packet(
+    pub fn encode(
         &mut self,
         payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,

@@ -129,7 +129,7 @@ impl AuthenticationState {
             (Self::AwaitServiceRequest, MessageType::ServiceRequest) => {
                 match ServiceRequest::try_from(packet)?.service_name {
                     ServiceName::UserAuth => {
-                        encoder.enqueue(&ServiceAccept {
+                        encoder.encode(&ServiceAccept {
                             service_name: ServiceName::UserAuth,
                         })?;
                         Ok(Self::AwaitAuthRequest {
@@ -235,7 +235,7 @@ impl AuthenticationState {
                             key_blob: Cow::Owned(public_key.key_blob.to_vec()),
                         };
                         debug!(ok = ?pk_ok, "sending pk-ok for user");
-                        encoder.enqueue(&pk_ok)?;
+                        encoder.encode(&pk_ok)?;
                         return Ok(Self::AwaitAuthRequest { cached, attempts });
                     }
                     // No signature, no authorized key => fail authentication
@@ -270,7 +270,7 @@ impl AuthenticationState {
                         };
 
                         info!(user = %user.data.name, "authentication successful");
-                        encoder.enqueue(&MessageType::UserAuthSuccess)?;
+                        encoder.encode(&MessageType::UserAuthSuccess)?;
                         Ok(Self::Complete(user.data))
                     }
                     _ => {
