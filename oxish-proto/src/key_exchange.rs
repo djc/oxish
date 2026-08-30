@@ -248,7 +248,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for KeyExchangeInit<'a> {
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::KeyExchangeInit {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
+            return Err(ProtoError::UnexpectedMessage(
+                packet.message_type,
+                &[MessageType::KeyExchangeInit],
+            ));
         }
 
         let Decoded {
@@ -390,7 +393,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for EcdhKeyExchangeInit<'a> {
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::KeyExchangeEcdhInit {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
+            return Err(ProtoError::UnexpectedMessage(
+                packet.message_type,
+                &[MessageType::KeyExchangeEcdhInit],
+            ));
         }
 
         let Decoded {
@@ -755,7 +761,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for NewKeys {
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::NewKeys {
-            return Err(ProtoError::InvalidPacket("unexpected message type"));
+            return Err(ProtoError::UnexpectedMessage(
+                packet.message_type,
+                &[MessageType::NewKeys],
+            ));
         }
 
         if !packet.payload.is_empty() {

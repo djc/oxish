@@ -122,7 +122,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for Disconnect<'a> {
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::Disconnect {
-            return Err(ProtoError::InvalidPacket("expected disconnect packet"));
+            return Err(ProtoError::UnexpectedMessage(
+                packet.message_type,
+                &[MessageType::Disconnect],
+            ));
         }
 
         let Decoded {
@@ -511,7 +514,10 @@ impl<'a> TryFrom<IncomingPacket<'a>> for GlobalRequest<'a> {
 
     fn try_from(packet: IncomingPacket<'a>) -> Result<Self, Self::Error> {
         if packet.message_type != MessageType::GlobalRequest {
-            return Err(ProtoError::InvalidPacket("expected global request packet"));
+            return Err(ProtoError::UnexpectedMessage(
+                packet.message_type,
+                &[MessageType::GlobalRequest],
+            ));
         }
 
         let Decoded { value: name, next } = <&[u8]>::decode(packet.payload)?;
@@ -686,6 +692,9 @@ pub enum ProtoError {
     /// Too many host keys were specified
     #[error("too many host keys specified")]
     TooManyHostKeys,
+    /// Received message type was not expected in the current state
+    #[error("unexpected message: {0:?}, expected one of {1:?}")]
+    UnexpectedMessage(MessageType, &'static [MessageType]),
     /// An internal invariant was violated (this is a bug)
     #[error("unreachable code: {0}")]
     Unreachable(&'static str),
