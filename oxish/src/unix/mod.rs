@@ -318,6 +318,7 @@ pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream
             write: write_state,
         },
         rekey: Rekey::new(session_id, strict_kx, identities, host_key),
+        kx: None,
         channels: Channels::default(),
         post_quantum_kx,
     })
