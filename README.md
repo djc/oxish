@@ -25,6 +25,17 @@ If any features you need are missing, please open an issue or submit a pull requ
 - Requires clients with support for mlkem768x25519-sha256 key exchange (OpenSSH 9.9+)
 - No support for older cryptographic algorithms
 
+## Supported cryptographic algorithms
+
+- Key exchange:
+  - [`mlkem768x25519-sha256`](https://www.rfc-editor.org/rfc/rfc10042.html)
+  - [`curve25519-sha256`](https://www.rfc-editor.org/rfc/rfc8731)
+- Public key:
+  - [`ed25519`](https://www.rfc-editor.org/rfc/rfc8709)
+  - [`ecdsa-sha2-nistp256`](https://www.rfc-editor.org/rfc/rfc5656)
+- Encryption:
+  - [`aes128-gcm@openssh.com`](https://www.rfc-editor.org/rfc/rfc5647)
+
 ## References to RFCs consulted during development
 
 - [RFC 4251][rfc4251]: The Secure Shell (SSH) Protocol Architecture
