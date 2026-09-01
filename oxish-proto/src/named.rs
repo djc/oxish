@@ -178,7 +178,7 @@ impl<'a> Named<'a> for KeyExchangeAlgorithmOrExtensionId<'a> {
 pub enum KeyExchangeAlgorithm<'a> {
     /// `mlkem768x25519-sha256` key exchange algorithm: hybrid using ML-KEM-768 and X25519
     ///
-    /// As defined in <https://datatracker.ietf.org/doc/draft-kampanakis-curdle-ssh-pq-ke/>.
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc10042.html>.
     MlKem768X25519Sha256,
     /// `curve25519-sha256` key exchange algorithm: ECDH using X25519
     ///
