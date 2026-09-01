@@ -89,6 +89,14 @@ impl HostKeys {
         Ok(Self(keys))
     }
 
+    /// Create host keys from the contents of a single OpenSSH-format
+    /// private key file
+    ///
+    /// Only supports unencrypted keys for now.
+    pub fn from_openssh_v1(pem: &str, provider: &dyn CryptoProvider) -> Result<Self, ProtoError> {
+        Self::new(OpenSshKeyV1::from_str(pem)?.keys.into_iter(), provider)
+    }
+
     /// Create a new set of host keys from the given PKCS#8 private keys
     ///
     /// `pkcs8` must have more than 0 and less than 16 elements.

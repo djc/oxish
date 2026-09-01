@@ -4,6 +4,7 @@ use ::aws_lc_rs::{
     aead::{AES_128_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey},
     agreement::{self, EphemeralPrivateKey, X25519},
     digest,
+    encoding::{AsBigEndian, Curve25519SeedBin, EcPrivateKeyBin},
     kem::ML_KEM_768,
     rand,
     signature::{self, EcdsaKeyPair, Ed25519KeyPair, KeyPair, UnparsedPublicKey},
@@ -17,6 +18,7 @@ use proto::{
     },
     named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm},
 };
+use zeroize::Zeroizing;
 
 pub const DEFAULT_PROVIDER: &'static dyn CryptoProvider = &Provider;
 
@@ -404,6 +406,13 @@ impl SigningKey for Ed25519SigningKey {
     fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
         PublicKeyAlgorithm::Ed25519
     }
+
+    fn private_key(&self) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        let seed = self.key_pair.seed().map_err(|_| CryptoError::Unspecified)?;
+        let bytes = AsBigEndian::<Curve25519SeedBin<'_>>::as_be_bytes(&seed)
+            .map_err(|_| CryptoError::Unspecified)?;
+        Ok(Zeroizing::new(bytes.as_ref().to_vec()))
+    }
 }
 
 struct EcdsaP256SigningKey {
@@ -438,6 +447,12 @@ impl SigningKey for EcdsaP256SigningKey {
 
     fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
         PublicKeyAlgorithm::EcdsaSha2Nistp256
+    }
+
+    fn private_key(&self) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+        let d = AsBigEndian::<EcPrivateKeyBin<'_>>::as_be_bytes(&self.key_pair.private_key())
+            .map_err(|_| CryptoError::Unspecified)?;
+        Ok(Zeroizing::new(d.as_ref().to_vec()))
     }
 }
 

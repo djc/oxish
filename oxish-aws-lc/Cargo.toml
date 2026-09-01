@@ -17,6 +17,7 @@ fips = ["aws-lc-rs/fips"]
 [dependencies]
 aws-lc-rs = { workspace = true }
 proto = { package = "oxish-proto", version = "0.1", path = "../oxish-proto" }
+zeroize = { workspace = true }
 
 [lints]
 workspace = true

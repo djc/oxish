@@ -624,7 +624,7 @@ impl Encode for TaggedSignature<'_> {
 ///
 /// Leading zero bytes are stripped, and a single zero byte is prepended when the
 /// most significant bit is set so the value is interpreted as positive.
-fn encode_mpint(value: &[u8], buf: &mut Vec<u8>) {
+pub(crate) fn encode_mpint(value: &[u8], buf: &mut Vec<u8>) {
     let trimmed = match value.iter().position(|&b| b != 0) {
         Some(first) => &value[first..],
         None => &[],
