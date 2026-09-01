@@ -4,8 +4,8 @@ use std::{borrow::Cow, ffi::CStr, io, path::PathBuf, str};
 use proto::{
     Disconnect, DisconnectReason, IncomingPacket, MessageType, ProtoError, WriteState,
     auth::{
-        AuthorizedKey, Method, ServiceAccept, ServiceRequest, SignatureData, UserAuthFailure,
-        UserAuthPkOk, UserAuthRequest,
+        AuthorizedKey, AuthorizedKeyOptions, Method, ServiceAccept, ServiceRequest, SignatureData,
+        UserAuthFailure, UserAuthPkOk, UserAuthRequest,
     },
     crypto::{CryptoError, CryptoProvider, Digest},
     named::{MethodName, PublicKeyAlgorithm, ServiceName},
@@ -182,6 +182,7 @@ impl AuthenticationState {
                 };
 
                 let authorized_key = user.keys.iter().find(|key| key.matches(&public_key));
+
                 let (sig, authorized_key) = match (public_key.signature, authorized_key) {
                     // Signature, authorized key => verify signature
                     (Some(sig), Some(key)) if &sig.algorithm == key.algorithm() => {
@@ -243,13 +244,22 @@ impl AuthenticationState {
                     }
                 };
 
+                let opts = authorized_key.key_option.clone();
+
                 match spawn_blocking(move || authorized_key.verify(message, signature)).await {
                     Ok(Ok(())) => {
-                        let Some(user) = cached else {
+                        let Some(mut user) = cached else {
                             return Err(ProtoError::Unreachable("must have cached user").into());
                         };
 
                         info!(user = %user.data.name, "authentication successful");
+                        if let Some(AuthorizedKeyOptions {
+                            command: Some(ref command),
+                        }) = opts
+                        {
+                            tracing::info!(command, "allowed commands");
+                            user.data.options = opts;
+                        }
                         write.encode(&MessageType::UserAuthSuccess)?;
                         Ok(Self::Complete(user.data))
                     }
@@ -366,6 +376,8 @@ pub struct User {
     pub home_dir: PathBuf,
     /// The user's shell
     pub shell: PathBuf,
+    /// options
+    pub options: Option<AuthorizedKeyOptions>,
 }
 
 /// A validated username

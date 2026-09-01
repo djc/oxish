@@ -5,6 +5,7 @@ use tracing::debug;
 
 use crate::{
     Decode, Decoded, Encode, IncomingPacket, MessageType, Pretty, ProtoError, PublicKeyAlgorithm,
+    auth::AuthorizedKeyOptions,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyDerivation,
         KeySourceSide, SharedSecret, SigningKey,
@@ -211,6 +212,46 @@ impl Decode<'_> for Option<StrictKeyExchange> {
             value: value.then_some(StrictKeyExchange(())),
             next,
         })
+    }
+}
+
+impl Encode for Option<AuthorizedKeyOptions> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        if let Some(AuthorizedKeyOptions {
+            command: Some(force_command),
+        }) = self
+        {
+            true.encode(buf);
+            tracing::debug!(force_command, "writing command");
+            force_command.as_bytes().encode(buf);
+        } else {
+            tracing::debug!("no command");
+            false.encode(buf);
+        }
+    }
+}
+
+impl Decode<'_> for Option<AuthorizedKeyOptions> {
+    fn decode(buf: &'_ [u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded { value, next } = bool::decode(buf)?;
+        if value {
+            let Decoded {
+                value: forced_command,
+                next,
+            } = <&[u8]>::decode(next)?;
+
+            return Ok(Decoded {
+                value: Some(AuthorizedKeyOptions {
+                    command: Some(str::from_utf8(forced_command).unwrap().to_owned()),
+                }),
+                next,
+            });
+        } else {
+            Ok(Decoded {
+                value: None,
+                next: next,
+            })
+        }
     }
 }
 

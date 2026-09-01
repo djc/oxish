@@ -156,6 +156,7 @@ impl Server {
                 sequence_number: write.sequence_number,
             },
             read_buf: mem::take(&mut read.buf),
+            options: user.options.clone(),
         };
 
         let mut child = spawn(state, stream, user, self)

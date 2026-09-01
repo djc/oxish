@@ -416,6 +416,7 @@ fn session_state_round_trip() {
             sequence_number: 23,
         },
         read_buf: b"pipelined".to_vec(),
+        options: None,
     };
 
     let mut buf = Vec::new();
@@ -487,6 +488,7 @@ async fn store(
         gid: 1000,
         home_dir: PathBuf::from("/var/empty"),
         shell: PathBuf::from("/bin/sh"),
+        options: None,
     };
 
     Ok((dir, Box::new(SingleUser::with_keys(user, vec![key]))))
