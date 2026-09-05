@@ -4,10 +4,12 @@ use core::{
     mem,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 use std::{
     borrow::Cow,
     collections::{BTreeMap, btree_map::Entry},
+    time::Instant,
 };
 
 use proto::{
@@ -58,7 +60,7 @@ impl Channels {
             maximum_packet_size: open.maximum_packet_size,
             env: Vec::new(),
             terminal: None,
-            closed: ClosedState::default(),
+            close_sent: false,
         });
 
         write.encode(&channel.confirmation(local_id))?;
@@ -116,6 +118,14 @@ impl Channels {
                 Some(TerminalState::Running(terminal)) => terminal.resize(&window_change)?,
                 _ => warn!("window-change request without running terminal"),
             },
+            // Should be sent by the server only, ignore when received from clients
+            ChannelRequestType::ExitStatus(status) => {
+                debug!(channel_id = %request.recipient_channel, exit_status = %status, "received exit-status from client");
+                if request.want_reply {
+                    write.encode(&channel.failure())?;
+                }
+                return Ok(());
+            }
             // Agent forwarding is not supported -- only reply when asked
             ChannelRequestType::AuthAgentReq | ChannelRequestType::Unknown(_) => {
                 if request.want_reply {
@@ -220,22 +230,23 @@ impl Channels {
         close: &ChannelClose,
         write: &mut WriteState,
     ) -> Result<(), Error> {
-        let Some(channel) = self.channels.get_mut(&close.recipient_channel) else {
+        let Some(mut channel) = self.channels.remove(&close.recipient_channel) else {
             warn!(channel_id = %close.recipient_channel, "channel close for unknown channel ID");
             return Ok(());
         };
 
-        debug!(channel_id = %close.recipient_channel, "received channel close from client");
-        channel.closed.received = true;
-        let recipient_channel = channel.remote_id;
-        let sent = channel.closed.sent;
-        if sent {
-            debug!(channel = %close.recipient_channel, "both sides closed channel; removing");
-            self.channels.remove(&close.recipient_channel);
+        debug!(channel_id = %close.recipient_channel, "received channel close from client; removing");
+        // The client is no longer listening for output or exit status
+        if let Some(TerminalState::Running(terminal) | TerminalState::Exiting(terminal, _)) =
+            channel.terminal.take()
+        {
+            terminal.kill();
         }
 
-        if !sent {
-            write.encode(&ChannelClose { recipient_channel })?;
+        if !channel.close_sent {
+            write.encode(&ChannelClose {
+                recipient_channel: channel.remote_id,
+            })?;
         }
 
         Ok(())
@@ -262,28 +273,66 @@ impl<'a> Future for TerminalsFuture<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let Self { channels, write } = &mut *self;
-        for (&local_id, channel) in channels.iter_mut() {
+        'channels: for (&local_id, channel) in channels.iter_mut() {
             let Some(state) = &mut channel.terminal else {
                 continue;
             };
 
-            let terminal = match state {
-                TerminalState::Running(terminal) => terminal,
-                TerminalState::Requested(_) => continue,
-                TerminalState::Closing => {
-                    if channel.closed.sent {
-                        continue;
-                    }
+            let terminal = loop {
+                match state {
+                    TerminalState::Running(terminal) => break terminal,
+                    TerminalState::Requested(_) => continue 'channels,
+                    TerminalState::Exiting(terminal, deadline) => match terminal.poll_wait(cx) {
+                        Poll::Ready(Ok(status)) => {
+                            *state = match status.code() {
+                                Some(code) => TerminalState::Exited(code as u32),
+                                None => TerminalState::Closing,
+                            };
+                        }
+                        Poll::Ready(Err(error)) => {
+                            warn!(%error, "error waiting for shell to exit");
+                            *state = TerminalState::Closing;
+                        }
+                        // No waker is registered for the deadline, so an expired
+                        // grace period is only noticed on the next poll (driven by
+                        // connection traffic).
+                        Poll::Pending if Instant::now() < *deadline => continue 'channels,
+                        Poll::Pending => {
+                            warn!(
+                                channel = local_id,
+                                "shell did not exit after PTY EOF; killing"
+                            );
+                            if let TerminalState::Exiting(terminal, _) =
+                                mem::replace(state, TerminalState::Closing)
+                            {
+                                terminal.kill();
+                            }
+                        }
+                    },
+                    TerminalState::Exited(status) => {
+                        let request = ChannelRequest {
+                            recipient_channel: channel.remote_id,
+                            r#type: ChannelRequestType::ExitStatus(*status),
+                            want_reply: false,
+                        };
 
-                    channel.closed.sent = true;
-                    let recipient_channel = channel.remote_id;
-                    if channel.closed.received {
-                        debug!(channel = local_id, "both sides closed channel; removing");
-                        channels.remove(&local_id);
+                        *state = TerminalState::Closing;
+                        if !channel.close_sent {
+                            write.encode(&request)?;
+                            return Poll::Ready(Ok(()));
+                        }
                     }
+                    TerminalState::Closing => {
+                        if channel.close_sent {
+                            continue 'channels;
+                        }
 
-                    write.encode(&ChannelClose { recipient_channel })?;
-                    return Poll::Ready(Ok(()));
+                        channel.close_sent = true;
+                        write.encode(&ChannelClose {
+                            recipient_channel: channel.remote_id,
+                        })?;
+                        return Poll::Ready(Ok(()));
+                    }
                 }
             };
 
@@ -296,28 +345,33 @@ impl<'a> Future for TerminalsFuture<'a> {
             };
 
             match terminal.poll_read(writable, cx) {
-                Poll::Ready(result @ Ok(0)) | Poll::Ready(result @ Err(_)) => {
+                // The PTY can report EOF slightly before the shell becomes reapable, so
+                // hold the channel open until the shell has been waited on; its exit
+                // status must reach the client before the channel close. PTY EOF only
+                // means all user fds were closed, not that the shell exited, so bound
+                // the wait with a grace period after which the shell is killed.
+                Poll::Ready(Ok(0)) => {
                     if let TerminalState::Running(terminal) =
                         mem::replace(state, TerminalState::Closing)
                     {
-                        if let Poll::Ready(Err(error)) = terminal.poll_kill(cx) {
-                            warn!(%error, "error killing terminal");
-                            return Poll::Ready(Err(error.into()));
-                        }
+                        *state =
+                            TerminalState::Exiting(terminal, Instant::now() + EXIT_GRACE_PERIOD);
                     }
 
-                    return Poll::Ready(match result {
-                        Ok(_) => {
-                            write.encode(&ChannelEof {
-                                recipient_channel: channel.remote_id,
-                            })?;
-                            Ok(())
-                        }
-                        Err(error) => {
-                            warn!(%error, "error reading from terminal");
-                            Err(error.into())
-                        }
-                    });
+                    write.encode(&ChannelEof {
+                        recipient_channel: channel.remote_id,
+                    })?;
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Ready(Err(error)) => {
+                    if let TerminalState::Running(terminal) =
+                        mem::replace(state, TerminalState::Closing)
+                    {
+                        terminal.kill();
+                    }
+
+                    warn!(%error, "error reading from terminal");
+                    return Poll::Ready(Err(error.into()));
                 }
                 Poll::Ready(Ok(n)) => {
                     channel.send_window = channel.send_window.saturating_sub(n as u32);
@@ -343,7 +397,7 @@ pub(crate) struct Channel {
     maximum_packet_size: u32,
     env: Vec<(String, String)>,
     terminal: Option<TerminalState>,
-    closed: ClosedState,
+    close_sent: bool,
 }
 
 impl Channel {
@@ -372,6 +426,10 @@ impl Channel {
 enum TerminalState {
     Requested(PtyReq<'static>),
     Running(Terminal),
+    /// Waiting to reap the exited shell, until the deadline
+    Exiting(Terminal, Instant),
+    /// Shell exited with the given status, which still needs to be sent
+    Exited(u32),
     Closing,
 }
 
@@ -380,15 +438,11 @@ impl fmt::Debug for TerminalState {
         match self {
             Self::Requested(req) => f.debug_tuple("Requested").field(req).finish(),
             Self::Running(_) => f.debug_tuple("Running").field(&"...").finish(),
+            Self::Exiting(_, deadline) => f.debug_tuple("Exiting").field(deadline).finish(),
+            Self::Exited(status) => f.debug_tuple("Exited").field(status).finish(),
             Self::Closing => f.debug_tuple("Closing").finish(),
         }
     }
-}
-
-#[derive(Debug, Default)]
-struct ClosedState {
-    sent: bool,
-    received: bool,
 }
 
 #[derive(Debug)]
@@ -440,3 +494,5 @@ impl<'a> TryFrom<IncomingPacket<'a>> for IncomingChannelMessage<'a> {
 }
 
 const INITIAL_WINDOW_SIZE: u32 = 16 * MAX_PACKET_LEN;
+/// How long to wait for a shell to become reapable after its PTY reports EOF
+const EXIT_GRACE_PERIOD: Duration = Duration::from_secs(5);
