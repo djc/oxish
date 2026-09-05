@@ -201,7 +201,7 @@ impl Encoder<'_> {
 
     /// Encode and enqueue a packet for sending
     pub fn enqueue(&mut self, payload: &impl Encode) -> Result<(), ProtoError> {
-        self.write.encode_kx(payload, None)
+        self.write.encode(payload)
     }
 }
 
@@ -235,6 +235,13 @@ impl WriteState {
             sealer: None,
             secure_random,
         }
+    }
+
+    /// Encode `payload` as a packet into the outgoing buffer
+    ///
+    /// Applies padding and encryption per <https://www.rfc-editor.org/rfc/rfc4253#section-6>.
+    pub fn encode(&mut self, payload: &impl Encode) -> Result<(), ProtoError> {
+        self.encode_kx(payload, None)
     }
 
     /// Encode `payload` as a packet into the outgoing buffer
