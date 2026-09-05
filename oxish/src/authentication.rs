@@ -20,8 +20,8 @@ use libc::{_SC_GETPW_R_SIZE_MAX, ERANGE, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
     Disconnect, DisconnectReason, IncomingPacket, MessageType, ProtoError, WriteState,
     auth::{
-        AuthorizedKey, Method, ServiceAccept, ServiceRequest, SignatureData, UserAuthPkOk,
-        UserAuthRequest,
+        AuthorizedKey, Method, ServiceAccept, ServiceRequest, SignatureData, UserAuthFailure,
+        UserAuthPkOk, UserAuthRequest,
     },
     crypto::{CryptoError, CryptoProvider, Digest},
     named::{MethodName, PublicKeyAlgorithm, ServiceName},
@@ -175,7 +175,7 @@ impl AuthenticationState {
                         method = ?user_auth_request.method,
                         "unsupported authentication method requested"
                     );
-                    write.send_auth_failed(SUPPORTED_METHODS)?;
+                    send_auth_failed(write)?;
                     return Ok(Self::AwaitAuthRequest { cached, attempts });
                 };
 
@@ -184,12 +184,12 @@ impl AuthenticationState {
                     _ => {
                         let Ok(name) = Username::try_from(user_auth_request.user_name.to_owned())
                         else {
-                            write.send_auth_failed(SUPPORTED_METHODS)?;
+                            send_auth_failed(write)?;
                             return Ok(Self::AwaitAuthRequest { cached, attempts });
                         };
 
                         let Some(user) = store.lookup(name) else {
-                            write.send_auth_failed(SUPPORTED_METHODS)?;
+                            send_auth_failed(write)?;
                             return Ok(Self::AwaitAuthRequest { cached, attempts });
                         };
 
@@ -211,7 +211,7 @@ impl AuthenticationState {
                             Ok(key) => key,
                             Err(_) => {
                                 warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
-                                write.send_auth_failed(SUPPORTED_METHODS)?;
+                                send_auth_failed(write)?;
                                 return Ok(Self::AwaitAuthRequest { cached, attempts });
                             }
                         },
@@ -222,7 +222,7 @@ impl AuthenticationState {
                             algorithm = ?public_key.algorithm,
                             "mismatched signature algorithm in authentication request"
                         );
-                        write.send_auth_failed(SUPPORTED_METHODS)?;
+                        send_auth_failed(write)?;
                         return Ok(Self::AwaitAuthRequest { cached, attempts });
                     }
                     // No signature, authorized key => send pk-ok and wait for signature
@@ -237,7 +237,7 @@ impl AuthenticationState {
                     }
                     // No signature, no authorized key => fail authentication
                     (None, None) => {
-                        write.send_auth_failed(SUPPORTED_METHODS)?;
+                        send_auth_failed(write)?;
                         return Ok(Self::AwaitAuthRequest { cached, attempts });
                     }
                 };
@@ -255,7 +255,7 @@ impl AuthenticationState {
                     Ok(signature) => signature,
                     Err(error) => {
                         debug!(%error, "failed to encode signature");
-                        write.send_auth_failed(SUPPORTED_METHODS)?;
+                        send_auth_failed(write)?;
                         return Ok(Self::AwaitAuthRequest { cached, attempts });
                     }
                 };
@@ -271,7 +271,7 @@ impl AuthenticationState {
                         Ok(Self::Complete(user.data))
                     }
                     _ => {
-                        write.send_auth_failed(SUPPORTED_METHODS)?;
+                        send_auth_failed(write)?;
                         Ok(Self::AwaitAuthRequest { cached, attempts })
                     }
                 }
@@ -308,6 +308,14 @@ fn fake_key(
         provider,
     )
     .ok_or(CryptoError::KeyRejected)
+}
+
+/// Encode a `SSH_MSG_USERAUTH_FAILURE` message
+fn send_auth_failed(write: &mut WriteState) -> Result<(), ProtoError> {
+    write.encode(&UserAuthFailure {
+        can_continue: SUPPORTED_METHODS,
+        partial_success: false,
+    })
 }
 
 /// Default [`UserStore`] implementation
