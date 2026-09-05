@@ -1,11 +1,12 @@
-use core::iter;
+use core::{fmt, iter};
 use std::io;
 
+use tracing::debug;
 use zeroize::Zeroize;
 
 use crate::{
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
-    ProtoError,
+    Pretty, ProtoError,
     auth::UserAuthFailure,
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     key_exchange::StrictKeyExchange,
@@ -222,7 +223,7 @@ impl WriteState {
     /// Encode `payload` as a packet into the outgoing buffer
     ///
     /// Applies padding and encryption per <https://www.rfc-editor.org/rfc/rfc4253#section-6>.
-    pub fn encode(&mut self, payload: &impl Encode) -> Result<(), ProtoError> {
+    pub fn encode(&mut self, payload: &(impl Encode + fmt::Debug)) -> Result<(), ProtoError> {
         self.encode_kx(payload, None)
     }
 
@@ -232,9 +233,10 @@ impl WriteState {
     /// `exchange_hash` is given, the packet payload is also fed into it.
     pub fn encode_kx(
         &mut self,
-        payload: &impl Encode,
+        payload: &(impl Encode + fmt::Debug),
         exchange_hash: Option<&mut HandshakeHash>,
     ) -> Result<(), ProtoError> {
+        debug!(payload = %Pretty(payload), "encoding packet");
         let start = self.buf.len();
         self.buf.extend_from_slice(&[0, 0, 0, 0]); // packet_length
         self.buf.push(0); // padding_length

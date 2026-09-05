@@ -828,6 +828,12 @@ impl Encode for ExtInfo<'_> {
     }
 }
 
+impl fmt::Debug for ExtInfo<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExtInfo").finish_non_exhaustive()
+    }
+}
+
 /// Output of the initial key exchange
 pub struct KeyExchangeOutput<'a> {
     /// The identities exchanged after connection acceptance

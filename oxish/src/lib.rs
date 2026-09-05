@@ -194,13 +194,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         Ok((exchange, identities))
     }
 
-    async fn send(&mut self, payload: &impl Encode) -> Result<(), Error> {
+    async fn send(&mut self, payload: &(impl Encode + fmt::Debug)) -> Result<(), Error> {
         self.send_handshake(payload, None).await
     }
 
     async fn send_handshake(
         &mut self,
-        payload: &impl Encode,
+        payload: &(impl Encode + fmt::Debug),
         exchange_hash: Option<&mut HandshakeHash>,
     ) -> Result<(), Error> {
         self.write
