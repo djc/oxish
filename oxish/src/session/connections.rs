@@ -11,7 +11,7 @@ use std::{
 };
 
 use proto::{
-    Encode, Encoder, IncomingPacket, MAX_PACKET_LEN, MessageType, ProtoError,
+    Encode, IncomingPacket, MAX_PACKET_LEN, MessageType, ProtoError, WriteState,
     channels::{
         ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
         ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
@@ -34,10 +34,10 @@ impl Channels {
     pub(crate) fn open(
         &mut self,
         open: ChannelOpen<'_>,
-        encoder: &mut Encoder<'_>,
+        write: &mut WriteState,
     ) -> Result<(), Error> {
         if open.r#type != ChannelType::Session {
-            encoder.encode(&ChannelOpenFailure::unknown_type(open.sender_channel))?;
+            write.encode(&ChannelOpenFailure::unknown_type(open.sender_channel))?;
             return Ok(());
         }
 
@@ -46,7 +46,7 @@ impl Channels {
         let entry = match self.channels.entry(local_id) {
             Entry::Vacant(entry) => entry,
             Entry::Occupied(_) => {
-                encoder.encode(&ChannelOpenFailure::duplicate_id(open.sender_channel))?;
+                write.encode(&ChannelOpenFailure::duplicate_id(open.sender_channel))?;
                 return Ok(());
             }
         };
@@ -61,14 +61,14 @@ impl Channels {
             closed: ClosedState::default(),
         });
 
-        encoder.encode(&channel.confirmation(local_id))?;
+        write.encode(&channel.confirmation(local_id))?;
         Ok(())
     }
 
     pub(crate) fn request(
         &mut self,
         request: ChannelRequest<'_>,
-        encoder: &mut Encoder<'_>,
+        write: &mut WriteState,
         banner: Option<&str>,
     ) -> Result<(), Error> {
         let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
@@ -88,7 +88,7 @@ impl Channels {
                     _ => {
                         debug!(name = env.name, "ignoring environment variable request");
                         if request.want_reply {
-                            encoder.encode(&channel.failure())?;
+                            write.encode(&channel.failure())?;
                         }
                         return Ok(());
                     }
@@ -107,7 +107,7 @@ impl Channels {
                 )?));
 
                 channel.receive_window = INITIAL_WINDOW_SIZE;
-                encoder.encode(&ChannelWindowAdjust {
+                write.encode(&ChannelWindowAdjust {
                     recipient_channel: channel.remote_id,
                     bytes_to_add: INITIAL_WINDOW_SIZE,
                 })?;
@@ -119,21 +119,21 @@ impl Channels {
             // Agent forwarding is not supported -- only reply when asked
             ChannelRequestType::AuthAgentReq | ChannelRequestType::Unknown(_) => {
                 if request.want_reply {
-                    encoder.encode(&channel.failure())?;
+                    write.encode(&channel.failure())?;
                 }
                 return Ok(());
             }
             _ => {
                 warn!(request_type = ?request.r#type, "ignoring channel request");
                 if request.want_reply {
-                    encoder.encode(&channel.failure())?;
+                    write.encode(&channel.failure())?;
                 }
                 return Ok(());
             }
         }
 
         if request.want_reply {
-            encoder.encode(&channel.success())?;
+            write.encode(&channel.success())?;
         }
 
         let Some(banner) = banner else {
@@ -145,7 +145,7 @@ impl Channels {
         };
 
         channel.send_window = window;
-        encoder.encode(&ChannelData {
+        write.encode(&ChannelData {
             recipient_channel: channel.remote_id,
             data: Cow::Borrowed(banner.as_bytes()),
         })?;
@@ -170,7 +170,7 @@ impl Channels {
     pub(crate) fn data<'m, 's>(
         &'s mut self,
         data: &'m ChannelData<'m>,
-        encoder: &mut Encoder<'_>,
+        write: &mut WriteState,
     ) -> Result<Option<(&'s mut Terminal, &'m [u8])>, ProtoError> {
         let Some(channel) = self.channels.get_mut(&data.recipient_channel) else {
             return Err(ProtoError::InvalidPacket(
@@ -191,7 +191,7 @@ impl Channels {
             debug!(channel_id = %data.recipient_channel, "receive window low; sending window adjust");
             let bytes_to_add = INITIAL_WINDOW_SIZE - channel.receive_window;
             channel.receive_window = INITIAL_WINDOW_SIZE;
-            encoder.encode(&ChannelWindowAdjust {
+            write.encode(&ChannelWindowAdjust {
                 recipient_channel: channel.remote_id,
                 bytes_to_add,
             })?;
@@ -218,7 +218,7 @@ impl Channels {
     pub(crate) fn close(
         &mut self,
         close: &ChannelClose,
-        encoder: &mut Encoder<'_>,
+        write: &mut WriteState,
     ) -> Result<(), Error> {
         let Some(channel) = self.channels.get_mut(&close.recipient_channel) else {
             warn!(channel_id = %close.recipient_channel, "channel close for unknown channel ID");
@@ -235,7 +235,7 @@ impl Channels {
         }
 
         if !sent {
-            encoder.encode(&ChannelClose { recipient_channel })?;
+            write.encode(&ChannelClose { recipient_channel })?;
         }
 
         Ok(())

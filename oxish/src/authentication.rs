@@ -19,7 +19,7 @@ use std::{
 
 use libc::{_SC_GETPW_R_SIZE_MAX, ERANGE, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
-    Disconnect, DisconnectReason, Encoder, IncomingPacket, MessageType, ProtoError,
+    Disconnect, DisconnectReason, IncomingPacket, MessageType, ProtoError, WriteState,
     auth::{
         AuthorizedKey, Method, ServiceAccept, ServiceRequest, SignatureData, UserAuthPkOk,
         UserAuthRequest,
@@ -48,12 +48,11 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
     let future = async {
         loop {
             let packet = receive(&mut conn.stream, &mut conn.read).await?;
-            let mut encoder = Encoder::new(&mut conn.write);
             let handled = state
-                .handle(packet, session_id, &mut encoder, store, provider)
+                .handle(packet, session_id, &mut conn.write, store, provider)
                 .await;
 
-            let sent = poll_fn(|cx| send(&mut conn.stream, encoder.write, cx)).await;
+            let sent = poll_fn(|cx| send(&mut conn.stream, &mut conn.write, cx)).await;
             match (handled, sent) {
                 (Ok(AuthenticationState::Complete(user)), Ok(())) => return Ok(user),
                 (Ok(next), Ok(())) => state = next,
@@ -119,7 +118,7 @@ impl AuthenticationState {
         self,
         packet: IncomingPacket<'_>,
         session_id: &Digest,
-        encoder: &mut Encoder<'_>,
+        write: &mut WriteState,
         store: &dyn UserStore,
         provider: &dyn CryptoProvider,
     ) -> Result<Self, Error> {
@@ -129,7 +128,7 @@ impl AuthenticationState {
             (Self::AwaitServiceRequest, MessageType::ServiceRequest) => {
                 match ServiceRequest::try_from(packet)?.service_name {
                     ServiceName::UserAuth => {
-                        encoder.encode(&ServiceAccept {
+                        write.encode(&ServiceAccept {
                             service_name: ServiceName::UserAuth,
                         })?;
                         Ok(Self::AwaitAuthRequest {
@@ -178,7 +177,7 @@ impl AuthenticationState {
                         method = ?user_auth_request.method,
                         "unsupported authentication method requested"
                     );
-                    encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                    write.send_auth_failed(SUPPORTED_METHODS)?;
                     return Ok(Self::AwaitAuthRequest { cached, attempts });
                 };
 
@@ -187,12 +186,12 @@ impl AuthenticationState {
                     _ => {
                         let Ok(name) = Username::try_from(user_auth_request.user_name.to_owned())
                         else {
-                            encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                            write.send_auth_failed(SUPPORTED_METHODS)?;
                             return Ok(Self::AwaitAuthRequest { cached, attempts });
                         };
 
                         let Some(user) = store.lookup(name) else {
-                            encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                            write.send_auth_failed(SUPPORTED_METHODS)?;
                             return Ok(Self::AwaitAuthRequest { cached, attempts });
                         };
 
@@ -214,7 +213,7 @@ impl AuthenticationState {
                             Ok(key) => key,
                             Err(_) => {
                                 warn!(algorithm = ?public_key.algorithm, "unsupported public key algorithm");
-                                encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                                write.send_auth_failed(SUPPORTED_METHODS)?;
                                 return Ok(Self::AwaitAuthRequest { cached, attempts });
                             }
                         },
@@ -225,7 +224,7 @@ impl AuthenticationState {
                             algorithm = ?public_key.algorithm,
                             "mismatched signature algorithm in authentication request"
                         );
-                        encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                        write.send_auth_failed(SUPPORTED_METHODS)?;
                         return Ok(Self::AwaitAuthRequest { cached, attempts });
                     }
                     // No signature, authorized key => send pk-ok and wait for signature
@@ -235,12 +234,12 @@ impl AuthenticationState {
                             key_blob: Cow::Owned(public_key.key_blob.to_vec()),
                         };
                         debug!(ok = ?pk_ok, "sending pk-ok for user");
-                        encoder.encode(&pk_ok)?;
+                        write.encode(&pk_ok)?;
                         return Ok(Self::AwaitAuthRequest { cached, attempts });
                     }
                     // No signature, no authorized key => fail authentication
                     (None, None) => {
-                        encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                        write.send_auth_failed(SUPPORTED_METHODS)?;
                         return Ok(Self::AwaitAuthRequest { cached, attempts });
                     }
                 };
@@ -258,7 +257,7 @@ impl AuthenticationState {
                     Ok(signature) => signature,
                     Err(error) => {
                         debug!(%error, "failed to encode signature");
-                        encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                        write.send_auth_failed(SUPPORTED_METHODS)?;
                         return Ok(Self::AwaitAuthRequest { cached, attempts });
                     }
                 };
@@ -270,11 +269,11 @@ impl AuthenticationState {
                         };
 
                         info!(user = %user.data.name, "authentication successful");
-                        encoder.encode(&MessageType::UserAuthSuccess)?;
+                        write.encode(&MessageType::UserAuthSuccess)?;
                         Ok(Self::Complete(user.data))
                     }
                     _ => {
-                        encoder.send_auth_failed(SUPPORTED_METHODS)?;
+                        write.send_auth_failed(SUPPORTED_METHODS)?;
                         Ok(Self::AwaitAuthRequest { cached, attempts })
                     }
                 }

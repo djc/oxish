@@ -19,7 +19,7 @@ use crypto::CryptoError;
 mod host_keys;
 pub use host_keys::{HostKeys, ServerHostKey, SessionHostKey};
 mod io;
-pub use io::{Encoder, ReadState, WriteState};
+pub use io::{ReadState, WriteState};
 /// Key exchange messages and negotiation (RFC 4253 section 7, RFC 5656)
 pub mod key_exchange;
 /// Named algorithms, services and methods, and name-list encoding (RFC 4251 section 5)
