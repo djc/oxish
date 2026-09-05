@@ -37,7 +37,7 @@ impl Channels {
         encoder: &mut Encoder<'_>,
     ) -> Result<(), Error> {
         if open.r#type != ChannelType::Session {
-            encoder.enqueue(&ChannelOpenFailure::unknown_type(open.sender_channel))?;
+            encoder.encode(&ChannelOpenFailure::unknown_type(open.sender_channel))?;
             return Ok(());
         }
 
@@ -46,7 +46,7 @@ impl Channels {
         let entry = match self.channels.entry(local_id) {
             Entry::Vacant(entry) => entry,
             Entry::Occupied(_) => {
-                encoder.enqueue(&ChannelOpenFailure::duplicate_id(open.sender_channel))?;
+                encoder.encode(&ChannelOpenFailure::duplicate_id(open.sender_channel))?;
                 return Ok(());
             }
         };
@@ -61,7 +61,7 @@ impl Channels {
             closed: ClosedState::default(),
         });
 
-        encoder.enqueue(&channel.confirmation(local_id))?;
+        encoder.encode(&channel.confirmation(local_id))?;
         Ok(())
     }
 
@@ -88,7 +88,7 @@ impl Channels {
                     _ => {
                         debug!(name = env.name, "ignoring environment variable request");
                         if request.want_reply {
-                            encoder.enqueue(&channel.failure())?;
+                            encoder.encode(&channel.failure())?;
                         }
                         return Ok(());
                     }
@@ -107,7 +107,7 @@ impl Channels {
                 )?));
 
                 channel.receive_window = INITIAL_WINDOW_SIZE;
-                encoder.enqueue(&ChannelWindowAdjust {
+                encoder.encode(&ChannelWindowAdjust {
                     recipient_channel: channel.remote_id,
                     bytes_to_add: INITIAL_WINDOW_SIZE,
                 })?;
@@ -119,21 +119,21 @@ impl Channels {
             // Agent forwarding is not supported -- only reply when asked
             ChannelRequestType::AuthAgentReq | ChannelRequestType::Unknown(_) => {
                 if request.want_reply {
-                    encoder.enqueue(&channel.failure())?;
+                    encoder.encode(&channel.failure())?;
                 }
                 return Ok(());
             }
             _ => {
                 warn!(request_type = ?request.r#type, "ignoring channel request");
                 if request.want_reply {
-                    encoder.enqueue(&channel.failure())?;
+                    encoder.encode(&channel.failure())?;
                 }
                 return Ok(());
             }
         }
 
         if request.want_reply {
-            encoder.enqueue(&channel.success())?;
+            encoder.encode(&channel.success())?;
         }
 
         let Some(banner) = banner else {
@@ -145,7 +145,7 @@ impl Channels {
         };
 
         channel.send_window = window;
-        encoder.enqueue(&ChannelData {
+        encoder.encode(&ChannelData {
             recipient_channel: channel.remote_id,
             data: Cow::Borrowed(banner.as_bytes()),
         })?;
@@ -191,7 +191,7 @@ impl Channels {
             debug!(channel_id = %data.recipient_channel, "receive window low; sending window adjust");
             let bytes_to_add = INITIAL_WINDOW_SIZE - channel.receive_window;
             channel.receive_window = INITIAL_WINDOW_SIZE;
-            encoder.enqueue(&ChannelWindowAdjust {
+            encoder.encode(&ChannelWindowAdjust {
                 recipient_channel: channel.remote_id,
                 bytes_to_add,
             })?;
@@ -235,7 +235,7 @@ impl Channels {
         }
 
         if !sent {
-            encoder.enqueue(&ChannelClose { recipient_channel })?;
+            encoder.encode(&ChannelClose { recipient_channel })?;
         }
 
         Ok(())
