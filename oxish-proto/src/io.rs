@@ -7,10 +7,8 @@ use zeroize::Zeroize;
 use crate::{
     Completion, Decode, Decoded, Encode, IncomingPacket, MessageType, PacketLength, PaddingLength,
     Pretty, ProtoError,
-    auth::UserAuthFailure,
     crypto::{HandshakeHash, OpeningKey, SealingKey, SecureRandom},
     key_exchange::StrictKeyExchange,
-    named::MethodName,
 };
 
 /// The reader and decryption state for an SSH connection
@@ -210,14 +208,6 @@ impl WriteState {
             sealer: None,
             secure_random,
         }
-    }
-
-    /// Encode a `SSH_MSG_USERAUTH_FAILURE` message
-    pub fn send_auth_failed(&mut self, can_continue: &[MethodName<'_>]) -> Result<(), ProtoError> {
-        self.encode(&UserAuthFailure {
-            can_continue,
-            partial_success: false,
-        })
     }
 
     /// Encode `payload` as a packet into the outgoing buffer
