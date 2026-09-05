@@ -1,6 +1,5 @@
 use core::{
     cmp::Ordering,
-    future,
     mem::MaybeUninit,
     str::{self, FromStr},
 };
@@ -26,7 +25,7 @@ use tokio::{
 use tracing::{debug, info, instrument, trace, warn};
 use zeroize::Zeroizing;
 
-use crate::{Connection, Error, KeyExchangeOutput, SessionState, receive, send};
+use crate::{Connection, Error, KeyExchangeOutput, SessionState, receive};
 
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
@@ -261,14 +260,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut self.conn.write),
                     }?;
 
-                    future::poll_fn(|cx| send(&mut self.conn.stream, &mut self.conn.write, cx))
-                        .await?;
+                    self.conn.flush().await?;
                 }
                 result = TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write) => {
                     match result {
-                        Ok(()) => {
-                            future::poll_fn(|cx| send(&mut self.conn.stream, &mut self.conn.write, cx)).await?;
-                        }
+                        Ok(()) => self.conn.flush().await?,
                         Err(error) => return Err(error),
                     }
                 }

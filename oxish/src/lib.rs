@@ -2,13 +2,7 @@
 
 #![warn(missing_docs)]
 
-use core::{
-    fmt, future,
-    net::SocketAddr,
-    pin::Pin,
-    str::FromStr,
-    task::{Context, Poll},
-};
+use core::{fmt, future, net::SocketAddr, pin::Pin, str::FromStr};
 use std::{io, str, task::ready};
 
 use anyhow::Context as _;
@@ -209,7 +203,22 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 error!(%error, "failed to encode packet");
             })?;
 
-        future::poll_fn(|cx| send(&mut self.stream, &mut self.write, cx)).await
+        self.flush().await
+    }
+
+    async fn flush(&mut self) -> Result<(), Error> {
+        future::poll_fn(|cx| {
+            while !self.write.buffered().is_empty() {
+                self.write.written(ready!(
+                    Pin::new(&mut self.stream).poll_write(cx, self.write.buffered())
+                ))?;
+            }
+
+            Pin::new(&mut self.stream)
+                .poll_flush(cx)
+                .map_err(Error::from)
+        })
+        .await
     }
 }
 
@@ -427,20 +436,6 @@ async fn receive<'a>(
 
         return Ok(state.decode_packet(sequence_number, packet_length)?);
     }
-}
-
-fn send(
-    stream: &mut (impl AsyncWrite + Unpin),
-    state: &mut WriteState,
-    cx: &mut Context<'_>,
-) -> Poll<Result<(), Error>> {
-    while !state.buffered().is_empty() {
-        state.written(ready!(
-            Pin::new(&mut *stream).poll_write(cx, state.buffered())
-        ))?;
-    }
-
-    Pin::new(stream).poll_flush(cx).map_err(Error::from)
 }
 
 async fn buffer<'a>(
