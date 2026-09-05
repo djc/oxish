@@ -201,7 +201,7 @@ impl Encoder<'_> {
 
     /// Encode and enqueue a packet for sending
     pub fn enqueue(&mut self, payload: &impl Encode) -> Result<(), ProtoError> {
-        self.write.handle_packet(payload, None)
+        self.write.encode_kx(payload, None)
     }
 }
 
@@ -241,7 +241,7 @@ impl WriteState {
     ///
     /// Applies padding and encryption per <https://www.rfc-editor.org/rfc/rfc4253#section-6>; if
     /// `exchange_hash` is given, the packet payload is also fed into it.
-    pub fn handle_packet(
+    pub fn encode_kx(
         &mut self,
         payload: &impl Encode,
         exchange_hash: Option<&mut HandshakeHash>,
