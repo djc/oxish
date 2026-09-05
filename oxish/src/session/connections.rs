@@ -11,7 +11,7 @@ use std::{
 };
 
 use proto::{
-    Encode, IncomingPacket, MAX_PACKET_LEN, MessageType, ProtoError, WriteState,
+    IncomingPacket, MAX_PACKET_LEN, MessageType, ProtoError, WriteState,
     channels::{
         ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
         ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
@@ -248,19 +248,21 @@ impl Channels {
 
 pub(crate) struct TerminalsFuture<'a> {
     channels: &'a mut BTreeMap<u32, Channel>,
+    write: &'a mut WriteState,
 }
 
 impl<'a> TerminalsFuture<'a> {
-    pub(crate) fn new(channels: &'a mut BTreeMap<u32, Channel>) -> Self {
-        Self { channels }
+    pub(crate) fn new(channels: &'a mut BTreeMap<u32, Channel>, write: &'a mut WriteState) -> Self {
+        Self { channels, write }
     }
 }
 
 impl<'a> Future for TerminalsFuture<'a> {
-    type Output = Result<Option<OutgoingChannelMessage<'static>>, Error>;
+    type Output = Result<(), Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        for (&local_id, channel) in self.channels.iter_mut() {
+        let Self { channels, write } = &mut *self;
+        for (&local_id, channel) in channels.iter_mut() {
             let Some(state) = &mut channel.terminal else {
                 continue;
             };
@@ -277,12 +279,11 @@ impl<'a> Future for TerminalsFuture<'a> {
                     let recipient_channel = channel.remote_id;
                     if channel.closed.received {
                         debug!(channel = local_id, "both sides closed channel; removing");
-                        self.channels.remove(&local_id);
+                        channels.remove(&local_id);
                     }
 
-                    return Poll::Ready(Ok(Some(OutgoingChannelMessage::Close(ChannelClose {
-                        recipient_channel,
-                    }))));
+                    write.encode(&ChannelClose { recipient_channel })?;
+                    return Poll::Ready(Ok(()));
                 }
             };
 
@@ -306,9 +307,12 @@ impl<'a> Future for TerminalsFuture<'a> {
                     }
 
                     return Poll::Ready(match result {
-                        Ok(_) => Ok(Some(OutgoingChannelMessage::Eof(ChannelEof {
-                            recipient_channel: channel.remote_id,
-                        }))),
+                        Ok(_) => {
+                            write.encode(&ChannelEof {
+                                recipient_channel: channel.remote_id,
+                            })?;
+                            Ok(())
+                        }
                         Err(error) => {
                             warn!(%error, "error reading from terminal");
                             Err(error.into())
@@ -317,10 +321,11 @@ impl<'a> Future for TerminalsFuture<'a> {
                 }
                 Poll::Ready(Ok(n)) => {
                     channel.send_window = channel.send_window.saturating_sub(n as u32);
-                    return Poll::Ready(Ok(Some(OutgoingChannelMessage::Data(ChannelData {
+                    write.encode(&ChannelData {
                         recipient_channel: channel.remote_id,
-                        data: Cow::Owned(buf[..n].to_vec()),
-                    }))));
+                        data: Cow::Borrowed(&buf[..n]),
+                    })?;
+                    return Poll::Ready(Ok(()));
                 }
                 Poll::Pending => continue,
             }
@@ -384,23 +389,6 @@ impl fmt::Debug for TerminalState {
 struct ClosedState {
     sent: bool,
     received: bool,
-}
-
-#[derive(Debug)]
-pub(crate) enum OutgoingChannelMessage<'a> {
-    Data(ChannelData<'a>),
-    Eof(ChannelEof),
-    Close(ChannelClose),
-}
-
-impl Encode for OutgoingChannelMessage<'_> {
-    fn encode(&self, buffer: &mut Vec<u8>) {
-        match self {
-            Self::Data(msg) => msg.encode(buffer),
-            Self::Eof(msg) => msg.encode(buffer),
-            Self::Close(msg) => msg.encode(buffer),
-        }
-    }
 }
 
 #[derive(Debug)]

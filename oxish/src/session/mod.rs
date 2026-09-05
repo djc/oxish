@@ -264,13 +264,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                     future::poll_fn(|cx| send(&mut self.conn.stream, &mut self.conn.write, cx))
                         .await?;
                 }
-                result = TerminalsFuture::new(self.channels.channels_mut()) => {
+                result = TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write) => {
                     match result {
-                        Ok(Some(outgoing)) => {
-                            debug!(outgoing = %Pretty(&outgoing), "sending channel message from session");
-                            self.conn.send(&outgoing).await?;
+                        Ok(()) => {
+                            future::poll_fn(|cx| send(&mut self.conn.stream, &mut self.conn.write, cx)).await?;
                         }
-                        Ok(None) => {}
                         Err(error) => return Err(error),
                     }
                 }
