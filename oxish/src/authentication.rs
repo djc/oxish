@@ -1,7 +1,6 @@
 use core::{
     ffi::c_char,
     fmt,
-    future::poll_fn,
     ops::{ControlFlow, Deref},
     time::Duration,
 };
@@ -35,7 +34,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{Connection, Error, receive, send};
+use crate::{Connection, Error, receive};
 
 #[instrument(name = "authentication", skip(session_id, conn, store, provider), fields(addr = %conn.addr))]
 pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
@@ -52,8 +51,7 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
                 .handle(packet, session_id, &mut conn.write, store, provider)
                 .await;
 
-            let sent = poll_fn(|cx| send(&mut conn.stream, &mut conn.write, cx)).await;
-            match (handled, sent) {
+            match (handled, conn.flush().await) {
                 (Ok(AuthenticationState::Complete(user)), Ok(())) => return Ok(user),
                 (Ok(next), Ok(())) => state = next,
                 (Err(error), _) | (_, Err(error)) => return Err(error),
