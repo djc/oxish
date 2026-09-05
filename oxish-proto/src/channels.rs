@@ -249,6 +249,17 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     }
                 }
             }
+            b"exit-status" => {
+                let Decoded { value, next } = u32::decode(next)?;
+                match next.is_empty() {
+                    true => ChannelRequestType::ExitStatus(value),
+                    false => {
+                        return Err(ProtoError::InvalidPacket(
+                            "extra data in exit-status channel request",
+                        ));
+                    }
+                }
+            }
             b"auth-agent-req@openssh.com" => ChannelRequestType::AuthAgentReq,
             _ => match str::from_utf8(r#type) {
                 Ok(r#type) => ChannelRequestType::Unknown(r#type),
@@ -269,6 +280,25 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
     }
 }
 
+impl Encode for ChannelRequest<'_> {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        let Self {
+            recipient_channel,
+            r#type,
+            want_reply,
+        } = self;
+
+        MessageType::ChannelRequest.encode(buffer);
+        recipient_channel.encode(buffer);
+        r#type.name().as_bytes().encode(buffer);
+        want_reply.encode(buffer);
+        match r#type {
+            ChannelRequestType::ExitStatus(status) => status.encode(buffer),
+            _ => warn!(r#type = ?r#type.name(), "channel request type cannot be encoded"),
+        }
+    }
+}
+
 /// Request type-specific data from a [`ChannelRequest`]
 #[non_exhaustive]
 #[derive(Debug)]
@@ -277,6 +307,10 @@ pub enum ChannelRequestType<'a> {
     ///
     /// Not currently supported.
     AuthAgentReq,
+    /// `exit-status`, report the exit status of a process
+    ///
+    /// As defined in <https://www.rfc-editor.org/info/rfc4254/#section-6.10>.
+    ExitStatus(u32),
     /// `pty-req`, request a pseudo-terminal
     ///
     /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.2>.
@@ -299,6 +333,21 @@ pub enum ChannelRequestType<'a> {
     WindowChange(WindowChange),
     /// Unknown channel request type; the string is the request type name
     Unknown(&'a str),
+}
+
+impl ChannelRequestType<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Self::AuthAgentReq => "auth-agent-req@openssh.com",
+            Self::ExitStatus(_) => "exit-status",
+            Self::PtyReq(_) => "pty-req",
+            Self::Env(_) => "env",
+            Self::Exec(_) => "exec",
+            Self::Shell => "shell",
+            Self::WindowChange(_) => "window-change",
+            Self::Unknown(name) => name,
+        }
+    }
 }
 
 /// Type-specific data for the `window-change` channel request
