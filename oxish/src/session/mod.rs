@@ -263,10 +263,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                     self.conn.flush().await?;
                 }
                 result = TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write) => {
-                    match result {
-                        Ok(()) => self.conn.flush().await?,
-                        Err(error) => return Err(error),
-                    }
+                    result?;
+                    self.conn.flush().await?;
                 }
             }
         }
