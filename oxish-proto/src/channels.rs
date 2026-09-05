@@ -227,6 +227,17 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ChannelRequest<'a> {
                     ));
                 }
             },
+            b"exec" => {
+                let Decoded { value, next } = Exec::decode(next)?;
+                match next.is_empty() {
+                    true => ChannelRequestType::Exec(value),
+                    false => {
+                        return Err(ProtoError::InvalidPacket(
+                            "extra data in exec channel request",
+                        ));
+                    }
+                }
+            }
             b"window-change" => {
                 let Decoded { value, next } = WindowChange::decode(next)?;
                 match next.is_empty() {
@@ -278,6 +289,10 @@ pub enum ChannelRequestType<'a> {
     ///
     /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.5>.
     Shell,
+    /// `exec`, execute the given command
+    ///
+    /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.5>.
+    Exec(Exec<'a>),
     /// `window-change`, report new terminal dimensions
     ///
     /// As defined in <https://www.rfc-editor.org/rfc/rfc4254#section-6.7>.
@@ -349,6 +364,28 @@ impl<'a> Decode<'a> for Env<'a> {
 
         Ok(Decoded {
             value: Env { name, value },
+            next,
+        })
+    }
+}
+
+/// Type-specific data for the `exec` channel request
+///
+/// See <https://www.rfc-editor.org/rfc/rfc4254#section-6.5>.
+#[derive(Debug)]
+pub struct Exec<'a> {
+    /// The command to execute
+    pub command: &'a [u8],
+}
+
+impl<'a> Decode<'a> for Exec<'a> {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
+        let Decoded {
+            value: command,
+            next,
+        } = <&[u8]>::decode(input)?;
+        Ok(Decoded {
+            value: Exec { command },
             next,
         })
     }
