@@ -10,8 +10,7 @@ use std::{
 };
 
 use proto::{
-    Decoded, Disconnect, Encoder, GlobalRequest, MessageType, Pretty, ReadState, SessionHostKey,
-    WriteState,
+    Decoded, Disconnect, GlobalRequest, MessageType, Pretty, ReadState, SessionHostKey, WriteState,
     channels::{ChannelRequest, ChannelRequestType},
     crypto::CryptoProvider,
     key_exchange::{EcdhKeyExchangeInit, KeyExchange, Rekey},
@@ -243,14 +242,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
 
                     let channel_message = IncomingChannelMessage::try_from(packet)?;
                     debug!(message = %Pretty(&channel_message), "handling channel message");
-                    let mut encoder = Encoder::new(&mut self.conn.write);
                     match channel_message {
-                        IncomingChannelMessage::Open(open) => self.channels.open(open, &mut encoder),
+                        IncomingChannelMessage::Open(open) => self.channels.open(open, &mut self.conn.write),
                         IncomingChannelMessage::Request(request) => {
                             let banner = banner(&request, self.rekey.client_identity(), self.post_quantum_kx);
-                            self.channels.request(request, &mut encoder, banner.as_deref())
+                            self.channels.request(request, &mut self.conn.write, banner.as_deref())
                         }
-                        IncomingChannelMessage::Data(data) => match self.channels.data(&data, &mut encoder) {
+                        IncomingChannelMessage::Data(data) => match self.channels.data(&data, &mut self.conn.write) {
                             Ok(Some((session, data))) => match session.write(data).await {
                                 Ok(_) => Ok(()),
                                 Err(error) => Err(error.into()),
@@ -260,10 +258,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         }
                         IncomingChannelMessage::WindowAdjust(adjust) => self.channels.adjust_window(&adjust).map_err(Into::into),
                         IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
-                        IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut encoder),
+                        IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut self.conn.write),
                     }?;
 
-                    future::poll_fn(|cx| send(&mut self.conn.stream, encoder.write, cx))
+                    future::poll_fn(|cx| send(&mut self.conn.stream, &mut self.conn.write, cx))
                         .await?;
                 }
                 result = TerminalsFuture::new(self.channels.channels_mut()) => {

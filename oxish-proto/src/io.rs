@@ -179,32 +179,6 @@ impl Default for ReadState {
     }
 }
 
-/// Wrapper for the write and encryption state of an SSH connection
-pub struct Encoder<'a> {
-    /// The write state to encode packets into
-    pub write: &'a mut WriteState,
-}
-
-impl Encoder<'_> {
-    /// Create a new encoder for the given write state
-    pub fn new(write: &mut WriteState) -> Encoder<'_> {
-        Encoder { write }
-    }
-
-    /// Send a `SSH_MSG_USERAUTH_FAILURE` message to the client
-    pub fn send_auth_failed(&mut self, can_continue: &[MethodName<'_>]) -> Result<(), ProtoError> {
-        self.encode(&UserAuthFailure {
-            can_continue,
-            partial_success: false,
-        })
-    }
-
-    /// Encode and enqueue a packet for sending
-    pub fn encode(&mut self, payload: &impl Encode) -> Result<(), ProtoError> {
-        self.write.encode(payload)
-    }
-}
-
 /// The writer and encryption state for an SSH connection
 pub struct WriteState {
     /// Buffer for encoded but unencrypted packets
@@ -235,6 +209,14 @@ impl WriteState {
             sealer: None,
             secure_random,
         }
+    }
+
+    /// Encode a `SSH_MSG_USERAUTH_FAILURE` message
+    pub fn send_auth_failed(&mut self, can_continue: &[MethodName<'_>]) -> Result<(), ProtoError> {
+        self.encode(&UserAuthFailure {
+            can_continue,
+            partial_success: false,
+        })
     }
 
     /// Encode `payload` as a packet into the outgoing buffer
