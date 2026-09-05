@@ -204,7 +204,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         exchange_hash: Option<&mut HandshakeHash>,
     ) -> Result<(), Error> {
         self.write
-            .handle_packet(payload, exchange_hash)
+            .encode_kx(payload, exchange_hash)
             .inspect_err(|error| {
                 error!(%error, "failed to encode packet");
             })?;
