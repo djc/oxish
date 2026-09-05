@@ -116,6 +116,14 @@ impl Channels {
                 Some(TerminalState::Running(terminal)) => terminal.resize(&window_change)?,
                 _ => warn!("window-change request without running terminal"),
             },
+            // Should be sent by the server only, ignore when received from clients
+            ChannelRequestType::ExitStatus(status) => {
+                debug!(channel_id = %request.recipient_channel, exit_status = %status, "received exit-status from client");
+                if request.want_reply {
+                    encoder.enqueue(&channel.failure())?;
+                }
+                return Ok(());
+            }
             // Agent forwarding is not supported -- only reply when asked
             ChannelRequestType::AuthAgentReq | ChannelRequestType::Unknown(_) => {
                 if request.want_reply {
