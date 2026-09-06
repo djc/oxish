@@ -1,6 +1,7 @@
 use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
 use std::{
     env, fs,
+    os::unix::fs::PermissionsExt,
     panic::resume_unwind,
     path::Path,
     path::PathBuf,
@@ -27,6 +28,45 @@ use crate::{
     authentication::{SingleUser, User},
     server::Server,
 };
+
+/// Check our generated OpenSSH private key accepted by `ssh-keygen -y -f`
+#[tokio::test]
+async fn openssh_keygen_agrees() {
+    let providers = [
+        #[cfg(any(feature = "aws-lc", feature = "aws-lc-fips"))]
+        aws_lc::DEFAULT_PROVIDER,
+        #[cfg(feature = "graviola")]
+        graviola::DEFAULT_PROVIDER,
+    ];
+
+    for provider in providers {
+        for (algorithm, name) in [
+            (PublicKeyAlgorithm::Ed25519, "ssh-ed25519"),
+            (PublicKeyAlgorithm::EcdsaSha2Nistp256, "ecdsa-sha2-nistp256"),
+        ] {
+            let pem = openssh::generate(&algorithm, provider).unwrap();
+
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("key");
+            fs::write(&path, pem.as_bytes()).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+            let output = Command::new("ssh-keygen")
+                .arg("-y")
+                .arg("-f")
+                .arg(&path)
+                .output()
+                .await
+                .context("failed to run ssh-keygen")
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "ssh-keygen rejected our {name} key: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
 
 /// Exercise a full handshake and session against the aws-lc-rs provider
 #[cfg(feature = "aws-lc")]
