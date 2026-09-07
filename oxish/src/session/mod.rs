@@ -45,7 +45,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                 SessionHostKey::from_server(kx.host_key, provider)?,
             ),
             post_quantum_kx: kx.post_quantum_kx,
-            options: Arc::new(None),
+            options: Arc::new(KeyOptions::default()),
         })
     }
 
@@ -100,7 +100,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut self.conn.write),
                         IncomingChannelMessage::Request(request) => {
                             let banner = banner(&request, self.rekey.client_identity(), self.post_quantum_kx);
-                            self.channels.request(request, &mut self.conn.write, banner.as_deref(), self.options.clone())
+                            self.channels.request(request, &mut self.conn.write, banner.as_deref(), &self.options)
                         }
                         IncomingChannelMessage::Data(data) => match self.channels.data(&data, &mut self.conn.write) {
                             Ok(Some((session, data))) => match session.write(data).await {

@@ -12,7 +12,7 @@ use std::{
 
 use bitflags::Flags;
 use proto::{
-    auth::AuthorizedKeyOptions,
+    auth::KeyOptions,
     channels::{Mode, PtyReq, WindowChange},
 };
 use rustix::{
@@ -36,13 +36,12 @@ pub(crate) struct Terminal {
     pty: AsyncFd<OwnedFd>,
     child: Child,
 }
-use std::sync::Arc;
 
 impl Terminal {
     pub(crate) fn spawn(
         req: &PtyReq<'_>,
         env: &[(String, String)],
-        option: Arc<Option<AuthorizedKeyOptions>>,
+        option: &KeyOptions,
     ) -> io::Result<Self> {
         debug!(?req, ?env, "spawning new session with PTY");
         let controller = pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
@@ -69,9 +68,9 @@ impl Terminal {
 
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let mut cmd = Command::new(&shell);
-        if let Some(AuthorizedKeyOptions {
+        if let KeyOptions {
             command: Some(ref force_command),
-        }) = *option
+        } = *option
         {
             cmd.arg("-c").arg(force_command.as_str());
         } else {

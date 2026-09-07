@@ -9,101 +9,13 @@ use crate::{
     named::{MethodName, Named, OutgoingNameList, PublicKeyAlgorithm, ServiceName},
 };
 
-#[derive(Clone, Debug)]
-pub struct AuthorizedKeyOptions {
-    pub command: Option<String>,
-}
-
-impl AuthorizedKeyOptions {
-    fn try_key(options: &mut &str, opt: &str) -> bool {
-        if let Some(rest) = options.strip_prefix(opt) {
-            if let Some(rest) = rest.strip_prefix('=') {
-                *options = rest;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn dequote(text: &mut &str) -> Option<String> {
-        let mut chars = text.char_indices();
-        match chars.next() {
-            Some((_, '"')) => {}
-            _ => {
-                return None;
-            }
-        }
-
-        let mut result = String::new();
-        let mut end = None;
-        let mut escaped = false;
-
-        for (i, c) in chars {
-            if escaped {
-                if c != '"' {
-                    result.push('\\');
-                }
-                result.push(c);
-                escaped = false;
-            }
-
-            match c {
-                '\\' => escaped = true,
-                '"' => {
-                    end = Some(i + c.len_utf8());
-                    break;
-                }
-                _ => result.push(c),
-            }
-        }
-
-        match end {
-            Some(end) => {
-                *text = &text[end..];
-                Some(result)
-            }
-            None => None,
-        }
-    }
-
-    pub fn from_str(text: &mut &str) -> Option<Self> {
-        let mut auth_options = Self { command: None };
-
-        while !text.is_empty() {
-            if AuthorizedKeyOptions::try_key(text, "command") {
-                if auth_options.command.is_some() {
-                    debug!("command must be specified atmost one");
-                    return None;
-                }
-
-                let Some(command) = AuthorizedKeyOptions::dequote(text) else {
-                    return None;
-                };
-
-                auth_options.command = Some(command);
-            }
-
-            match text.chars().next() {
-                Some(_) => *text = &text[1..],
-                None => break,
-            }
-        }
-
-        if auth_options.command.is_some() {
-            Some(auth_options)
-        } else {
-            None
-        }
-    }
-}
-
 /// An authorized public key for a user
 #[derive(Clone)]
 pub struct AuthorizedKey {
     algorithm: PublicKeyAlgorithm<'static>,
     blob: Vec<u8>,
     key: Arc<dyn VerifyingKey>,
-    pub key_option: Option<AuthorizedKeyOptions>,
+    pub options: KeyOptions,
 }
 
 impl AuthorizedKey {
@@ -127,20 +39,22 @@ impl AuthorizedKey {
 
         let (algorithm, auth_options) = match peek_authoption(&mut key, alg) {
             None => return None,
-            Some(RetType::Algorithm(algorithm)) => (algorithm, None),
+            Some(RetType::Algorithm(algorithm)) => (algorithm, KeyOptions::default()),
             Some(RetType::OptAndRest((mut options, rest))) => {
+                tracing::info!(options, rest);
                 parts = rest.split_whitespace();
                 let Some(alg) = parts.next() else {
                     debug!("missing algorithm");
                     return None;
                 };
-                tracing::info!(algorithm = alg);
                 (
                     PublicKeyAlgorithm::typed(alg),
-                    AuthorizedKeyOptions::from_str(&mut options),
+                    KeyOptions::new(&mut options),
                 )
             }
         };
+        tracing::info!(algorithm = alg);
+        tracing::info!(?auth_options);
 
         let Some(key_data) = parts.next() else {
             debug!("missing key data");
@@ -218,7 +132,7 @@ impl AuthorizedKey {
             algorithm: algorithm.to_owned(),
             key,
             blob,
-            key_option: auth_options,
+            options: auth_options,
         })
     }
 
@@ -248,7 +162,7 @@ impl fmt::Debug for AuthorizedKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthorizedKey")
             .field("algorithm", &self.algorithm)
-            .field("options", &self.key_option)
+            .field("options", &self.options)
             .finish_non_exhaustive()
     }
 }
@@ -647,6 +561,89 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct KeyOptions {
+    pub command: Option<String>,
+}
+
+impl KeyOptions {
+    pub fn new(text: &mut &str) -> Self {
+        let mut auth_options = Self::default();
+
+        while !text.is_empty() {
+            if try_key(text, "command") {
+                if auth_options.command.is_some() {
+                    debug!("command must be specified atmost one");
+                    return Self::default();
+                }
+
+                if let Some(command) = dequote(text) {
+                    auth_options.command = Some(command);
+                };
+            }
+
+            match text.get(1..) {
+                Some(next) => *text = next,
+                None => break,
+            }
+        }
+
+        auth_options
+    }
+}
+
+fn try_key(options: &mut &str, opt: &str) -> bool {
+    if let Some(rest) = options.strip_prefix(opt) {
+        if let Some(rest) = rest.strip_prefix('=') {
+            *options = rest;
+            return true;
+        }
+    }
+    false
+}
+
+fn dequote(text: &mut &str) -> Option<String> {
+    let mut chars = text.char_indices();
+    match chars.next() {
+        Some((_, '"')) => {}
+        _ => {
+            return None;
+        }
+    }
+
+    let mut result = String::new();
+    let mut end = None;
+    let mut escaped = false;
+
+    for (i, c) in chars {
+        if escaped {
+            if c == '\\' {
+                result.push('\\');
+            }
+            result.push(c);
+            escaped = false;
+            continue;
+        }
+
+        match c {
+            '\\' => escaped = true,
+            '"' => {
+                end = Some(i + c.len_utf8());
+                break;
+            }
+            _ => result.push(c),
+        }
+    }
+
+    match end {
+        Some(end) => {
+            *text = &text[end..];
+            Some(result)
+        }
+        None => None,
+    }
+}
+
 enum RetType<'a> {
     Algorithm(PublicKeyAlgorithm<'a>),
     OptAndRest((&'a str, &'a str)),
@@ -670,23 +667,15 @@ fn try_advance_past_options<'a>(line: &'a mut &'a str) -> Option<(&'a str, &'a s
     let mut end = line.len();
 
     for (i, c) in line.chars().enumerate() {
-        if in_quotes {
-            if !escaped {
-                match c {
-                    '\\' => escaped = true,
-                    '"' => in_quotes = !in_quotes,
-                    _ => continue,
-                }
-            } else {
-                escaped = false;
-            }
+        if escaped {
+            escaped = false;
             continue;
         }
 
         match c {
             '\\' => escaped = true,
             '"' => in_quotes = !in_quotes,
-            x if x.is_whitespace() => {
+            x if !in_quotes && x.is_whitespace() => {
                 end = i;
                 break;
             }
