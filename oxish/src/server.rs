@@ -115,7 +115,7 @@ impl Server {
         drop(authenticating);
 
         if !self.config.spawn {
-            let session = Session::new(kx, conn, self.provider)?;
+            let session = Session::new(kx, conn, self.provider, user.options.clone())?;
             return session.run().await.context("session failed");
         }
 
@@ -186,6 +186,6 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { spawn: true }
+        Self { spawn: false }
     }
 }

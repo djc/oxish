@@ -4,7 +4,7 @@ use std::{env, fs, panic::resume_unwind, path::Path, path::PathBuf, process::Std
 use anyhow::Context;
 use proto::{
     Decoded, Encode, HostKeys, ServerHostKey,
-    auth::AuthorizedKey,
+    auth::{AuthorizedKey, KeyOptions},
     crypto::{CryptoProvider, Digest, KeySourceSide},
     key_exchange::Identities,
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
@@ -416,7 +416,7 @@ fn session_state_round_trip() {
             sequence_number: 23,
         },
         read_buf: b"pipelined".to_vec(),
-        options: None,
+        options: KeyOptions::default(),
     };
 
     let mut buf = Vec::new();
@@ -488,7 +488,7 @@ async fn store(
         gid: 1000,
         home_dir: PathBuf::from("/var/empty"),
         shell: PathBuf::from("/bin/sh"),
-        options: None,
+        options: KeyOptions::default(),
     };
 
     Ok((dir, Box::new(SingleUser::with_keys(user, vec![key]))))
