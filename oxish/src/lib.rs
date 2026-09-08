@@ -46,6 +46,10 @@ mod session;
 pub use session::Session;
 mod server;
 pub use server::{Config, Server};
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as platform;
 
 #[cfg(test)]
 mod tests;
