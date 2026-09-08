@@ -29,7 +29,6 @@ use crate::{Connection, Error, KeyExchangeOutput, SessionState, receive};
 
 mod connections;
 use connections::{Channels, IncomingChannelMessage, TerminalsFuture};
-mod terminal;
 
 /// A single SSH session's state
 ///
