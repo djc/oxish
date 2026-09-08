@@ -30,8 +30,9 @@ async fn main() -> anyhow::Result<()> {
 
     let provider = DEFAULT_PROVIDER;
     let args = Args::parse();
-    let host_keys = if args.generate_host_key {
-        match File::create_new(&args.host_key_file) {
+
+    if let Some(path) = &args.generate_host_key {
+        return match File::create_new(path) {
             Ok(mut host_key_file) => {
                 let Ok((_, pkcs8)) = provider.generate_signing_key(&args.host_key_type) else {
                     anyhow::bail!("failed to generate host key");
@@ -42,15 +43,18 @@ async fn main() -> anyhow::Result<()> {
                 let result = host_key_file.write_all(&pkcs8);
                 result?;
 
-                eprintln!("generated host key at {}", args.host_key_file);
-                return Ok(());
+                eprintln!("generated host key at {}", path.display());
+                Ok(())
             }
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                anyhow::bail!("host key file `{}` already exists", args.host_key_file);
-            }
-            Err(err) => return Err(err.into()),
-        }
-    } else {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
+                "host key file `{}` already exists",
+                path.display()
+            )),
+            Err(err) => Err(err.into()),
+        };
+    }
+
+    let host_keys = {
         match HostKeys::from_dir(Path::new("/etc/ssh"), provider) {
             Ok(host_keys) => {
                 info!(len = host_keys.len(), "loaded host keys from /etc/ssh");
@@ -133,7 +137,7 @@ struct Args {
     #[clap(long, default_value = "ssh_host_ed25519_key")]
     host_key_file: String,
     #[clap(long)]
-    generate_host_key: bool,
+    generate_host_key: Option<PathBuf>,
     #[clap(long, value_parser = host_key_type, default_value = "ssh-ed25519")]
     host_key_type: PublicKeyAlgorithm<'static>,
     /// Path to the `oxish-session` binary (defaults to a sibling of this executable)
