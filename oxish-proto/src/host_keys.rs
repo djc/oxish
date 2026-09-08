@@ -1,7 +1,7 @@
 use core::str::{self, FromStr};
 use std::{fs, path::Path};
 
-use tracing::{debug, warn};
+use tracing::warn;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -16,77 +16,34 @@ use crate::{
 pub struct HostKeys(Vec<(Zeroizing<Vec<u8>>, Box<dyn SigningKey>)>);
 
 impl HostKeys {
-    /// Find host keys in the given directory
+    /// Create host keys from a list of OpenSSH-format private key files
     ///
-    /// Scans `dir` (usually `/etc/ssh`) for files named `ssh_host_*_key` containing
-    /// unencrypted private keys in the OpenSSH key format. Keys using algorithms not
-    /// known to this implementation are skipped.
-    pub fn from_dir(dir: &Path, provider: &dyn CryptoProvider) -> Result<Self, ProtoError> {
+    /// Files that cannot be read or parsed are skipped. Only supports
+    /// unencrypted keys for now.
+    pub fn from_files(
+        paths: impl Iterator<Item = impl AsRef<Path>>,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Self, ProtoError> {
         let mut keys = Vec::new();
-        let mut error = None;
-        for entry in dir.read_dir()? {
-            let Ok(entry) = entry else {
-                debug!("skipping unreadable entry in host key directory");
-                continue;
-            };
+        for path in paths {
+            let path = path.as_ref();
 
-            let Ok(ty) = entry.file_type() else {
-                debug!(name = ?entry.file_name(), "skipping unreadable entry in host key directory");
-                continue;
-            };
-
-            if !ty.is_file() {
-                continue;
-            }
-
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-
-            if !name.starts_with("ssh_host_") || !name.ends_with("_key") {
-                continue;
-            }
-
-            let pem = match fs::read_to_string(entry.path()) {
+            // FIXME avoid read_to_string() leaving key material in reallocated buffers
+            let pem = match fs::read_to_string(path) {
                 Ok(pem) => Zeroizing::new(pem),
-                Err(e) => {
-                    debug!(name, error = %e, "skipping unreadable host key file");
-                    error = Some((ProtoError::Io(e), entry.path().to_owned()));
+                Err(error) => {
+                    warn!(?path, %error, "skipping unreadable host key file");
                     continue;
                 }
             };
 
-            let decoded = match OpenSshKeyV1::from_str(&pem) {
-                Ok(keys) => keys,
-                Err(e) => {
-                    debug!(name, "skipping host key file with invalid format");
-                    error = Some((e, entry.path().to_owned()));
-                    continue;
-                }
-            };
-
-            for pkcs8 in decoded.keys {
-                let signing_key = provider.signing_key_from_pkcs8(&pkcs8)?;
-                keys.push((pkcs8, signing_key));
-            }
-
-            if keys.len() >= Self::MAX_KEYS {
-                return Err(ProtoError::TooManyHostKeys);
+            match OpenSshKeyV1::from_str(&pem) {
+                Ok(decoded) => keys.extend(decoded.keys),
+                Err(error) => warn!(?path, %error, "skipping host key file with invalid format"),
             }
         }
 
-        if keys.is_empty() {
-            return Err(match error {
-                Some((error, path)) => {
-                    warn!(?path, %error, "no valid host keys found in directory");
-                    error
-                }
-                None => ProtoError::NoHostKeys,
-            });
-        }
-
-        Ok(Self(keys))
+        Self::new(keys.into_iter(), provider)
     }
 
     /// Create a new set of host keys from the given PKCS#8 private keys

@@ -1,13 +1,12 @@
 use core::net::{Ipv4Addr, SocketAddr};
 use std::{
     env,
-    fs::{self, File},
+    fs::File,
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
 };
 
-use anyhow::Context;
 #[cfg(debug_assertions)]
 use clap::ArgAction;
 use clap::Parser;
@@ -21,6 +20,11 @@ use proto::{
 use tokio::net::TcpListener;
 use tracing::info;
 use zeroize::Zeroizing;
+
+const DEFAULT_HOST_KEY_FILES: &[&str] = &[
+    "/etc/ssh/ssh_host_ed25519_key",
+    "/etc/ssh/ssh_host_ecdsa_key",
+];
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -54,22 +58,11 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
-    let host_keys = {
-        match HostKeys::from_dir(Path::new("/etc/ssh"), provider) {
-            Ok(host_keys) => {
-                info!(len = host_keys.len(), "loaded host keys from /etc/ssh");
-                host_keys
-            }
-            Err(error) => {
-                eprintln!("failed to load host keys from /etc/ssh: {error}");
-                let pkcs8 = Zeroizing::new(fs::read(&args.host_key_file).context(format!(
-                    "failed to read host key from {}",
-                    args.host_key_file
-                ))?);
-                HostKeys::new([pkcs8].into_iter(), provider)?
-            }
-        }
+    let host_keys = match HostKeys::from_files(args.host_key_file.into_iter(), provider) {
+        Ok(host_keys) => host_keys,
+        Err(e) => anyhow::bail!("{e} (try RUST_LOG=warn for more information)"),
     };
+    info!(len = host_keys.len(), "loaded host keys");
 
     let session_bin = match args.session_bin {
         Some(path) => path,
@@ -134,8 +127,8 @@ async fn main() -> anyhow::Result<()> {
 struct Args {
     #[clap(short, long)]
     port: Option<u16>,
-    #[clap(long, default_value = "ssh_host_ed25519_key")]
-    host_key_file: String,
+    #[clap(long, default_values = DEFAULT_HOST_KEY_FILES)]
+    host_key_file: Vec<PathBuf>,
     #[clap(long)]
     generate_host_key: Option<PathBuf>,
     #[clap(long, value_parser = host_key_type, default_value = "ssh-ed25519")]
