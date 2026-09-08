@@ -48,6 +48,7 @@ mod server;
 pub use server::{Config, Server};
 #[cfg(unix)]
 mod unix;
+pub use platform::resume;
 #[cfg(unix)]
 use unix as platform;
 
