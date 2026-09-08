@@ -11,6 +11,7 @@ use anyhow::Context;
 #[cfg(debug_assertions)]
 use clap::ArgAction;
 use clap::Parser;
+#[cfg(target_os = "linux")]
 use listenfd::ListenFd;
 use oxish::{Config, DEFAULT_PROVIDER, DefaultStore, Server};
 use proto::{
@@ -81,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("session binary `{}` not found", session_bin.display());
     }
 
+    #[cfg(target_os = "linux")]
     let listener = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
         (Some(listener), None) => {
             listener.set_nonblocking(true)?;
@@ -93,7 +95,15 @@ async fn main() -> anyhow::Result<()> {
         (Some(_), Some(_)) => anyhow::bail!("LISTEN_FDS and --port conflict with each other"),
         (None, None) => anyhow::bail!("unless LISTEN_FDS is set, --port is required"),
     };
-    info!(addr = %listener.local_addr()?, "listening for connections");
+
+    #[cfg(not(target_os = "linux"))]
+    let listener = match args.port {
+        Some(port) => {
+            let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
+            TcpListener::bind(addr).await?
+        }
+        None => anyhow::bail!("--port is required"),
+    };
 
     #[cfg_attr(not(debug_assertions), expect(unused_mut))]
     let mut config = Config::default();
@@ -102,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
         config.spawn = args.spawn;
     }
 
+    info!(addr = %listener.local_addr()?, "listening for connections");
     Arc::new(
         Server::new(
             DefaultStore::new(provider)?,
