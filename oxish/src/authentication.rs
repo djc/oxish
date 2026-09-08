@@ -335,7 +335,7 @@ impl DefaultStore {
             }
             uid => {
                 debug!(uid, "using single-user store");
-                let data = User::lookup(UserLookup::Id(uid))?;
+                let data = UserLookup::Id(uid).resolve()?;
                 let keys = SystemStore.keys(&data, provider);
                 Box::new(SingleUser(CachedUser { data, keys }))
             }
@@ -348,7 +348,7 @@ struct SystemStore;
 
 impl UserStore for SystemStore {
     fn lookup(&self, name: Username) -> Option<User> {
-        match User::lookup(UserLookup::Name(name)) {
+        match UserLookup::Name(name).resolve() {
             Ok(user) => Some(user),
             Err(error) => {
                 error!(%error, "failed to get user information");
@@ -508,8 +508,63 @@ pub struct User {
     pub shell: PathBuf,
 }
 
-impl User {
-    fn lookup(by: UserLookup) -> Result<Self, Error> {
+/// A validated username
+///
+/// Must be valid UTF-8 without any ASCII control characters or slashes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Username(String);
+
+impl Username {
+    fn nobody() -> Self {
+        Self("nobody".to_owned())
+    }
+}
+
+impl TryFrom<&CStr> for Username {
+    type Error = Error;
+
+    fn try_from(value: &CStr) -> Result<Self, Self::Error> {
+        let Ok(name) = value.to_str() else {
+            return Err(Error::InvalidUsername);
+        };
+
+        Self::try_from(name.to_owned())
+    }
+}
+
+impl TryFrom<String> for Username {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.chars().any(|c| c.is_control() || c == '/') {
+            true => Err(Error::InvalidUsername),
+            false => Ok(Self(value)),
+        }
+    }
+}
+
+impl Deref for Username {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Display for Username {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug)]
+enum UserLookup {
+    Name(Username),
+    Id(u32),
+}
+
+impl UserLookup {
+    fn resolve(self) -> Result<User, Error> {
         /// Upper bound on the buffer used to hold the passwd entry
         const MAX_BUF_LEN: usize = 1_048_576;
 
@@ -519,11 +574,9 @@ impl User {
             n => (n as usize).clamp(1024, MAX_BUF_LEN),
         };
 
-        let c_name = match &by {
-            UserLookup::Name(name) => {
-                Some(CString::new(&**name).map_err(|_| Error::InvalidUsername)?)
-            }
-            UserLookup::Id(_) => None,
+        let c_name = match &self {
+            Self::Name(name) => Some(CString::new(&**name).map_err(|_| Error::InvalidUsername)?),
+            Self::Id(_) => None,
         };
 
         let mut buf = vec![0u8; buf_len];
@@ -536,8 +589,8 @@ impl User {
         // enough); `ERANGE` means the buffer was too small, so grow it and try again,
         // up to a cap (like the `getgrouplist()` loop in `server.rs`).
         let ret = loop {
-            let ret = match (&by, &c_name) {
-                (UserLookup::Name(_), Some(c_name)) => unsafe {
+            let ret = match (&self, &c_name) {
+                (Self::Name(_), Some(c_name)) => unsafe {
                     // SAFETY: `c_name` is a valid null-terminated C string, `pwd` and `result` are
                     // valid for writes, and the buffer pointer and length describe the live
                     // allocation in `buf`.
@@ -549,7 +602,7 @@ impl User {
                         &mut result,
                     )
                 },
-                (UserLookup::Id(id), _) => unsafe {
+                (Self::Id(id), _) => unsafe {
                     // SAFETY: `pwd` and `result` are valid for writes, and the buffer pointer
                     // and length describe the live allocation in `buf`.
                     getpwuid_r(
@@ -560,7 +613,7 @@ impl User {
                         &mut result,
                     )
                 },
-                (UserLookup::Name(_), None) => {
+                (Self::Name(_), None) => {
                     unreachable!("`c_name` is set for lookups by name")
                 }
             };
@@ -572,9 +625,9 @@ impl User {
             buf.resize(Ord::min(buf.len() * 2, MAX_BUF_LEN), 0);
         };
 
-        let name = match by {
-            UserLookup::Name(name) => name,
-            UserLookup::Id(_) => match (ret, result.is_null(), pwd.pw_name.is_null()) {
+        let name = match self {
+            Self::Name(name) => name,
+            Self::Id(_) => match (ret, result.is_null(), pwd.pw_name.is_null()) {
                 // SAFETY: `ret` is 0 and `result` is non-null, so the `pwd.pw_name` points to a
                 // null-terminated C string stored in `buf`, which is still alive.
                 (0, false, false) => Username::try_from(unsafe { CStr::from_ptr(pwd.pw_name) })?,
@@ -637,7 +690,7 @@ impl User {
             bytes => PathBuf::from(OsStr::from_bytes(bytes)),
         };
 
-        Ok(Self {
+        Ok(User {
             name,
             id,
             gid,
@@ -648,61 +701,6 @@ impl User {
 
     const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
     const DEFAULT_SHELL: *const c_char = c"/bin/sh".as_ptr().cast::<c_char>();
-}
-
-/// A validated username
-///
-/// Must be valid UTF-8 without any ASCII control characters or slashes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Username(String);
-
-impl Username {
-    fn nobody() -> Self {
-        Self("nobody".to_owned())
-    }
-}
-
-impl TryFrom<&CStr> for Username {
-    type Error = Error;
-
-    fn try_from(value: &CStr) -> Result<Self, Self::Error> {
-        let Ok(name) = value.to_str() else {
-            return Err(Error::InvalidUsername);
-        };
-
-        Self::try_from(name.to_owned())
-    }
-}
-
-impl TryFrom<String> for Username {
-    type Error = Error;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match value.chars().any(|c| c.is_control() || c == '/') {
-            true => Err(Error::InvalidUsername),
-            false => Ok(Self(value)),
-        }
-    }
-}
-
-impl Deref for Username {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl fmt::Display for Username {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-#[derive(Debug)]
-enum UserLookup {
-    Name(Username),
-    Id(u32),
 }
 
 fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
