@@ -41,14 +41,14 @@ pub use graviola::DEFAULT_PROVIDER;
 compile_error!("no crypto providers enabled -- enable at least one to fix this error");
 
 mod authentication;
-pub use authentication::{AuthError, DefaultStore, User, UserStore, Username};
+pub use authentication::{AuthError, User, UserStore, Username};
 mod session;
 pub use session::Session;
 mod server;
 pub use server::{Config, Server};
 #[cfg(unix)]
 mod unix;
-pub use platform::resume;
+pub use platform::{DefaultStore, resume};
 #[cfg(unix)]
 use unix as platform;
 
