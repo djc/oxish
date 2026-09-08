@@ -325,35 +325,40 @@ impl CliClient {
 
 #[cfg(feature = "aws-lc")]
 #[tokio::test]
-async fn host_keys_from_dir_aws_lc() {
-    host_keys_from_dir(aws_lc::DEFAULT_PROVIDER).await.unwrap();
-}
-
-#[cfg(feature = "graviola")]
-#[tokio::test]
-async fn host_keys_from_dir_graviola() {
-    host_keys_from_dir(graviola::DEFAULT_PROVIDER)
+async fn host_keys_from_files_aws_lc() {
+    host_keys_from_files(aws_lc::DEFAULT_PROVIDER)
         .await
         .unwrap();
 }
 
-async fn host_keys_from_dir(provider: &'static dyn CryptoProvider) -> anyhow::Result<()> {
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn host_keys_from_files_graviola() {
+    host_keys_from_files(graviola::DEFAULT_PROVIDER)
+        .await
+        .unwrap();
+}
+
+async fn host_keys_from_files(provider: &'static dyn CryptoProvider) -> anyhow::Result<()> {
     let dir = TempDir::new()?;
+    let mut paths = Vec::new();
     for key_type in ["ed25519", "ecdsa", "rsa"] {
+        let path = dir.path().join(format!("ssh_host_{key_type}_key"));
         let status = Command::new("ssh-keygen")
             .arg("-q")
             .args(["-t", key_type])
             .args(["-N", ""])
             .args(["-C", "oxish-e2e"])
             .arg("-f")
-            .arg(dir.path().join(format!("ssh_host_{key_type}_key")))
+            .arg(&path)
             .status()
             .await
             .context("failed to run ssh-keygen")?;
         assert!(status.success(), "ssh-keygen failed");
+        paths.push(path);
     }
 
-    let host_keys = HostKeys::from_dir(dir.path(), provider)?;
+    let host_keys = HostKeys::from_files(paths.iter(), provider)?;
     let mut algorithms = Vec::new();
     for algorithm in host_keys.algorithms() {
         algorithms.push(algorithm);
