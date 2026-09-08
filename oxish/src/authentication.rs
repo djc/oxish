@@ -336,7 +336,7 @@ impl DefaultStore {
             uid => {
                 debug!(uid, "using single-user store");
                 let data = User::lookup(UserLookup::Id(uid))?;
-                let keys = data.authorized_keys(provider);
+                let keys = SystemStore.keys(&data, provider);
                 Box::new(SingleUser(CachedUser { data, keys }))
             }
         })
@@ -358,7 +358,82 @@ impl UserStore for SystemStore {
     }
 
     fn keys(&self, user: &User, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
-        user.authorized_keys(provider)
+        let home_dir = &user.home_dir;
+        let home = match File::open(home_dir) {
+            Ok(file) => file,
+            Err(error) => {
+                warn!(%error, ?home_dir, "failed to open home directory");
+                return Vec::new();
+            }
+        };
+
+        match check_permissions(&home, user.id, "home directory") {
+            ControlFlow::Continue(()) => {}
+            ControlFlow::Break(()) => {
+                warn!(?home_dir, "bad permissions on home directory");
+                return Vec::new();
+            }
+        };
+
+        let result = openat(
+            &home,
+            ".ssh",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        let ssh_dir = match result {
+            Ok(fd) => File::from(fd),
+            Err(error) => {
+                warn!(%error, ?home_dir, "failed to open .ssh directory");
+                return Vec::new();
+            }
+        };
+
+        match check_permissions(&ssh_dir, user.id, ".ssh directory") {
+            ControlFlow::Continue(()) => {}
+            ControlFlow::Break(()) => {
+                warn!(?home_dir, "bad permissions on .ssh directory");
+                return Vec::new();
+            }
+        };
+
+        let result = openat(
+            &ssh_dir,
+            "authorized_keys",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        let mut key_file = match result {
+            Ok(fd) => File::from(fd),
+            Err(error) => {
+                warn!(%error, ?home_dir, "failed to open authorized keys file");
+                return Vec::new();
+            }
+        };
+
+        match check_permissions(&key_file, user.id, "authorized keys file") {
+            ControlFlow::Continue(()) => {}
+            ControlFlow::Break(()) => {
+                warn!(?home_dir, "bad permissions on authorized keys file");
+                return Vec::new();
+            }
+        };
+
+        let mut contents = String::new();
+        if let Err(error) = key_file.read_to_string(&mut contents) {
+            warn!(%error, ?home_dir, "failed to read authorized keys file");
+            return Vec::new();
+        };
+
+        let mut keys = Vec::new();
+        for (line, key) in contents.lines().enumerate() {
+            match AuthorizedKey::from_str(key, provider) {
+                Some(key) => keys.push(key),
+                None => debug!(line = line + 1, "no valid authorized key found on line"),
+            }
+        }
+
+        keys
     }
 
     fn drop_privileges(&self) -> bool {
@@ -569,92 +644,6 @@ impl User {
             home_dir,
             shell,
         })
-    }
-
-    /// Read and parse the `authorized_keys` file for a user
-    ///
-    /// This is pretty finicky because we need to check that
-    ///
-    /// - None of the path components have group or other write permissions
-    /// - Each of the path components are owned by root or the target user
-    /// - Avoid TOCTOU issues when opening each path component
-    fn authorized_keys(&self, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
-        let home_dir = &self.home_dir;
-        let home = match File::open(home_dir) {
-            Ok(file) => file,
-            Err(error) => {
-                warn!(%error, ?home_dir, "failed to open home directory");
-                return Vec::new();
-            }
-        };
-
-        match check_permissions(&home, self.id, "home directory") {
-            ControlFlow::Continue(()) => {}
-            ControlFlow::Break(()) => {
-                warn!(?home_dir, "bad permissions on home directory");
-                return Vec::new();
-            }
-        };
-
-        let result = openat(
-            &home,
-            ".ssh",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        );
-        let ssh_dir = match result {
-            Ok(fd) => File::from(fd),
-            Err(error) => {
-                warn!(%error, ?home_dir, "failed to open .ssh directory");
-                return Vec::new();
-            }
-        };
-
-        match check_permissions(&ssh_dir, self.id, ".ssh directory") {
-            ControlFlow::Continue(()) => {}
-            ControlFlow::Break(()) => {
-                warn!(?home_dir, "bad permissions on .ssh directory");
-                return Vec::new();
-            }
-        };
-
-        let result = openat(
-            &ssh_dir,
-            "authorized_keys",
-            OFlags::RDONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-        );
-        let mut key_file = match result {
-            Ok(fd) => File::from(fd),
-            Err(error) => {
-                warn!(%error, ?home_dir, "failed to open authorized keys file");
-                return Vec::new();
-            }
-        };
-
-        match check_permissions(&key_file, self.id, "authorized keys file") {
-            ControlFlow::Continue(()) => {}
-            ControlFlow::Break(()) => {
-                warn!(?home_dir, "bad permissions on authorized keys file");
-                return Vec::new();
-            }
-        };
-
-        let mut contents = String::new();
-        if let Err(error) = key_file.read_to_string(&mut contents) {
-            warn!(%error, ?home_dir, "failed to read authorized keys file");
-            return Vec::new();
-        };
-
-        let mut keys = Vec::new();
-        for (line, key) in contents.lines().enumerate() {
-            match AuthorizedKey::from_str(key, provider) {
-                Some(key) => keys.push(key),
-                None => debug!(line = line + 1, "no valid authorized key found on line"),
-            }
-        }
-
-        keys
     }
 
     const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
