@@ -5,6 +5,7 @@ use tracing::debug;
 
 use crate::{
     Decode, Decoded, Encode, IncomingPacket, MessageType, Pretty, ProtoError, PublicKeyAlgorithm,
+    auth::KeyOptions,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyDerivation,
         KeySourceSide, SharedSecret, SigningKey,
@@ -210,6 +211,40 @@ impl Decode<'_> for Option<StrictKeyExchange> {
         Ok(Decoded {
             value: value.then_some(StrictKeyExchange(())),
             next,
+        })
+    }
+}
+
+impl Encode for KeyOptions {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        if let KeyOptions {
+            command: Some(force_command),
+        } = self
+        {
+            true.encode(buf);
+            force_command.as_bytes().encode(buf);
+        } else {
+            false.encode(buf);
+        }
+    }
+}
+
+impl Decode<'_> for KeyOptions {
+    fn decode(buf: &'_ [u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let mut options = KeyOptions::default();
+        let Decoded { value, mut next } = bool::decode(buf)?;
+        if value {
+            let Decoded {
+                value: forced_command,
+                next: rest,
+            } = <&[u8]>::decode(next)?;
+
+            options.command = Some(str::from_utf8(forced_command).unwrap().to_owned());
+            next = rest;
+        }
+        Ok(Decoded {
+            value: options,
+            next: next,
         })
     }
 }

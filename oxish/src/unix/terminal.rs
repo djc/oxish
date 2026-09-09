@@ -11,7 +11,10 @@ use std::{
 };
 
 use bitflags::Flags;
-use proto::channels::{Mode, PtyReq, WindowChange};
+use proto::{
+    auth::KeyOptions,
+    channels::{Mode, PtyReq, WindowChange},
+};
 use rustix::{
     fs::OFlags,
     io::{read, write},
@@ -35,7 +38,11 @@ pub(crate) struct Terminal {
 }
 
 impl Terminal {
-    pub(crate) fn spawn(req: &PtyReq<'_>, env: &[(String, String)]) -> io::Result<Self> {
+    pub(crate) fn spawn(
+        req: &PtyReq<'_>,
+        env: &[(String, String)],
+        option: &KeyOptions,
+    ) -> io::Result<Self> {
         debug!(?req, ?env, "spawning new session with PTY");
         let controller = pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
         pty::grantpt(&controller)?;
@@ -61,7 +68,14 @@ impl Terminal {
 
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let mut cmd = Command::new(&shell);
-        cmd.arg("-l");
+        if let KeyOptions {
+            command: Some(ref force_command),
+        } = *option
+        {
+            cmd.arg("-c").arg(force_command.as_str());
+        } else {
+            cmd.arg("-l");
+        }
 
         for (k, v) in env {
             cmd.env(k, v);

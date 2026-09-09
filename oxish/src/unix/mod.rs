@@ -15,8 +15,10 @@ use std::{
 
 use libc::{_SC_GETPW_R_SIZE_MAX, ERANGE, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
-    Decoded, Encode, ReadState, ServerHostKey, SessionHostKey, WriteState, auth::AuthorizedKey,
-    crypto::CryptoProvider, key_exchange::Rekey,
+    Decoded, Encode, ReadState, ServerHostKey, SessionHostKey, WriteState,
+    auth::{AuthorizedKey, KeyOptions},
+    crypto::CryptoProvider,
+    key_exchange::Rekey,
 };
 use rustix::{
     fs::{Mode, OFlags, openat},
@@ -291,6 +293,7 @@ pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream
         read,
         write,
         read_buf,
+        options,
     } = state;
 
     let opener = provider.opening_key(read.counter, &read.source)?;
@@ -320,6 +323,7 @@ pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream
         rekey: Rekey::new(session_id, strict_kx, identities, host_key),
         channels: Channels::default(),
         post_quantum_kx,
+        options,
     })
 }
 
@@ -585,6 +589,7 @@ impl UserLookup {
             gid,
             home_dir,
             shell,
+            options: KeyOptions::default(),
         })
     }
 

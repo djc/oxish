@@ -115,7 +115,7 @@ impl Server {
         drop(authenticating);
 
         if !self.config.spawn {
-            let session = Session::new(kx, conn, self.provider)?;
+            let session = Session::new(kx, conn, self.provider, user.options.clone())?;
             return session.run().await.context("session failed");
         }
 
@@ -156,6 +156,7 @@ impl Server {
                 sequence_number: write.sequence_number,
             },
             read_buf: mem::take(&mut read.buf),
+            options: user.options.clone(),
         };
 
         let mut child = spawn(state, stream, user, self)
@@ -185,6 +186,6 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { spawn: true }
+        Self { spawn: false }
     }
 }

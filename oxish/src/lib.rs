@@ -9,6 +9,7 @@ use anyhow::Context as _;
 use proto::{
     Completion, Decode, Decoded, Encode, HostKeys, Identification, IdentificationError, Ignore,
     IncomingPacket, PROTOCOL, ProtoError, ReadState, ServerHostKey, SessionHostKey, WriteState,
+    auth::KeyOptions,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyLengths,
         KeySourceSide,
@@ -239,6 +240,7 @@ struct SessionState<H> {
     write: SideState,
     /// Residual inbound bytes already drained from the socket (pipelined packets)
     read_buf: Vec<u8>,
+    options: KeyOptions,
 }
 
 impl Encode for SessionState<ServerHostKey<'_>> {
@@ -253,6 +255,7 @@ impl Encode for SessionState<ServerHostKey<'_>> {
             read,
             write,
             read_buf,
+            options,
         } = self;
 
         addr.to_string().as_bytes().encode(buf);
@@ -264,6 +267,7 @@ impl Encode for SessionState<ServerHostKey<'_>> {
         read.encode(buf);
         write.encode(buf);
         read_buf.encode(buf);
+        options.encode(buf);
     }
 }
 
@@ -313,6 +317,11 @@ impl SessionState<SessionHostKey> {
             next,
         } = <&[u8]>::decode(next)?;
 
+        let Decoded {
+            value: options,
+            next,
+        } = KeyOptions::decode(next)?;
+
         Ok(Decoded {
             value: Self {
                 addr,
@@ -324,6 +333,7 @@ impl SessionState<SessionHostKey> {
                 read,
                 write,
                 read_buf: read_buf.to_vec(),
+                options,
             },
             next,
         })

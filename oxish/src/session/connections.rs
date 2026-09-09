@@ -12,6 +12,7 @@ use std::{
 
 use proto::{
     IncomingPacket, MAX_PACKET_LEN, MessageType, ProtoError, WriteState,
+    auth::KeyOptions,
     channels::{
         ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
         ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
@@ -69,6 +70,7 @@ impl Channels {
         request: ChannelRequest<'_>,
         write: &mut WriteState,
         banner: Option<&str>,
+        options: &KeyOptions,
     ) -> Result<(), Error> {
         let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
             return Err(ProtoError::InvalidPacket("channel request for unknown channel ID").into());
@@ -103,6 +105,7 @@ impl Channels {
                 channel.terminal = Some(TerminalState::Running(Terminal::spawn(
                     &pty_req,
                     &channel.env,
+                    options,
                 )?));
 
                 channel.receive_window = INITIAL_WINDOW_SIZE;
