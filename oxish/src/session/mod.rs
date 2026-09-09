@@ -25,7 +25,7 @@ pub struct Session<T> {
     pub(crate) rekey: Rekey,
     pub(crate) channels: Channels,
     pub(crate) post_quantum_kx: bool,
-    options: KeyOptions,
+    pub(crate) options: KeyOptions,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
