@@ -115,7 +115,7 @@ impl Server {
         drop(authenticating);
 
         if !self.config.spawn {
-            let session = Session::new(kx, conn, self.provider)?;
+            let mut session = Session::new(kx, conn, self.provider)?;
             return session.run().await.context("session failed");
         }
 
