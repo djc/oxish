@@ -11,10 +11,9 @@ use proto::{
     IncomingPacket, PROTOCOL, ProtoError, ReadState, ServerHostKey, SessionHostKey, WriteState,
     crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, KeyLengths, KeySourceSide},
     key_exchange::{
-        EcdhKeyExchangeInit, Identities, KeyExchange, KeyExchangeOutput, KeySourceSet, NewKeys,
-        StrictKeyExchange,
+        Established, Identities, InitialKeyExchangeState, KeyExchangeOutput, StrictKeyExchange,
     },
-    named::{EncryptionAlgorithm, ExtensionId},
+    named::EncryptionAlgorithm,
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -69,68 +68,31 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
     ) -> anyhow::Result<KeyExchangeOutput<'h>> {
         let (exchange, identities) = self.identify().await.context("identification failed")?;
 
-        // Receive and send key exchange init packets
+        // Drive the key exchange to completion, one packet at a time.
+        let mut kx = InitialKeyExchangeState::new(exchange, identities, host_keys);
+        loop {
+            let packet = receive(&mut self.stream, &mut self.read).await?;
+            let Some(output) = kx.handle(packet, &mut self.write, provider)? else {
+                self.flush().await?;
+                continue;
+            };
 
-        let packet = receive(&mut self.stream, &mut self.read).await?;
-        let (mut kx, strict_kx, ext_info) = KeyExchange::start(
-            packet,
-            exchange,
-            host_keys.algorithms().collect(),
-            [ExtensionId::StrictKexServer].into_iter(),
-            provider,
-        )?;
+            let Established {
+                update,
+                output,
+                ext_info,
+            } = output;
+            update.apply(&mut self.write, &mut self.read)?;
 
-        self.write.encode_kx(&kx.local, Some(&mut kx.exchange))?;
-        self.flush().await?;
+            // Extension info and the closing `SSH_MSG_IGNORE` are sent under the new keys.
+            if let Some(ext_info) = &ext_info {
+                self.write.encode(ext_info)?;
+            }
 
-        // Perform ECDH key exchange
-
-        let packet = receive(&mut self.stream, &mut self.read).await?;
-        let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
-        let post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
-        let (host_key, key_exchange_reply, session_id, keys) = kx
-            .complete(ecdh_key_exchange_init, host_keys, provider)
-            .context("key exchange failed")?;
-
-        self.write.encode(&key_exchange_reply)?;
-        self.flush().await?;
-        self.update_keys(&keys, strict_kx.as_ref(), provider)
-            .await?;
-
-        if let Some(ext_info) = ext_info {
-            self.write.encode(&ext_info)?;
+            self.write.encode(&Ignore::default())?;
+            self.flush().await?;
+            return Ok(output);
         }
-
-        self.write.encode(&Ignore::default())?;
-        self.flush().await?;
-        Ok(KeyExchangeOutput {
-            identities,
-            host_key,
-            strict_kx,
-            session_id,
-            keys,
-            post_quantum_kx,
-        })
-    }
-
-    async fn update_keys(
-        &mut self,
-        keys: &KeySourceSet,
-        strict_kx: Option<&StrictKeyExchange>,
-        provider: &dyn CryptoProvider,
-    ) -> Result<(), Error> {
-        let packet = receive(&mut self.stream, &mut self.read).await?;
-        NewKeys::try_from(packet)?;
-
-        // Under strict key exchange the sequence numbers are reset to zero once NEWKEYS crosses in
-        // each direction, so the first encrypted packet after NEWKEYS uses sequence number zero.
-        self.read.reset_sequence_number(strict_kx);
-        self.write.encode(&NewKeys)?;
-        self.write.reset_sequence_number(strict_kx);
-
-        self.read.opener = Some(provider.opening_key(0, &keys.client_to_server)?);
-        self.write.sealer = Some(provider.sealing_key(0, &keys.server_to_client)?);
-        Ok(())
     }
 
     async fn identify(&mut self) -> Result<(HandshakeBuffer, Identities), Error> {

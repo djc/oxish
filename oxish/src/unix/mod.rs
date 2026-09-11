@@ -16,7 +16,7 @@ use std::{
 use libc::{_SC_GETPW_R_SIZE_MAX, ERANGE, getpwnam_r, getpwuid_r, sysconf};
 use proto::{
     Decoded, Encode, ReadState, ServerHostKey, SessionHostKey, WriteState, auth::AuthorizedKey,
-    crypto::CryptoProvider, key_exchange::Rekey,
+    crypto::CryptoProvider, key_exchange::RekeyState,
 };
 use rustix::{
     fs::{Mode, OFlags, openat},
@@ -317,8 +317,7 @@ pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream
             },
             write: write_state,
         },
-        rekey: Rekey::new(session_id, strict_kx, identities, host_key),
-        kx: None,
+        kx: RekeyState::new(session_id, strict_kx, identities, host_key),
         channels: Channels::default(),
         post_quantum_kx,
     })
