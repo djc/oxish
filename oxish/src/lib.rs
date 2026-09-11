@@ -9,10 +9,7 @@ use anyhow::Context as _;
 use proto::{
     Completion, Decode, Decoded, Encode, HostKeys, Identification, IdentificationError, Ignore,
     IncomingPacket, PROTOCOL, ProtoError, ReadState, ServerHostKey, SessionHostKey, WriteState,
-    crypto::{
-        CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyLengths,
-        KeySourceSide,
-    },
+    crypto::{CryptoError, CryptoProvider, Digest, HandshakeBuffer, KeyLengths, KeySourceSide},
     key_exchange::{
         EcdhKeyExchangeInit, Identities, KeyExchange, KeyExchangeOutput, KeySourceSet, NewKeys,
         StrictKeyExchange,
@@ -21,7 +18,7 @@ use proto::{
 };
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, trace, warn};
 
 /// Default cryptography provider, as determined based on the enabled features
 #[cfg(any(feature = "aws-lc", feature = "aws-lc-fips"))]
@@ -83,8 +80,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             provider,
         )?;
 
-        self.send_handshake(&kx.local, Some(&mut kx.exchange))
-            .await?;
+        self.write.encode_kx(&kx.local, Some(&mut kx.exchange))?;
+        self.flush().await?;
 
         // Perform ECDH key exchange
 
@@ -95,15 +92,17 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             .complete(ecdh_key_exchange_init, host_keys, provider)
             .context("key exchange failed")?;
 
-        self.send(&key_exchange_reply).await?;
+        self.write.encode(&key_exchange_reply)?;
+        self.flush().await?;
         self.update_keys(&keys, strict_kx.as_ref(), provider)
             .await?;
 
         if let Some(ext_info) = ext_info {
-            self.send(&ext_info).await?;
+            self.write.encode(&ext_info)?;
         }
 
-        self.send(&Ignore::default()).await?;
+        self.write.encode(&Ignore::default())?;
+        self.flush().await?;
         Ok(KeyExchangeOutput {
             identities,
             host_key,
@@ -126,8 +125,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // Under strict key exchange the sequence numbers are reset to zero once NEWKEYS crosses in
         // each direction, so the first encrypted packet after NEWKEYS uses sequence number zero.
         self.read.reset_sequence_number(strict_kx);
-
-        self.send(&NewKeys).await?;
+        self.write.encode(&NewKeys)?;
         self.write.reset_sequence_number(strict_kx);
 
         self.read.opener = Some(provider.opening_key(0, &keys.client_to_server)?);
@@ -191,24 +189,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         // The ident was written to the stream directly, so drop it from the outgoing buffer
         self.write.clear();
         Ok((exchange, identities))
-    }
-
-    async fn send(&mut self, payload: &(impl Encode + fmt::Debug)) -> Result<(), Error> {
-        self.send_handshake(payload, None).await
-    }
-
-    async fn send_handshake(
-        &mut self,
-        payload: &(impl Encode + fmt::Debug),
-        exchange_hash: Option<&mut HandshakeHash>,
-    ) -> Result<(), Error> {
-        self.write
-            .encode_kx(payload, exchange_hash)
-            .inspect_err(|error| {
-                error!(%error, "failed to encode packet");
-            })?;
-
-        self.flush().await
     }
 
     async fn flush(&mut self) -> Result<(), Error> {

@@ -74,7 +74,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         (None, MessageType::KeyExchangeInit) => {
                             debug!("starting client-initiated rekey");
                             let mut kx = self.rekey.start(packet, self.provider)?;
-                            self.conn.send_handshake(&kx.local, Some(&mut kx.exchange)).await?;
+                            self.conn.write.encode_kx(&kx.local, Some(&mut kx.exchange))?;
+                            self.conn.flush().await?;
                             self.kx = Some(kx);
                             continue;
                         }
@@ -88,9 +89,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                                 self.provider,
                             )?;
 
-                            self.conn.send(&key_exchange_reply).await?;
+                            self.conn.write.encode(&key_exchange_reply)?;
+                            self.conn.flush().await?;
                             self.conn.update_keys(&keys, self.rekey.strict_key_exchange(), self.provider)
                                 .await?;
+                            self.conn.flush().await?;
 
                             debug!("completed client-initiated rekey");
                             self.post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
@@ -104,7 +107,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                             let request = GlobalRequest::try_from(packet)?;
                             debug!(name = %String::from_utf8_lossy(request.name), "refusing unsupported global request");
                             if request.want_reply {
-                                self.conn.send(&MessageType::RequestFailure).await?;
+                                self.conn.write.encode(&MessageType::RequestFailure)?;
+                                self.conn.flush().await?;
                             }
                             continue;
                         }

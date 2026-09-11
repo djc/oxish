@@ -79,7 +79,8 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
         ),
     };
 
-    let _ = timeout(Duration::from_secs(1), conn.send(&disconnect)).await;
+    conn.write.encode(&disconnect)?;
+    let _ = timeout(Duration::from_secs(1), conn.flush()).await;
     Err(error.into())
 }
 
