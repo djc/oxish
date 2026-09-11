@@ -21,11 +21,6 @@ use tokio::net::TcpListener;
 use tracing::info;
 use zeroize::Zeroizing;
 
-const DEFAULT_HOST_KEY_FILES: &[&str] = &[
-    "/etc/ssh/ssh_host_ed25519_key",
-    "/etc/ssh/ssh_host_ecdsa_key",
-];
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -147,3 +142,8 @@ fn host_key_type(name: &str) -> Result<PublicKeyAlgorithm<'static>, String> {
         algorithm => Ok(algorithm.to_owned()),
     }
 }
+
+const DEFAULT_HOST_KEY_FILES: &[&str] = &[
+    "/etc/ssh/ssh_host_ed25519_key",
+    "/etc/ssh/ssh_host_ecdsa_key",
+];
