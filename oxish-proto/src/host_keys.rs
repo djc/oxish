@@ -98,12 +98,12 @@ impl HostKeys {
     ) -> Result<Self, ProtoError> {
         let mut keys = Vec::new();
         for pkcs8 in pkcs8 {
+            let signing_key = provider.signing_key_from_pkcs8(&pkcs8)?;
+            keys.push((pkcs8, signing_key));
+
             if keys.len() >= Self::MAX_KEYS {
                 return Err(ProtoError::TooManyHostKeys);
             }
-
-            let signing_key = provider.signing_key_from_pkcs8(&pkcs8)?;
-            keys.push((pkcs8, signing_key));
         }
 
         if keys.is_empty() {
