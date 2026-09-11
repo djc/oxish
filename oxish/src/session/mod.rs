@@ -1,4 +1,5 @@
 use core::str::{self, FromStr};
+use std::ops::ControlFlow;
 
 use proto::{
     Disconnect, GlobalRequest, MessageType, Pretty, SessionHostKey,
@@ -50,80 +51,128 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
     ///
     /// This function never returns unless the connection is closed or an error occurs.
     #[instrument(name = "connection", skip(self), fields(addr = %self.conn.addr))]
-    pub async fn run(mut self) -> Result<(), Error> {
+    pub async fn run(&mut self) -> Result<(), Error> {
         loop {
-            tokio::select! {
-                result = receive(&mut self.conn.stream, &mut self.conn.read) => {
-                    let packet = result?;
-                    let kx = packet.message_type == MessageType::KeyExchangeInit
-                        || self.kx.in_progress();
-                    match packet.message_type {
-                        MessageType::Ignore | MessageType::Debug => {
-                            trace!(?packet.message_type, "ignoring transport-layer message");
-                            continue;
-                        }
-                        MessageType::Disconnect => {
-                            match Disconnect::try_from(packet) {
-                                Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
-                                Err(error) => warn!(%error, "failed to read disconnect packet"),
-                            }
-                            return Ok(());
-                        }
-                        _ if kx => {
-                            if let Some(rekeyed) = self.kx.handle(packet, &mut self.conn.write, self.provider)? {
-                                let Rekeyed { update, post_quantum_kx } = rekeyed;
-                                update.apply(&mut self.conn.write, &mut self.conn.read)?;
-                                self.post_quantum_kx = post_quantum_kx;
-                                debug!("completed client-initiated rekey");
-                            }
-                            self.conn.flush().await?;
-                            continue;
-                        }
-                        MessageType::GlobalRequest => {
-                            let request = GlobalRequest::try_from(packet)?;
-                            debug!(name = %String::from_utf8_lossy(request.name), "refusing unsupported global request");
-                            if request.want_reply {
-                                self.conn.write.encode(&MessageType::RequestFailure)?;
-                                self.conn.flush().await?;
-                            }
-                            continue;
-                        }
-                        MessageType::RequestSuccess | MessageType::RequestFailure => {
-                            trace!(?packet.message_type, "ignoring unexpected global request reply");
-                            continue;
-                        }
-                        _ => {}
-                    }
+            let mut receive = self.receive();
+        }
+    }
 
-                    let channel_message = IncomingChannelMessage::try_from(packet)?;
-                    debug!(message = %Pretty(&channel_message), "handling channel message");
-                    match channel_message {
-                        IncomingChannelMessage::Open(open) => self.channels.open(open, &mut self.conn.write),
-                        IncomingChannelMessage::Request(request) => {
-                            let banner = banner(&request, self.kx.client_identity(), self.post_quantum_kx);
-                            self.channels.request(request, &mut self.conn.write, banner.as_deref())
-                        }
-                        IncomingChannelMessage::Data(data) => match self.channels.data(&data, &mut self.conn.write) {
-                            Ok(Some((session, data))) => match session.write(data).await {
-                                Ok(_) => Ok(()),
-                                Err(error) => Err(error.into()),
-                            },
-                            Ok(None) => Ok(()),
-                            Err(error) => Err(error.into()),
-                        }
-                        IncomingChannelMessage::WindowAdjust(adjust) => self.channels.adjust_window(&adjust).map_err(Into::into),
-                        IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
-                        IncomingChannelMessage::Close(close) => self.channels.close(&close, &mut self.conn.write),
-                    }?;
+    async fn receive(&mut self) -> ControlFlow<Result<(), Error>> {
+        let packet = match receive(&mut self.conn.stream, &mut self.conn.read).await {
+            Ok(packet) => packet,
+            Err(error) => return ControlFlow::Break(Err(error.into())),
+        };
 
-                    self.conn.flush().await?;
+        let kx = packet.message_type == MessageType::KeyExchangeInit || self.kx.in_progress();
+        match packet.message_type {
+            MessageType::Ignore | MessageType::Debug => {
+                trace!(?packet.message_type, "ignoring transport-layer message");
+                return ControlFlow::Continue(());
+            }
+            MessageType::Disconnect => {
+                match Disconnect::try_from(packet) {
+                    Ok(disconnect) => info!(
+                        ?disconnect,
+                        "received disconnect packet, closing connection"
+                    ),
+                    Err(error) => warn!(%error, "failed to read disconnect packet"),
                 }
-                result = TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write), if !self.kx.in_progress() => {
-                    result?;
-                    self.conn.flush().await?;
+                return ControlFlow::Break(Ok(()));
+            }
+            _ if kx => {
+                let rekeyed = match self.kx.handle(packet, &mut self.conn.write, self.provider) {
+                    Ok(rekeyed) => rekeyed,
+                    Err(error) => {
+                        return ControlFlow::Break(Err(error.into()));
+                    }
+                };
+
+                let Some(rekeyed) = rekeyed else {
+                    return ControlFlow::Continue(());
+                };
+
+                let Rekeyed {
+                    update,
+                    post_quantum_kx,
+                } = rekeyed;
+
+                if let Err(error) = update.apply(&mut self.conn.write, &mut self.conn.read) {
+                    return ControlFlow::Break(Err(error.into()));
+                }
+
+                self.post_quantum_kx = post_quantum_kx;
+                debug!("completed client-initiated rekey");
+                return ControlFlow::Continue(());
+            }
+            MessageType::GlobalRequest => {
+                let request = match GlobalRequest::try_from(packet) {
+                    Ok(request) => request,
+                    Err(error) => return ControlFlow::Break(Err(error.into())),
+                };
+
+                debug!(name = %String::from_utf8_lossy(request.name), "refusing unsupported global request");
+                if !request.want_reply {
+                    return ControlFlow::Continue(());
+                }
+
+                if let Err(error) = self.conn.write.encode(&MessageType::RequestFailure) {
+                    return ControlFlow::Break(Err(error.into()));
+                }
+
+                return ControlFlow::Continue(());
+            }
+            MessageType::RequestSuccess | MessageType::RequestFailure => {
+                trace!(?packet.message_type, "ignoring unexpected global request reply");
+                return ControlFlow::Continue(());
+            }
+            _ => {}
+        }
+
+        let channel_message = match IncomingChannelMessage::try_from(packet) {
+            Ok(message) => message,
+            Err(error) => return ControlFlow::Break(Err(error.into())),
+        };
+
+        debug!(message = %Pretty(&channel_message), "handling channel message");
+        let result = match channel_message {
+            IncomingChannelMessage::Open(open) => self.channels.open(open, &mut self.conn.write),
+            IncomingChannelMessage::Request(request) => {
+                let banner = banner(&request, self.kx.client_identity(), self.post_quantum_kx);
+                self.channels
+                    .request(request, &mut self.conn.write, banner.as_deref())
+            }
+            IncomingChannelMessage::Data(data) => {
+                match self.channels.data(&data, &mut self.conn.write) {
+                    Ok(Some((session, data))) => match session.write(data).await {
+                        Ok(_) => Ok(()),
+                        Err(error) => Err(error.into()),
+                    },
+                    Ok(None) => Ok(()),
+                    Err(error) => Err(error.into()),
                 }
             }
+            IncomingChannelMessage::WindowAdjust(adjust) => {
+                self.channels.adjust_window(&adjust).map_err(Into::into)
+            }
+            IncomingChannelMessage::Eof(eof) => self.channels.eof(&eof).map_err(Into::into),
+            IncomingChannelMessage::Close(close) => {
+                self.channels.close(&close, &mut self.conn.write)
+            }
+        };
+
+        match result {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(Err(error)),
         }
+    }
+
+    async fn send(&mut self) -> Result<(), Error> {
+        if self.kx.in_progress() {
+            return Ok(());
+        }
+
+        TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write).await?;
+        self.conn.flush().await
     }
 }
 
