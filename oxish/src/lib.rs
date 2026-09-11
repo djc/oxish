@@ -45,9 +45,13 @@ mod server;
 pub use server::{Config, Server};
 #[cfg(unix)]
 mod unix;
+#[cfg(windows)]
+mod windows;
 pub use platform::{DefaultStore, resume};
 #[cfg(unix)]
 use unix as platform;
+#[cfg(windows)]
+use windows as platform;
 
 #[cfg(test)]
 mod tests;

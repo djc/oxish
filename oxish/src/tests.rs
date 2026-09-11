@@ -156,7 +156,7 @@ async fn rekey_graviola() {
 
     let (status, _stdout, stderr) = client
         .run(
-            b"sleep 10\necho OXISH-$((6*7))\nexit\n",
+            IDLE_COMMAND,
             // In the rekey scenario, keep the session open long enough for several rekeys before the
             // sentinel; it only arrives if the session survived them.
             Duration::from_secs(30),
@@ -260,13 +260,13 @@ impl CliClient {
     fn new(addr: SocketAddr, key_path: &Path) -> Self {
         let mut cmd = Command::new("ssh");
         cmd.arg("-tt") // force PTY allocation even though our stdin is a pipe, not a terminal
-            .args(["-F", "/dev/null"]) // ignore the invoking user's ssh_config
+            .args(["-F", NULL_DEVICE]) // ignore the invoking user's ssh_config
             .args(["-p", &addr.port().to_string()]) // port to connect to
             .arg("-i") // identity (private key) file to authenticate with
             .arg(key_path)
             .args(["-o", "StrictHostKeyChecking=no"]) // ignore the host key
-            .args(["-o", "UserKnownHostsFile=/dev/null"])
-            .args(["-o", "GlobalKnownHostsFile=/dev/null"]) // ignore system known hosts
+            .args(["-o", &format!("UserKnownHostsFile={NULL_DEVICE}")])
+            .args(["-o", &format!("GlobalKnownHostsFile={NULL_DEVICE}")]) // ignore system known hosts
             .args(["-o", "IdentitiesOnly=yes"]) // don't offer agent keys
             .args(["-o", "LogLevel=DEBUG3"]); // verbose client diagnostics, captured on stderr for failure triage
 
@@ -342,11 +342,14 @@ async fn host_keys_from_files_graviola() {
 async fn host_keys_from_files(provider: &'static dyn CryptoProvider) -> anyhow::Result<()> {
     let dir = TempDir::new()?;
     let mut paths = Vec::new();
-    for key_type in ["ed25519", "ecdsa", "rsa"] {
+    // ssh-keygen's default size is not the same everywhere: the Windows build makes an ECDSA key
+    // over nistp384, which is not one of the two algorithms asserted below, so it is spelled out.
+    for (key_type, bits) in [("ed25519", "256"), ("ecdsa", "256"), ("rsa", "2048")] {
         let path = dir.path().join(format!("ssh_host_{key_type}_key"));
         let status = Command::new("ssh-keygen")
             .arg("-q")
             .args(["-t", key_type])
+            .args(["-b", bits])
             .args(["-N", ""])
             .args(["-C", "oxish-e2e"])
             .arg("-f")
@@ -542,7 +545,9 @@ async fn session_binary() -> anyhow::Result<PathBuf> {
     let status = command.status().await?;
     assert!(status.success(), "failed to build oxish-session");
 
-    let bin = profile_dir.join("oxish-session");
+    let bin = profile_dir
+        .join("oxish-session")
+        .with_extension(env::consts::EXE_EXTENSION);
     assert!(
         bin.is_file(),
         "oxish-session binary not found at `{}`",
@@ -563,6 +568,27 @@ fn subscribe() {
 }
 
 const USER: &str = "oxish-e2e";
+
+/// Where ssh is pointed to make it ignore a configuration file
+#[cfg(unix)]
+const NULL_DEVICE: &str = "/dev/null";
+#[cfg(windows)]
+const NULL_DEVICE: &str = "NUL";
+
+/// What the client types, and what the shell must answer with
+///
+/// The marker is computed rather than written out: a terminal echoes back what is typed at it,
+/// so a command that already contains the answer would pass without a shell ever running it.
+#[cfg(unix)]
 const COMMAND: &[u8] = b"echo OXISH-$((6*7))\nexit\n";
+#[cfg(windows)]
+const COMMAND: &[u8] = b"echo OXISH-$(6*7)\r\nexit\r\n";
+
+/// [`COMMAND`], with the session left idle first so several rekeys land before the sentinel
+#[cfg(unix)]
+const IDLE_COMMAND: &[u8] = b"sleep 10\necho OXISH-$((6*7))\nexit\n";
+#[cfg(windows)]
+const IDLE_COMMAND: &[u8] = b"Start-Sleep 10\r\necho OXISH-$(6*7)\r\nexit\r\n";
+
 const OUTPUT: &str = "OXISH-42";
 const KX_WARNING_MARKER: &str = "post-quantum secure";
