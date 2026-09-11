@@ -37,8 +37,7 @@ use crate::{
     Connection, Error, SessionState,
     authentication::{CachedUser, SingleUser, User, UserStore, Username},
     server::Server,
-    session::Channels,
-    session::Session,
+    session::{self, Channels, Session},
 };
 
 mod terminal;
@@ -305,7 +304,6 @@ pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream
     let stream = TcpStream::from_std(stream)?;
 
     Ok(Session {
-        provider,
         conn: Connection {
             stream,
             addr,
@@ -317,9 +315,12 @@ pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream
             },
             write: write_state,
         },
-        kx: RekeyState::new(session_id, strict_kx, identities, host_key),
-        channels: Channels::default(),
-        post_quantum_kx,
+        state: session::State {
+            provider,
+            kx: RekeyState::new(session_id, strict_kx, identities, host_key),
+            channels: Channels::default(),
+            post_quantum_kx,
+        },
     })
 }
 
