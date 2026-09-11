@@ -1,10 +1,10 @@
 use core::str::{self, FromStr};
 
 use proto::{
-    Disconnect, GlobalRequest, MessageType, Pretty, ProtoError, SessionHostKey,
+    Disconnect, GlobalRequest, MessageType, Pretty, SessionHostKey,
     channels::{ChannelRequest, ChannelRequestType},
     crypto::CryptoProvider,
-    key_exchange::{EcdhKeyExchangeInit, KeyExchange, Rekey},
+    key_exchange::{RekeyState, Rekeyed},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, info, instrument, trace, warn};
@@ -21,10 +21,9 @@ use connections::{IncomingChannelMessage, TerminalsFuture};
 pub struct Session<T> {
     pub(crate) provider: &'static dyn CryptoProvider,
     pub(crate) conn: Connection<T>,
-    pub(crate) rekey: Rekey,
+    pub(crate) kx: RekeyState,
     pub(crate) channels: Channels,
     pub(crate) post_quantum_kx: bool,
-    pub(crate) kx: Option<KeyExchange>,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
@@ -36,14 +35,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
         Ok(Self {
             provider,
             conn,
-            rekey: Rekey::new(
+            kx: RekeyState::new(
                 kx.session_id,
                 kx.strict_kx,
                 kx.identities,
                 SessionHostKey::from_server(kx.host_key, provider)?,
             ),
             post_quantum_kx: kx.post_quantum_kx,
-            kx: None,
             channels: Channels::default(),
         })
     }
@@ -57,53 +55,31 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
             tokio::select! {
                 result = receive(&mut self.conn.stream, &mut self.conn.read) => {
                     let packet = result?;
-                    match (&mut self.kx, packet.message_type) {
-                        (_, MessageType::Ignore | MessageType::Debug) => {
+                    let kx = packet.message_type == MessageType::KeyExchangeInit
+                        || self.kx.in_progress();
+                    match packet.message_type {
+                        MessageType::Ignore | MessageType::Debug => {
                             trace!(?packet.message_type, "ignoring transport-layer message");
                             continue;
                         }
-                        (_, MessageType::Disconnect) => {
+                        MessageType::Disconnect => {
                             match Disconnect::try_from(packet) {
                                 Ok(disconnect) => info!(?disconnect, "received disconnect packet, closing connection"),
                                 Err(error) => warn!(%error, "failed to read disconnect packet"),
                             }
                             return Ok(());
                         }
-                        // The client can start a rekey at any point by sending a fresh
-                        // key exchange init (RFC 4253 section 9).
-                        (None, MessageType::KeyExchangeInit) => {
-                            debug!("starting client-initiated rekey");
-                            let mut kx = self.rekey.start(packet, self.provider)?;
-                            self.conn.write.encode_kx(&kx.local, Some(&mut kx.exchange))?;
+                        _ if kx => {
+                            if let Some(rekeyed) = self.kx.handle(packet, &mut self.conn.write, self.provider)? {
+                                let Rekeyed { update, post_quantum_kx } = rekeyed;
+                                update.apply(&mut self.conn.write, &mut self.conn.read)?;
+                                self.post_quantum_kx = post_quantum_kx;
+                                debug!("completed client-initiated rekey");
+                            }
                             self.conn.flush().await?;
-                            self.kx = Some(kx);
                             continue;
                         }
-                        (Some(_), MessageType::KeyExchangeEcdhInit) => {
-                            let kx = self.kx.take().expect("key exchange state should be present");
-                            let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
-                            let (key_exchange_reply, keys) = self.rekey.complete(
-                                ecdh_key_exchange_init,
-                                &kx.negotiated,
-                                kx.exchange,
-                                self.provider,
-                            )?;
-
-                            self.conn.write.encode(&key_exchange_reply)?;
-                            self.conn.flush().await?;
-                            self.conn.update_keys(&keys, self.rekey.strict_key_exchange(), self.provider)
-                                .await?;
-                            self.conn.flush().await?;
-
-                            debug!("completed client-initiated rekey");
-                            self.post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
-                            continue;
-                        }
-                        (Some(_), r#type) => return Err(ProtoError::UnexpectedMessage(
-                            r#type,
-                            &[MessageType::KeyExchangeEcdhInit],
-                        ).into()),
-                        (None, MessageType::GlobalRequest) => {
+                        MessageType::GlobalRequest => {
                             let request = GlobalRequest::try_from(packet)?;
                             debug!(name = %String::from_utf8_lossy(request.name), "refusing unsupported global request");
                             if request.want_reply {
@@ -112,11 +88,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                             }
                             continue;
                         }
-                        (None, MessageType::RequestSuccess | MessageType::RequestFailure) => {
+                        MessageType::RequestSuccess | MessageType::RequestFailure => {
                             trace!(?packet.message_type, "ignoring unexpected global request reply");
                             continue;
                         }
-                        (None, _) => {}
+                        _ => {}
                     }
 
                     let channel_message = IncomingChannelMessage::try_from(packet)?;
@@ -124,7 +100,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                     match channel_message {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut self.conn.write),
                         IncomingChannelMessage::Request(request) => {
-                            let banner = banner(&request, self.rekey.client_identity(), self.post_quantum_kx);
+                            let banner = banner(&request, self.kx.client_identity(), self.post_quantum_kx);
                             self.channels.request(request, &mut self.conn.write, banner.as_deref())
                         }
                         IncomingChannelMessage::Data(data) => match self.channels.data(&data, &mut self.conn.write) {
@@ -142,7 +118,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
 
                     self.conn.flush().await?;
                 }
-                result = TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write), if self.kx.is_none() => {
+                result = TerminalsFuture::new(self.channels.channels_mut(), &mut self.conn.write), if !self.kx.in_progress() => {
                     result?;
                     self.conn.flush().await?;
                 }

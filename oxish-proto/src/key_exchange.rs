@@ -1,13 +1,14 @@
-use core::fmt;
+use core::{fmt, mem};
 use std::borrow::Cow;
 
 use tracing::debug;
 
 use crate::{
     Decode, Decoded, Encode, IncomingPacket, MessageType, Pretty, ProtoError, PublicKeyAlgorithm,
+    ReadState, WriteState,
     crypto::{
         CryptoError, CryptoProvider, Digest, HandshakeBuffer, HandshakeHash, KeyDerivation,
-        KeySourceSide, SharedSecret, SigningKey,
+        KeySourceSide, OpeningKey, SealingKey, SharedSecret, SigningKey,
     },
     host_keys::{HostKeys, ServerHostKey, SessionHostKey},
     named::{
@@ -16,6 +17,308 @@ use crate::{
         OutgoingNameList,
     },
 };
+
+/// A server-side initial SSH key exchange, driven one packet at a time
+pub enum InitialKeyExchangeState<'a> {
+    /// Awaiting the peer's `SSH_MSG_KEXINIT` that begins an exchange
+    AwaitingKexInit {
+        /// The host keys we may offer the peer
+        host_keys: &'a HostKeys,
+        /// The exchanged identification strings (`V_C`, `V_S`)
+        identities: Identities,
+        /// The in-progress exchange hash input
+        exchange: HandshakeBuffer,
+    },
+    /// Sent our `SSH_MSG_KEXINIT`; awaiting the peer's `SSH_MSG_KEX_ECDH_INIT`
+    AwaitingEcdhInit {
+        /// The negotiated algorithms and in-progress exchange hash
+        kx: KeyExchange,
+        /// The host keys we may offer the peer
+        host_keys: &'a HostKeys,
+        /// The exchanged identification strings (`V_C`, `V_S`)
+        identities: Identities,
+        /// The strict key exchange state, if negotiated
+        strict_kx: Option<StrictKeyExchange>,
+        /// Extension information to send, if negotiated
+        ext_info: Option<ExtInfo<'static>>,
+    },
+    /// Sent our reply; awaiting the peer's `SSH_MSG_NEWKEYS`
+    AwaitingNewKeys {
+        /// The negotiated parameters and derived keys
+        output: KeyExchangeOutput<'a>,
+        /// Extension information to send, if negotiated
+        ext_info: Option<ExtInfo<'static>>,
+    },
+    /// Transient placeholder held only while [`handle()`](Self::handle) transitions states
+    Complete,
+}
+
+impl<'a> InitialKeyExchangeState<'a> {
+    /// Begin the initial key exchange for a freshly accepted connection
+    ///
+    /// `exchange` must already carry the identification strings (`V_C`, `V_S`).
+    pub fn new(exchange: HandshakeBuffer, identities: Identities, host_keys: &'a HostKeys) -> Self {
+        Self::AwaitingKexInit {
+            host_keys,
+            identities,
+            exchange,
+        }
+    }
+
+    /// Advance the exchange by one incoming packet
+    pub fn handle(
+        &mut self,
+        packet: IncomingPacket<'_>,
+        write: &mut WriteState,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Option<Established<'a>>, ProtoError> {
+        match mem::replace(self, Self::Complete) {
+            Self::AwaitingKexInit {
+                host_keys,
+                identities,
+                exchange,
+            } => {
+                let (local, mut kx, strict_kx, ext_info) = KeyExchange::start(
+                    packet,
+                    exchange,
+                    host_keys.algorithms().collect(),
+                    [ExtensionId::StrictKexServer].into_iter(),
+                    provider,
+                )?;
+
+                write.encode_kx(&local, Some(&mut kx.exchange))?;
+                *self = Self::AwaitingEcdhInit {
+                    kx,
+                    host_keys,
+                    identities,
+                    strict_kx,
+                    ext_info,
+                };
+
+                Ok(None)
+            }
+            Self::AwaitingEcdhInit {
+                kx,
+                host_keys,
+                identities,
+                strict_kx,
+                ext_info,
+            } => {
+                let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
+                let post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
+                let host_key = host_keys.key(&kx.negotiated)?;
+                let (reply, session_id, keys) = EcdhKeyExchangeReply::new(
+                    ecdh_key_exchange_init,
+                    &kx.negotiated,
+                    kx.exchange,
+                    None,
+                    host_key.key,
+                    provider,
+                )?;
+
+                write.encode(&reply)?;
+                *self = Self::AwaitingNewKeys {
+                    output: KeyExchangeOutput {
+                        identities,
+                        host_key,
+                        strict_kx,
+                        session_id,
+                        keys,
+                        post_quantum_kx,
+                    },
+                    ext_info,
+                };
+
+                Ok(None)
+            }
+            Self::AwaitingNewKeys { output, ext_info } => {
+                NewKeys::try_from(packet)?;
+                *self = Self::Complete;
+                Ok(Some(Established {
+                    update: KeyUpdate {
+                        opener: provider.opening_key(0, &output.keys.client_to_server)?,
+                        sealer: provider.sealing_key(0, &output.keys.server_to_client)?,
+                        strict_kx: output.strict_kx.as_ref().map(|_| StrictKeyExchange(())),
+                    },
+                    output,
+                    ext_info,
+                }))
+            }
+            Self::Complete => Err(ProtoError::Unreachable(
+                "key exchange state machine polled while transitioning",
+            )),
+        }
+    }
+}
+
+/// The completed initial key exchange, returned by [`InitialKeyExchangeState::handle()`]
+pub struct Established<'a> {
+    /// The negotiated connection parameters and derived keys
+    pub output: KeyExchangeOutput<'a>,
+    /// Updated key material to install
+    pub update: KeyUpdate,
+    /// Extension information, if negotiated
+    pub ext_info: Option<ExtInfo<'static>>,
+}
+
+/// A server-side SSH rekey, driven one packet at a time
+pub enum RekeyState {
+    /// Awaiting the peer's `SSH_MSG_KEXINIT` that begins an exchange
+    AwaitingKexInit {
+        /// The retained rekey state
+        rekey: Rekey,
+    },
+    /// Sent our `SSH_MSG_KEXINIT`; awaiting the peer's `SSH_MSG_KEX_ECDH_INIT`
+    AwaitingEcdhInit {
+        /// The negotiated algorithms and in-progress exchange hash
+        kx: KeyExchange,
+        /// The retained rekey state
+        rekey: Rekey,
+    },
+    /// Sent our reply; awaiting the peer's `SSH_MSG_NEWKEYS`
+    AwaitingNewKeys {
+        /// The retained rekey state
+        rekey: Rekey,
+        /// The freshly derived key material
+        keys: KeySourceSet,
+        /// Whether the newly negotiated key exchange algorithm is post-quantum secure
+        post_quantum_kx: bool,
+    },
+    /// Transient placeholder held only while [`handle()`](Self::handle) transitions states
+    Transitioning,
+}
+
+impl RekeyState {
+    /// Begin a rekey for an already established session
+    pub fn new(
+        session_id: Digest,
+        strict_kx: Option<StrictKeyExchange>,
+        identities: Identities,
+        host_key: SessionHostKey,
+    ) -> Self {
+        Self::AwaitingKexInit {
+            rekey: Rekey::new(session_id, strict_kx, identities, host_key),
+        }
+    }
+
+    /// Advance the rekey by one incoming packet
+    pub fn handle(
+        &mut self,
+        packet: IncomingPacket<'_>,
+        write: &mut WriteState,
+        provider: &dyn CryptoProvider,
+    ) -> Result<Option<Rekeyed>, ProtoError> {
+        match mem::replace(self, Self::Transitioning) {
+            Self::AwaitingKexInit { rekey } => {
+                let mut exchange = HandshakeBuffer::default();
+                exchange.prefixed(&rekey.identities.client);
+                exchange.prefixed(&rekey.identities.server);
+                let (local, mut kx, _, _) = KeyExchange::start(
+                    packet,
+                    exchange,
+                    vec![rekey.host_key.algorithm()],
+                    [].into_iter(),
+                    provider,
+                )?;
+
+                write.encode_kx(&local, Some(&mut kx.exchange))?;
+                *self = Self::AwaitingEcdhInit { kx, rekey };
+                Ok(None)
+            }
+            Self::AwaitingEcdhInit { kx, rekey } => {
+                let ecdh_key_exchange_init = EcdhKeyExchangeInit::try_from(packet)?;
+                let post_quantum_kx = kx.negotiated.key_exchange.post_quantum_secure();
+                let (reply, _, keys) = EcdhKeyExchangeReply::new(
+                    ecdh_key_exchange_init,
+                    &kx.negotiated,
+                    kx.exchange,
+                    Some(rekey.session_id.clone()),
+                    &*rekey.host_key.0,
+                    provider,
+                )?;
+
+                write.encode(&reply)?;
+                *self = Self::AwaitingNewKeys {
+                    rekey,
+                    keys,
+                    post_quantum_kx,
+                };
+                Ok(None)
+            }
+            Self::AwaitingNewKeys {
+                rekey,
+                keys,
+                post_quantum_kx,
+            } => {
+                NewKeys::try_from(packet)?;
+                let update = KeyUpdate {
+                    opener: provider.opening_key(0, &keys.client_to_server)?,
+                    sealer: provider.sealing_key(0, &keys.server_to_client)?,
+                    strict_kx: rekey.strict_kx.as_ref().map(|_| StrictKeyExchange(())),
+                };
+                *self = Self::AwaitingKexInit { rekey };
+                Ok(Some(Rekeyed {
+                    update,
+                    post_quantum_kx,
+                }))
+            }
+            Self::Transitioning => Err(ProtoError::Unreachable(
+                "key exchange state machine polled while transitioning",
+            )),
+        }
+    }
+
+    /// The peer's identification string
+    pub fn client_identity(&self) -> &[u8] {
+        match self {
+            Self::AwaitingKexInit { rekey }
+            | Self::AwaitingEcdhInit { rekey, .. }
+            | Self::AwaitingNewKeys { rekey, .. } => &rekey.identities.client,
+            Self::Transitioning => b"",
+        }
+    }
+
+    /// Whether a rekey is in progress, i.e. past the initial `SSH_MSG_KEXINIT`
+    ///
+    /// While this is `true`, every incoming packet must be fed to [`handle()`](Self::handle);
+    /// no other transport-layer traffic is expected until the exchange completes.
+    pub fn in_progress(&self) -> bool {
+        matches!(
+            self,
+            Self::AwaitingEcdhInit { .. } | Self::AwaitingNewKeys { .. }
+        )
+    }
+}
+
+/// The completed rekey, returned by [`RekeyState::handle()`]
+pub struct Rekeyed {
+    /// Updated key material to install
+    pub update: KeyUpdate,
+    /// Whether the newly negotiated key exchange algorithm is post-quantum secure
+    pub post_quantum_kx: bool,
+}
+
+/// A pending update to the receive side of a connection after `SSH_MSG_NEWKEYS`
+pub struct KeyUpdate {
+    /// The new decryption key to install
+    pub opener: Box<dyn OpeningKey>,
+    /// The new encryption key to install
+    pub sealer: Box<dyn SealingKey>,
+    /// Whether the newly negotiated key exchange algorithm is strict
+    pub strict_kx: Option<StrictKeyExchange>,
+}
+
+impl KeyUpdate {
+    /// Install the new keys and reset the sequence numbers if necessary
+    pub fn apply(self, write: &mut WriteState, read: &mut ReadState) -> Result<(), ProtoError> {
+        write.encode(&NewKeys)?;
+        write.reset_sequence_number(self.strict_kx.as_ref());
+        write.sealer = Some(self.sealer);
+        read.reset_sequence_number(self.strict_kx.as_ref());
+        read.opener = Some(self.opener);
+        Ok(())
+    }
+}
 
 /// State required for a rekeying exchange
 pub struct Rekey {
@@ -27,7 +330,7 @@ pub struct Rekey {
 
 impl Rekey {
     /// Create a new rekey state from its constituent parts
-    pub fn new(
+    fn new(
         session_id: Digest,
         strict_kx: Option<StrictKeyExchange>,
         identities: Identities,
@@ -40,77 +343,35 @@ impl Rekey {
             session_id,
         }
     }
-
-    /// Process the client's `SSH_MSG_KEXINIT` and negotiate the new algorithms
-    pub fn start(
-        &self,
-        packet: IncomingPacket<'_>,
-        provider: &dyn CryptoProvider,
-    ) -> Result<KeyExchange, ProtoError> {
-        let mut exchange = HandshakeBuffer::default();
-        exchange.prefixed(&self.identities.client);
-        exchange.prefixed(&self.identities.server);
-        let (kx, _, _) = KeyExchange::start(
-            packet,
-            exchange,
-            vec![self.host_key.algorithm()],
-            [].into_iter(),
-            provider,
-        )?;
-        Ok(kx)
-    }
-
-    /// Complete a client-initiated rekey
-    pub fn complete(
-        &self,
-        ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
-        negotiated: &Negotiated,
-        exchange: HandshakeHash,
-        provider: &dyn CryptoProvider,
-    ) -> Result<(EcdhKeyExchangeReply, KeySourceSet), CryptoError> {
-        let (reply, _, keys) = EcdhKeyExchangeReply::new(
-            ecdh_key_exchange_init,
-            negotiated,
-            exchange,
-            Some(self.session_id.clone()),
-            &*self.host_key.0,
-            provider,
-        )?;
-        Ok((reply, keys))
-    }
-
-    /// Whether we negotiated strict key exchange with the client
-    pub fn strict_key_exchange(&self) -> Option<&StrictKeyExchange> {
-        self.strict_kx.as_ref()
-    }
-
-    /// The client's identity
-    pub fn client_identity(&self) -> &[u8] {
-        &self.identities.client
-    }
 }
 
 /// Output from the initial key exchange phase
 pub struct KeyExchange {
-    /// Our own `SSH_MSG_KEXINIT` message, to be sent to the peer
-    pub local: KeyExchangeInit<'static>,
     /// The in-progress exchange hash computation
-    pub exchange: HandshakeHash,
+    exchange: HandshakeHash,
     /// The negotiated algorithms
-    pub negotiated: Negotiated,
+    negotiated: Negotiated,
 }
 
 impl KeyExchange {
     /// Process the peer's `SSH_MSG_KEXINIT` and negotiate algorithms
     ///
     /// See <https://www.rfc-editor.org/rfc/rfc4253#section-7.1> for the negotiation procedure.
-    pub fn start(
+    fn start(
         packet: IncomingPacket<'_>,
         mut exchange: HandshakeBuffer,
         server_host_key_algorithms: Vec<PublicKeyAlgorithm<'static>>,
         extensions: impl Iterator<Item = ExtensionId<'static>>,
         provider: &dyn CryptoProvider,
-    ) -> Result<(Self, Option<StrictKeyExchange>, Option<ExtInfo<'static>>), ProtoError> {
+    ) -> Result<
+        (
+            KeyExchangeInit<'static>,
+            Self,
+            Option<StrictKeyExchange>,
+            Option<ExtInfo<'static>>,
+        ),
+        ProtoError,
+    > {
         exchange.update(&((packet.payload.len() + 1) as u32).to_be_bytes());
         exchange.update(&[u8::from(packet.message_type)]);
         exchange.update(packet.payload);
@@ -157,41 +418,14 @@ impl KeyExchange {
             .then_some(StrictKeyExchange(()));
 
         Ok((
+            local,
             Self {
-                local,
                 exchange: exchange.hash(provider.hash(&negotiated.key_exchange)?),
                 negotiated,
             },
             strict,
             ext_info,
         ))
-    }
-
-    /// Complete the key exchange and produce the reply message, exchange hash and derived keys
-    pub fn complete<'h>(
-        self,
-        ecdh_key_exchange_init: EcdhKeyExchangeInit<'_>,
-        host_keys: &'h HostKeys,
-        provider: &dyn CryptoProvider,
-    ) -> Result<
-        (
-            ServerHostKey<'h>,
-            EcdhKeyExchangeReply,
-            Digest,
-            KeySourceSet,
-        ),
-        CryptoError,
-    > {
-        let host_key = host_keys.key(&self.negotiated)?;
-        let (reply, session_id, keys) = EcdhKeyExchangeReply::new(
-            ecdh_key_exchange_init,
-            &self.negotiated,
-            self.exchange,
-            None,
-            host_key.key,
-            provider,
-        )?;
-        Ok((host_key, reply, session_id, keys))
     }
 }
 
