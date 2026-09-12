@@ -19,7 +19,6 @@ use proto::{
 };
 use tokio::net::TcpListener;
 use tracing::info;
-use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,13 +32,12 @@ async fn main() -> anyhow::Result<()> {
     if let Some(path) = &args.generate_host_key {
         return match File::create_new(path) {
             Ok(mut host_key_file) => {
-                let Ok((_, pkcs8)) = provider.generate_signing_key(&args.host_key_type) else {
+                let Ok(pem) = proto::openssh::generate(&args.host_key_type, provider) else {
                     anyhow::bail!("failed to generate host key");
                 };
 
                 // FIXME ensure the host key is only readable by the ssh server user
-                let pkcs8 = Zeroizing::new(pkcs8);
-                let result = host_key_file.write_all(&pkcs8);
+                let result = host_key_file.write_all(pem.as_bytes());
                 result?;
 
                 eprintln!("generated host key at {}", path.display());

@@ -30,38 +30,30 @@ impl CryptoProvider for Provider {
     fn generate_signing_key(
         &self,
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<(Box<dyn SigningKey>, Vec<u8>), CryptoError> {
+    ) -> Result<(Box<dyn SigningKey>, Zeroizing<Vec<u8>>), CryptoError> {
         match algorithm {
             PublicKeyAlgorithm::Ed25519 => {
                 let key =
                     Ed25519SigningKey::generate().map_err(|_| CryptoError::KeyGenerationFailed)?;
 
-                // An Ed25519 PKCS#8 v2 document (with the embedded public key) is
-                // well under 128 bytes.
-                let mut buf = Zeroizing::new([0u8; 128]);
-                let pkcs8 = key
-                    .to_pkcs8_der(&mut *buf)
-                    .map_err(|_| CryptoError::Unspecified)?
-                    .to_vec();
-
-                Ok((Box::new(Ed25519Key::new(key)), pkcs8))
+                // as_seed() returns an owned copy, so wrap it too
+                let seed = Zeroizing::new(key.as_seed());
+                Ok((
+                    Box::new(Ed25519Key::new(key)),
+                    Zeroizing::new(seed.to_vec()),
+                ))
             }
             PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
                 let private_key =
                     StaticPrivateKey::new_random().map_err(|_| CryptoError::KeyGenerationFailed)?;
+
+                // as_bytes() returns an owned copy too
+                let d = Zeroizing::new(private_key.as_bytes());
                 let key = ecdsa::SigningKey::<P256> { private_key };
 
-                // A P-256 PKCS#8 v1 document (with the embedded public key) is
-                // comfortably under 256 bytes.
-                let mut buf = [0u8; 256];
-                let pkcs8 = key
-                    .to_pkcs8_der(&mut buf)
-                    .map_err(|_| CryptoError::Unspecified)?
-                    .to_vec();
-
-                Ok((Box::new(EcdsaP256Key::new(key)), pkcs8))
+                Ok((Box::new(EcdsaP256Key::new(key)), Zeroizing::new(d.to_vec())))
             }
-            _ => Err(CryptoError::UnknownAlgorithm),
+            PublicKeyAlgorithm::Unknown(_) => Err(CryptoError::UnknownAlgorithm),
         }
     }
 
