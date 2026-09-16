@@ -5,6 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context as _;
 use proto::{HostKeys, ReadState, WriteState, crypto::CryptoProvider};
+use serde::Deserialize;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{Semaphore, TryAcquireError},
@@ -112,9 +113,15 @@ impl Server {
             Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
         };
 
-        let user = authenticate(&kx.session_id, &mut conn, &*self.store, self.provider)
-            .await
-            .context("authentication failed")?;
+        let user = authenticate(
+            &kx.session_id,
+            &mut conn,
+            &*self.store,
+            self.config.root_policy,
+            self.provider,
+        )
+        .await
+        .context("authentication failed")?;
         drop(authenticating);
 
         #[cfg(debug_assertions)]
@@ -181,11 +188,14 @@ impl Server {
 ///
 /// Can be used with [`Server::with_config()`] to override the default configuration.
 #[non_exhaustive]
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     /// Whether to spawn a child process for each authenticated session
     #[cfg(debug_assertions)]
     pub spawn: bool,
+    /// Policy for authenticating as the root user
+    pub root_policy: RootPolicy,
 }
 
 impl Default for Config {
@@ -193,6 +203,18 @@ impl Default for Config {
         Self {
             #[cfg(debug_assertions)]
             spawn: true,
+            root_policy: RootPolicy::default(),
         }
     }
+}
+
+/// Policy for authenticating as the root user
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+pub enum RootPolicy {
+    /// Allow authentication as root
+    Allow,
+    /// Refuse authentication as root
+    #[default]
+    Deny,
 }

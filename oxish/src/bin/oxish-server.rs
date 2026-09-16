@@ -1,12 +1,13 @@
 use core::net::{Ipv4Addr, SocketAddr};
 use std::{
     env,
-    fs::File,
+    fs::{self, File},
     io::{self, Write},
     path::PathBuf,
     sync::Arc,
 };
 
+use anyhow::Context as _;
 #[cfg(debug_assertions)]
 use clap::ArgAction;
 use clap::Parser;
@@ -98,7 +99,15 @@ async fn main() -> anyhow::Result<()> {
     };
 
     #[cfg_attr(not(debug_assertions), expect(unused_mut))]
-    let mut config = Config::default();
+    let mut config = match &args.config {
+        Some(path) => {
+            let s = fs::read_to_string(path)
+                .with_context(|| format!("failed to read config file `{}`", path.display()))?;
+            toml::from_str::<Config>(&s)
+                .with_context(|| format!("failed to parse config file `{}`", path.display()))?
+        }
+        None => Config::default(),
+    };
     #[cfg(debug_assertions)]
     {
         config.spawn = args.spawn;
@@ -122,6 +131,8 @@ async fn main() -> anyhow::Result<()> {
 struct Args {
     #[clap(short, long)]
     port: Option<u16>,
+    #[clap(short, long)]
+    config: Option<PathBuf>,
     #[clap(long, default_values = DEFAULT_HOST_KEY_FILES)]
     host_key_file: Vec<PathBuf>,
     #[clap(long)]
