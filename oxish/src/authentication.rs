@@ -17,13 +17,14 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{Connection, Error, receive};
+use crate::{Connection, Error, RootPolicy, receive};
 
 #[instrument(name = "authentication", skip(session_id, conn, store, provider), fields(addr = %conn.addr))]
 pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
     session_id: &Digest,
     conn: &mut Connection<T>,
     store: &dyn UserStore,
+    root_policy: RootPolicy,
     provider: &dyn CryptoProvider,
 ) -> anyhow::Result<User> {
     let mut state = AuthenticationState::default();
@@ -31,7 +32,14 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
         loop {
             let packet = receive(&mut conn.stream, &mut conn.read).await?;
             let handled = state
-                .handle(packet, session_id, &mut conn.write, store, provider)
+                .handle(
+                    packet,
+                    session_id,
+                    &mut conn.write,
+                    store,
+                    root_policy,
+                    provider,
+                )
                 .await;
 
             match (handled, conn.flush().await) {
@@ -102,6 +110,7 @@ impl AuthenticationState {
         session_id: &Digest,
         write: &mut WriteState,
         store: &dyn UserStore,
+        root_policy: RootPolicy,
         provider: &dyn CryptoProvider,
     ) -> Result<Self, Error> {
         match (self, packet.message_type) {
@@ -172,7 +181,7 @@ impl AuthenticationState {
                             return Ok(Self::AwaitAuthRequest { cached, attempts });
                         };
 
-                        let Some(user) = store.lookup(name) else {
+                        let Some(user) = store.lookup(name, root_policy) else {
                             send_auth_failed(write)?;
                             return Ok(Self::AwaitAuthRequest { cached, attempts });
                         };
@@ -313,7 +322,7 @@ impl SingleUser {
 }
 
 impl UserStore for SingleUser {
-    fn lookup(&self, name: Username) -> Option<User> {
+    fn lookup(&self, name: Username, _: RootPolicy) -> Option<User> {
         match self.0.data.name == name {
             true => Some(self.0.data.clone()),
             false => {
@@ -339,7 +348,7 @@ impl UserStore for SingleUser {
 /// A user store resolves a username to a `User` type containing data used for authentication
 pub trait UserStore: Send + Sync + 'static {
     /// Lookup a user by name, returning `None` if the user does not exist or cannot be retrieved
-    fn lookup(&self, name: Username) -> Option<User>;
+    fn lookup(&self, name: Username, root_policy: RootPolicy) -> Option<User>;
 
     /// Lookup the authorized keys for a user
     fn keys(&self, user: &User, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey>;

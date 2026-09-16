@@ -34,7 +34,7 @@ use tracing::{debug, error, warn};
 use zeroize::Zeroizing;
 
 use crate::{
-    Connection, Error, SessionState,
+    Connection, Error, RootPolicy, SessionState,
     authentication::{CachedUser, SingleUser, User, UserStore, Username},
     server::Server,
     session::Channels,
@@ -352,9 +352,16 @@ impl DefaultStore {
 pub(crate) struct SystemStore;
 
 impl UserStore for SystemStore {
-    fn lookup(&self, name: Username) -> Option<User> {
+    fn lookup(&self, name: Username, root_policy: RootPolicy) -> Option<User> {
         match UserLookup::Name(name).resolve() {
-            Ok(user) => Some(user),
+            Ok(user) => match (user.id, root_policy) {
+                (0, RootPolicy::Allow) => Some(user),
+                (0, RootPolicy::Deny) => {
+                    warn!(user = %user.name, "refusing to authenticate root user");
+                    None
+                }
+                _ => Some(user),
+            },
             Err(error) => {
                 error!(%error, "failed to get user information");
                 None
@@ -529,10 +536,6 @@ impl UserLookup {
             _ => u32::MAX,
         };
 
-        if id == 0 {
-            return Err(Error::InvalidState("refusing to authenticate root user"));
-        }
-
         let gid = match (ret, result.is_null()) {
             (0, false) => pwd.pw_gid,
             _ => u32::MAX,
@@ -612,3 +615,17 @@ fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {
 type RawGroupId = libc::c_int;
 #[cfg(not(target_os = "macos"))]
 type RawGroupId = libc::gid_t;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_policy() {
+        let root = Username::try_from("root".to_owned()).unwrap();
+        assert!(SystemStore.lookup(root.clone(), RootPolicy::Deny).is_none());
+
+        let user = SystemStore.lookup(root, RootPolicy::Allow).unwrap();
+        assert_eq!(user.id, 0);
+    }
+}

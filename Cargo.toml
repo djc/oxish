@@ -16,12 +16,14 @@ graviola = "0.4"
 libc = "0.2"
 listenfd = "1.0.2"
 aws-lc = { package = "oxish-aws-lc", version = "0.1.0", path = "oxish-aws-lc" }
+serde = { version = "1", features = ["derive"] }
 sha1 = "0.11"
 sha2 = "0.11"
 tempfile = "3.27"
 thiserror = "2.0.9"
 tokio = { version = "1.42", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
 tokio-stream = "0.1.18"
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rustix = { version = "1", features = ["termios", "pty", "process", "fs", "net", "stdio"] }

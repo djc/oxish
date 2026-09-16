@@ -41,7 +41,7 @@ pub use authentication::{AuthError, User, UserStore, Username};
 mod session;
 pub use session::Session;
 mod server;
-pub use server::{Config, Server};
+pub use server::{Config, RootPolicy, Server};
 #[cfg(unix)]
 mod unix;
 pub use platform::{DefaultStore, resume};
