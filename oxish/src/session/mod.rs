@@ -1,7 +1,7 @@
 use core::str::{self, FromStr};
 
 use proto::{
-    Disconnect, GlobalRequest, MessageType, Pretty, SessionHostKey,
+    Disconnect, GlobalRequest, MessageType, Pretty,
     channels::{ChannelRequest, ChannelRequestType},
     crypto::CryptoProvider,
     key_exchange::{RekeyState, Rekeyed},
@@ -9,11 +9,17 @@ use proto::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, info, instrument, trace, warn};
 
-use crate::{Connection, Error, KeyExchangeOutput, receive};
+use crate::{Connection, Error, receive};
 
 mod connections;
 pub(crate) use connections::Channels;
 use connections::{IncomingChannelMessage, TerminalsFuture};
+
+#[cfg(debug_assertions)]
+use proto::SessionHostKey;
+
+#[cfg(debug_assertions)]
+use crate::KeyExchangeOutput;
 
 /// A single SSH session's state
 ///
@@ -27,6 +33,7 @@ pub struct Session<T> {
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
+    #[cfg(debug_assertions)]
     pub(crate) fn new(
         kx: KeyExchangeOutput<'_>,
         conn: Connection<T>,

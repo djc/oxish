@@ -13,10 +13,13 @@ use tokio::{
 use tracing::{debug, instrument, warn};
 
 use crate::{
-    Connection, Error, Session, SessionState, SideState,
+    Connection, Error, SessionState, SideState,
     authentication::{UserStore, authenticate},
     platform::spawn,
 };
+
+#[cfg(debug_assertions)]
+use crate::Session;
 
 /// State for an SSH server
 pub struct Server {
@@ -114,6 +117,7 @@ impl Server {
             .context("authentication failed")?;
         drop(authenticating);
 
+        #[cfg(debug_assertions)]
         if !self.config.spawn {
             let session = Session::new(kx, conn, self.provider)?;
             return session.run().await.context("session failed");
@@ -180,11 +184,15 @@ impl Server {
 #[derive(Debug)]
 pub struct Config {
     /// Whether to spawn a child process for each authenticated session
+    #[cfg(debug_assertions)]
     pub spawn: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { spawn: true }
+        Self {
+            #[cfg(debug_assertions)]
+            spawn: true,
+        }
     }
 }
