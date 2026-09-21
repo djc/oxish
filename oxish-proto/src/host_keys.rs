@@ -49,7 +49,7 @@ impl HostKeys {
     /// Create a new set of host keys from the given PKCS#8 private keys
     ///
     /// `pkcs8` must have more than 0 and less than 16 elements.
-    pub fn new(
+    fn new(
         pkcs8: impl Iterator<Item = Zeroizing<Vec<u8>>>,
         provider: &dyn CryptoProvider,
     ) -> Result<Self, ProtoError> {
@@ -68,6 +68,23 @@ impl HostKeys {
         }
 
         Ok(Self(keys))
+    }
+
+    // from OpenSSH v1 private key pem
+    #[doc(hidden)] // for testing
+    pub fn from_openssh_v1(pem: &str, provider: &dyn CryptoProvider) -> Result<Self, ProtoError> {
+        Self::new(OpenSshKeyV1::from_str(pem)?.keys.into_iter(), provider)
+    }
+
+    // The sole host key, for tests with a single-key [HostKeys]
+    #[doc(hidden)] // for testing
+    pub fn sole(&self) -> ServerHostKey<'_> {
+        // Cannot produce empty HostKey
+        let (pkcs8, key) = &self.0[0];
+        ServerHostKey {
+            pkcs8,
+            key: key.as_ref(),
+        }
     }
 
     /// Select the host key matching the negotiated algorithm
@@ -106,13 +123,6 @@ impl Encode for ServerHostKey<'_> {
     fn encode(&self, buf: &mut Vec<u8>) {
         let Self { pkcs8, key: _ } = self;
         pkcs8.encode(buf);
-    }
-}
-
-#[doc(hidden)] // for testing
-impl<'a> From<(&'a Zeroizing<Vec<u8>>, &'a dyn SigningKey)> for ServerHostKey<'a> {
-    fn from((pkcs8, key): (&'a Zeroizing<Vec<u8>>, &'a dyn SigningKey)) -> Self {
-        Self { pkcs8, key }
     }
 }
 

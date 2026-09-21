@@ -1,7 +1,7 @@
 use core::{error::Error as StdError, fmt};
 use std::sync::Arc;
 
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, PublicKeyAlgorithm};
 
@@ -9,12 +9,12 @@ use crate::named::{EncryptionAlgorithm, KeyExchangeAlgorithm, MacAlgorithm, Publ
 pub trait CryptoProvider: Send + Sync {
     /// Generate a fresh signing key
     ///
-    /// Returns the key together with its PKCS#8 serialization, so the caller can
-    /// persist it and load it again later with [`Self::signing_key_from_pkcs8()`].
+    /// Returns the key together with its private key, so the caller can encode it
+    /// to OpenSSH format.
     fn generate_signing_key(
         &self,
         algorithm: &PublicKeyAlgorithm<'_>,
-    ) -> Result<(Box<dyn SigningKey>, Vec<u8>), CryptoError>;
+    ) -> Result<GeneratedKey, CryptoError>;
 
     /// Load a signing key from its PKCS#8 serialization
     fn signing_key_from_pkcs8(&self, pkcs8: &[u8]) -> Result<Box<dyn SigningKey>, CryptoError>;
@@ -61,6 +61,9 @@ pub trait CryptoProvider: Send + Sync {
     /// A source of cryptographically secure random bytes
     fn secure_random(&self) -> &'static dyn SecureRandom;
 }
+
+/// A freshly generated signing key and its private key material
+pub type GeneratedKey = (Box<dyn SigningKey>, Zeroizing<Vec<u8>>);
 
 /// The algorithms supported by a [`CryptoProvider`], in preference order
 ///
@@ -467,6 +470,7 @@ impl From<Vec<u8>> for SharedSecret {
 
 /// An error returned by a cryptographic operation
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum CryptoError {
     /// Decryption or tag verification of a packet failed
     DecryptionFailed,
@@ -478,6 +482,8 @@ pub enum CryptoError {
     KeyAgreementFailed,
     /// Generating a new key pair failed
     KeyGenerationFailed,
+    /// The private key not exportable
+    KeyNotExportable,
     /// Key material was rejected while loading it
     KeyRejected,
     /// The per-key nonce space was exhausted
@@ -500,6 +506,7 @@ impl fmt::Display for CryptoError {
             Self::InvalidLength => write!(f, "invalid length"),
             Self::KeyAgreementFailed => write!(f, "key agreement failed"),
             Self::KeyGenerationFailed => write!(f, "key generation failed"),
+            Self::KeyNotExportable => write!(f, "private key not exportable"),
             Self::KeyRejected => write!(f, "key rejected"),
             Self::NonceOverflow => write!(f, "nonce overflow"),
             Self::NoRandomness => write!(f, "no randomness available"),

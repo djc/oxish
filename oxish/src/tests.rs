@@ -1,6 +1,7 @@
 use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
 use std::{
     env, fs,
+    os::unix::fs::PermissionsExt,
     panic::resume_unwind,
     path::Path,
     path::PathBuf,
@@ -10,23 +11,62 @@ use std::{
 
 use anyhow::Context;
 use proto::{
-    Decoded, Encode, HostKeys, ServerHostKey,
+    Decoded, Encode, HostKeys,
     auth::AuthorizedKey,
     crypto::{CryptoProvider, Digest, KeySourceSide},
     key_exchange::Identities,
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
+    openssh,
 };
 use tempfile::TempDir;
 use tokio::{
     io::AsyncWriteExt, net::TcpListener, process::Command, task::JoinHandle, time::timeout,
 };
-use zeroize::Zeroizing;
 
 use crate::{
     Config, SessionState, SideState, UserStore, Username,
     authentication::{SingleUser, User},
     server::Server,
 };
+
+/// Check our generated OpenSSH private key accepted by `ssh-keygen -y -f`
+#[tokio::test]
+async fn openssh_keygen_agrees() {
+    let providers = [
+        #[cfg(any(feature = "aws-lc", feature = "aws-lc-fips"))]
+        aws_lc::DEFAULT_PROVIDER,
+        #[cfg(feature = "graviola")]
+        graviola::DEFAULT_PROVIDER,
+    ];
+
+    for provider in providers {
+        for (algorithm, name) in [
+            (PublicKeyAlgorithm::Ed25519, "ssh-ed25519"),
+            (PublicKeyAlgorithm::EcdsaSha2Nistp256, "ecdsa-sha2-nistp256"),
+        ] {
+            let pem = openssh::generate(&algorithm, provider).unwrap();
+
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("key");
+            fs::write(&path, pem.as_bytes()).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+            let output = Command::new("ssh-keygen")
+                .arg("-y")
+                .arg("-f")
+                .arg(&path)
+                .output()
+                .await
+                .context("failed to run ssh-keygen")
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "ssh-keygen rejected our {name} key: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
 
 /// Exercise a full handshake and session against the aws-lc-rs provider
 #[cfg(feature = "aws-lc")]
@@ -224,14 +264,14 @@ async fn setup(
     provider: &'static dyn CryptoProvider,
 ) -> anyhow::Result<(TempDir, CliClient, JoinHandle<anyhow::Result<()>>)> {
     let (key_dir, store) = store(algorithm, provider).await?;
-    let (_, pkcs8) = provider.generate_signing_key(algorithm)?;
+    let pem = openssh::generate(algorithm, provider)?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let client = CliClient::new(addr, &key_dir.path().join("key"));
 
     let server = Server::new(
         store,
-        HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider)?,
+        HostKeys::from_openssh_v1(&pem, provider)?,
         session_binary().await?,
         provider,
     )?;
@@ -406,11 +446,10 @@ async fn verify_keys() {
 #[test]
 fn session_state_round_trip() {
     use crate::DEFAULT_PROVIDER;
-    let (key, pkcs8) = DEFAULT_PROVIDER
-        .generate_signing_key(&PublicKeyAlgorithm::Ed25519)
+    let pem = openssh::generate(&PublicKeyAlgorithm::Ed25519, DEFAULT_PROVIDER)
         .expect("failed to generate signing key");
-    let pkcs8 = Zeroizing::new(pkcs8);
-    let host_key = ServerHostKey::from((&pkcs8, &*key));
+    let host_keys = HostKeys::from_openssh_v1(&pem, DEFAULT_PROVIDER).unwrap();
+    let host_key = host_keys.sole();
 
     let state = SessionState {
         addr: SocketAddr::from(([192, 0, 2, 7], 22022)),
