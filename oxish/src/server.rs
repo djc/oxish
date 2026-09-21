@@ -13,14 +13,13 @@ use tokio::{
 };
 use tracing::{debug, instrument, warn};
 
+#[cfg(debug_assertions)]
+use crate::Session;
 use crate::{
     Connection, Error, SessionState, SideState,
     authentication::{UserStore, authenticate},
     platform::spawn,
 };
-
-#[cfg(debug_assertions)]
-use crate::Session;
 
 /// State for an SSH server
 pub struct Server {

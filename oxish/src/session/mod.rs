@@ -1,5 +1,7 @@
 use core::str::{self, FromStr};
 
+#[cfg(debug_assertions)]
+use proto::SessionHostKey;
 use proto::{
     Disconnect, GlobalRequest, MessageType, Pretty,
     channels::{ChannelRequest, ChannelRequestType},
@@ -9,17 +11,13 @@ use proto::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, info, instrument, trace, warn};
 
+#[cfg(debug_assertions)]
+use crate::KeyExchangeOutput;
 use crate::{Connection, Error, receive};
 
 mod connections;
 pub(crate) use connections::Channels;
 use connections::{IncomingChannelMessage, TerminalsFuture};
-
-#[cfg(debug_assertions)]
-use proto::SessionHostKey;
-
-#[cfg(debug_assertions)]
-use crate::KeyExchangeOutput;
 
 /// A single SSH session's state
 ///
