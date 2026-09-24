@@ -19,7 +19,7 @@ use proto::{
     crypto::CryptoProvider, key_exchange::RekeyState,
 };
 use rustix::{
-    fs::{Mode, OFlags, openat},
+    fs::{Mode, OFlags, open, openat},
     io::FdFlags,
     net::{
         RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
@@ -371,8 +371,8 @@ impl UserStore for SystemStore {
 
     fn keys(&self, user: &User, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
         let home_dir = &user.home_dir;
-        let home = match File::open(home_dir) {
-            Ok(file) => file,
+        let home = match open_dir(None, home_dir) {
+            Ok(fd) => fd,
             Err(error) => {
                 warn!(%error, ?home_dir, "failed to open home directory");
                 return Vec::new();
@@ -387,14 +387,8 @@ impl UserStore for SystemStore {
             }
         };
 
-        let result = openat(
-            &home,
-            ".ssh",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        );
-        let ssh_dir = match result {
-            Ok(fd) => File::from(fd),
+        let ssh_dir = match open_dir(Some(&home), ".ssh") {
+            Ok(fd) => fd,
             Err(error) => {
                 warn!(%error, ?home_dir, "failed to open .ssh directory");
                 return Vec::new();
@@ -451,6 +445,23 @@ impl UserStore for SystemStore {
     fn drop_privileges(&self) -> bool {
         true
     }
+}
+
+fn open_dir<P>(parent_fd: Option<&File>, path: P) -> rustix::io::Result<File>
+where
+    P: rustix::path::Arg,
+{
+    #[cfg(target_os = "linux")]
+    let flags = OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::PATH;
+
+    #[cfg(not(target_os = "linux"))]
+    let flags = OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::RDONLY;
+
+    let target_fd = match parent_fd {
+        None => open(path, flags, Mode::empty()),
+        Some(dir_fd) => openat(dir_fd, path, flags, Mode::empty()),
+    };
+    target_fd.map(File::from)
 }
 
 #[derive(Debug)]
