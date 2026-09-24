@@ -370,21 +370,14 @@ impl UserStore for SystemStore {
     }
 
     fn keys(&self, user: &User, provider: &dyn CryptoProvider) -> Vec<AuthorizedKey> {
-        #[cfg(target_os = "linux")]
-        let directory_flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC;
-
-        #[cfg(not(target_os = "linux"))]
-        let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-
         let home_dir = &user.home_dir;
-        let home_fd = match open(home_dir, directory_flags, Mode::empty()) {
+        let home = match open_dir(None, home_dir) {
             Ok(fd) => fd,
             Err(error) => {
                 warn!(%error, ?home_dir, "failed to open home directory");
                 return Vec::new();
             }
         };
-        let home = File::from(home_fd);
 
         match check_permissions(&home, user.id, "home directory") {
             ControlFlow::Continue(()) => {}
@@ -394,14 +387,13 @@ impl UserStore for SystemStore {
             }
         };
 
-        let ssh_dir_fd = match openat(&home, ".ssh", directory_flags, Mode::empty()) {
+        let ssh_dir = match open_dir(Some(&home), ".ssh") {
             Ok(fd) => fd,
             Err(error) => {
                 warn!(%error, ?home_dir, "failed to open .ssh directory");
                 return Vec::new();
             }
         };
-        let ssh_dir = File::from(ssh_dir_fd);
 
         match check_permissions(&ssh_dir, user.id, ".ssh directory") {
             ControlFlow::Continue(()) => {}
@@ -453,6 +445,23 @@ impl UserStore for SystemStore {
     fn drop_privileges(&self) -> bool {
         true
     }
+}
+
+fn open_dir<P>(parent_fd: Option<&File>, path: P) -> rustix::io::Result<File>
+where
+    P: rustix::path::Arg,
+{
+    #[cfg(target_os = "linux")]
+    let flags = OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::PATH;
+
+    #[cfg(not(target_os = "linux"))]
+    let flags = OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::RDONLY;
+
+    let target_fd = match parent_fd {
+        None => open(path, flags, Mode::empty()),
+        Some(dir_fd) => openat(dir_fd, path, flags, Mode::empty()),
+    };
+    target_fd.map(File::from)
 }
 
 #[derive(Debug)]
