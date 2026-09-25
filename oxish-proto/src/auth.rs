@@ -20,13 +20,11 @@ pub struct AuthorizedKey {
 impl AuthorizedKey {
     /// Build an `AuthorizedKey` from a string in the format used in `authorized_keys`
     pub fn from_str(s: &str, provider: &dyn CryptoProvider) -> Option<Self> {
-        let key = match s.split_once('#') {
-            Some((contents, _)) => contents,
-            None => s,
-        }
-        .trim();
-
-        if key.is_empty() {
+        // Empty lines and lines starting with `#` are ignored (sshd(8)).
+        // A line with `#` after leading whitespace can't be a valid key
+        // line either, so skip it here too.
+        let key = s.trim();
+        if key.is_empty() || key.starts_with('#') {
             return None;
         }
 
