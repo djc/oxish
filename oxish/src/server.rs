@@ -17,7 +17,7 @@ use tracing::{debug, instrument, warn};
 use crate::Session;
 use crate::{
     Connection, Error, SessionState, SideState,
-    authentication::{UserStore, authenticate},
+    authentication::{Authenticated, UserStore, authenticate},
     platform::spawn,
 };
 
@@ -112,7 +112,7 @@ impl Server {
             Err(_) => return Err(anyhow::anyhow!("key exchange timed out")),
         };
 
-        let user = authenticate(
+        let Authenticated { user, options } = authenticate(
             &kx.session_id,
             &mut conn,
             &*self.store,
@@ -125,7 +125,7 @@ impl Server {
 
         #[cfg(debug_assertions)]
         if !self.config.spawn {
-            let session = Session::new(kx, conn, self.provider)?;
+            let session = Session::new(kx, conn, self.provider, options)?;
             return session.run().await.context("session failed");
         }
 
@@ -166,6 +166,7 @@ impl Server {
                 sequence_number: write.sequence_number,
             },
             read_buf: mem::take(&mut read.buf),
+            options,
         };
 
         let mut child = spawn(state, stream, user, self)

@@ -11,7 +11,7 @@ use std::{
 use anyhow::Context;
 use proto::{
     Decoded, Encode, HostKeys, ServerHostKey,
-    auth::AuthorizedKey,
+    auth::{AuthorizedKey, KeyOptions},
     crypto::{CryptoProvider, Digest, KeySourceSide},
     key_exchange::Identities,
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
@@ -274,6 +274,25 @@ impl CliClient {
     }
 
     async fn run(
+        self,
+        command: &[u8],
+        wait_for: Duration,
+        server: JoinHandle<anyhow::Result<()>>,
+    ) -> anyhow::Result<(ExitStatus, String, String)> {
+        let (status, stdout, stderr) = self.run_raw(command, wait_for, server).await?;
+        assert!(
+            stdout.contains(OUTPUT),
+            "expected command output {OUTPUT:?} in session output.\n\
+            --- ssh exit status: {status} ---\n\
+            --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
+            --- stderr ({stderr_len} bytes) ---\n{stderr}",
+            stdout_len = stdout.len(),
+            stderr_len = stderr.len(),
+        );
+        Ok((status, stdout, stderr))
+    }
+
+    async fn run_raw(
         mut self,
         command: &[u8],
         wait_for: Duration,
@@ -289,7 +308,8 @@ impl CliClient {
             .spawn()?;
 
         let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(command).await?;
+        // A forced command can exit before reading stdin, so a broken pipe is not a failure
+        let _ = stdin.write_all(command).await;
         drop(stdin); // close stdin so the session ends after `exit`
 
         let output = timeout(wait_for, child.wait_with_output()).await??;
@@ -308,17 +328,6 @@ impl CliClient {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stdout.contains(OUTPUT),
-            "expected command output {OUTPUT:?} in session output.\n\
-            --- ssh exit status: {status} ---\n\
-            --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
-            --- stderr ({stderr_len} bytes) ---\n{stderr}",
-            status = output.status,
-            stdout_len = output.stdout.len(),
-            stderr_len = output.stderr.len(),
-        );
-
         Ok((output.status, stdout.into_owned(), stderr.into_owned()))
     }
 }
@@ -441,6 +450,9 @@ fn session_state_round_trip() {
             sequence_number: 23,
         },
         read_buf: b"pipelined".to_vec(),
+        options: KeyOptions {
+            command: Some("/bin/true".to_owned()),
+        },
     };
 
     let mut buf = Vec::new();
@@ -475,6 +487,7 @@ fn session_state_round_trip() {
     assert_eq!(decoded.read.sequence_number, 17);
     assert_eq!(decoded.write.counter, 7);
     assert_eq!(decoded.write.sequence_number, 23);
+    assert_eq!(decoded.options.command.as_deref(), Some("/bin/true"));
 }
 
 async fn store(
@@ -562,7 +575,101 @@ fn subscribe() {
     });
 }
 
+/// A `command="..."` option in `authorized_keys` replaces the command the client asked to run.
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn force_command() {
+    subscribe();
+    for spawn in [true, false] {
+        force_command_path(spawn)
+            .await
+            .unwrap_or_else(|error| panic!("forced command failed with spawn={spawn}: {error:?}"));
+    }
+}
+
+#[cfg(feature = "graviola")]
+async fn force_command_path(spawn: bool) -> anyhow::Result<()> {
+    let provider = graviola::DEFAULT_PROVIDER;
+    let dir = TempDir::new()?;
+    let key_path = dir.path().join("key");
+
+    let status = Command::new("ssh-keygen")
+        .arg("-q")
+        .args(["-t", "ed25519"])
+        .args(["-N", ""])
+        .args(["-C", USER])
+        .arg("-f")
+        .arg(&key_path)
+        .status()
+        .await
+        .context("failed to run ssh-keygen")?;
+    assert!(status.success(), "ssh-keygen failed");
+
+    let public_key = fs::read_to_string(key_path.with_extension("pub"))?;
+    let forced = format!("echo {FORCED}");
+    let key = AuthorizedKey::from_str(&format!("command=\"{forced}\" {public_key}"), provider)
+        .ok_or_else(|| anyhow::anyhow!("failed to parse authorized key with options"))?;
+    anyhow::ensure!(
+        key.options.command.as_deref() == Some(forced.as_str()),
+        "forced command not parsed: {:?}",
+        key.options.command,
+    );
+
+    let user = User {
+        name: Username::try_from(USER.to_string())?,
+        id: 1000,
+        gid: 1000,
+        home_dir: PathBuf::from("/var/empty"),
+        shell: PathBuf::from("/bin/sh"),
+    };
+
+    let (_, pkcs8) = provider.generate_signing_key(&PublicKeyAlgorithm::Ed25519)?;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let client = CliClient::new(addr, &key_path);
+
+    let server = Server::new(
+        Box::new(SingleUser::with_keys(user, vec![key])),
+        HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider)?,
+        session_binary().await?,
+        provider,
+    )?
+    .with_config(Config {
+        spawn,
+        ..Config::default()
+    });
+
+    let handle = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await?;
+        stream.set_nodelay(true).ok();
+        server.accept(stream, peer).await
+    });
+
+    // The arithmetic is only expanded if the client's command runs, so the terminal echoing
+    // the input back cannot satisfy the assertion below.
+    let (_, stdout, stderr) = client
+        .run_raw(
+            b"echo NOTFORCED-$((6*7))\nexit\n",
+            Duration::from_secs(10),
+            handle,
+        )
+        .await?;
+
+    anyhow::ensure!(
+        stdout.contains(FORCED),
+        "forced command did not run (spawn={spawn}).\n\
+        --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+    );
+    anyhow::ensure!(
+        !stdout.contains("NOTFORCED-42"),
+        "client command ran despite the forced command (spawn={spawn}).\n\
+        --- stdout ---\n{stdout}",
+    );
+    Ok(())
+}
+
 const USER: &str = "oxish-e2e";
 const COMMAND: &[u8] = b"echo OXISH-$((6*7))\nexit\n";
 const OUTPUT: &str = "OXISH-42";
+const FORCED: &str = "OXISH-FORCED-42";
 const KX_WARNING_MARKER: &str = "post-quantum secure";
