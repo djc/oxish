@@ -14,6 +14,7 @@ use std::{
 
 use proto::{
     IncomingPacket, MAX_PACKET_LEN, MessageType, ProtoError, WriteState,
+    auth::KeyOptions,
     channels::{
         ChannelClose, ChannelData, ChannelEof, ChannelOpen, ChannelOpenConfirmation,
         ChannelOpenFailure, ChannelRequest, ChannelRequestFailure, ChannelRequestSuccess,
@@ -21,7 +22,7 @@ use proto::{
     },
     named::ChannelType,
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::{Error, platform::Terminal};
 
@@ -71,6 +72,7 @@ impl Channels {
         request: ChannelRequest<'_>,
         write: &mut WriteState,
         banner: Option<&str>,
+        options: &KeyOptions,
     ) -> Result<(), Error> {
         let Some(channel) = self.channels.get_mut(&request.recipient_channel) else {
             return Err(ProtoError::InvalidPacket("channel request for unknown channel ID").into());
@@ -102,7 +104,13 @@ impl Channels {
                     );
                 };
 
+                let command = options.command.as_deref();
+                if let Some(command) = command {
+                    info!(channel_id = %request.recipient_channel, command, "running forced command from authorized key");
+                }
+
                 channel.terminal = Some(TerminalState::Running(Terminal::spawn(
+                    command,
                     &pty_req,
                     &channel.env,
                 )?));

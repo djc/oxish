@@ -4,6 +4,7 @@ use core::str::{self, FromStr};
 use proto::SessionHostKey;
 use proto::{
     Disconnect, GlobalRequest, MessageType, Pretty,
+    auth::KeyOptions,
     channels::{ChannelRequest, ChannelRequestType},
     crypto::CryptoProvider,
     key_exchange::{RekeyState, Rekeyed},
@@ -28,6 +29,7 @@ pub struct Session<T> {
     pub(crate) kx: RekeyState,
     pub(crate) channels: Channels,
     pub(crate) post_quantum_kx: bool,
+    pub(crate) options: KeyOptions,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
@@ -36,6 +38,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
         kx: KeyExchangeOutput<'_>,
         conn: Connection<T>,
         provider: &'static dyn CryptoProvider,
+        options: KeyOptions,
     ) -> Result<Self, Error> {
         Ok(Self {
             provider,
@@ -48,6 +51,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
             ),
             post_quantum_kx: kx.post_quantum_kx,
             channels: Channels::default(),
+            options,
         })
     }
 
@@ -106,7 +110,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Session<T> {
                         IncomingChannelMessage::Open(open) => self.channels.open(open, &mut self.conn.write),
                         IncomingChannelMessage::Request(request) => {
                             let banner = banner(&request, self.kx.client_identity(), self.post_quantum_kx);
-                            self.channels.request(request, &mut self.conn.write, banner.as_deref())
+                            self.channels.request(request, &mut self.conn.write, banner.as_deref(), &self.options)
                         }
                         IncomingChannelMessage::Data(data) => match self.channels.data(&data, &mut self.conn.write) {
                             Ok(Some((session, data))) => match session.write(data).await {

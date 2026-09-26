@@ -15,6 +15,8 @@ pub struct AuthorizedKey {
     algorithm: PublicKeyAlgorithm<'static>,
     blob: Vec<u8>,
     key: Arc<dyn VerifyingKey>,
+    /// Options from the `authorized_keys` entry this key came from
+    pub options: KeyOptions,
 }
 
 impl AuthorizedKey {
@@ -23,20 +25,18 @@ impl AuthorizedKey {
         // Empty lines and lines starting with `#` are ignored (sshd(8)).
         // A line with `#` after leading whitespace can't be a valid key
         // line either, so skip it here too.
-        let key = s.trim();
-        if key.is_empty() || key.starts_with('#') {
+        let s = s.trim();
+        if s.is_empty() || s.starts_with('#') {
             return None;
         }
 
-        let mut parts = key.split_whitespace();
-        let Some(alg) = parts.next() else {
+        let (options, algorithm, rest) = KeyOptions::parse(s);
+        let Some(algorithm) = algorithm else {
             debug!("missing algorithm");
             return None;
         };
 
-        // TODO: support options before key type
-        let algorithm = PublicKeyAlgorithm::typed(alg);
-        let Some(key_data) = parts.next() else {
+        let Some(key_data) = rest.split_whitespace().next() else {
             debug!("missing key data");
             return None;
         };
@@ -112,6 +112,7 @@ impl AuthorizedKey {
             algorithm: algorithm.to_owned(),
             key,
             blob,
+            options,
         })
     }
 
@@ -141,7 +142,137 @@ impl fmt::Debug for AuthorizedKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthorizedKey")
             .field("algorithm", &self.algorithm)
+            .field("options", &self.options)
             .finish_non_exhaustive()
+    }
+}
+
+/// Options attached to a single entry in an `authorized_keys` file
+///
+/// Options precede the key type on a line and are separated by commas, as described in
+/// <https://man.openbsd.org/sshd.8#AUTHORIZED_KEYS_FILE_FORMAT>.
+#[derive(Clone, Debug, Default)]
+pub struct KeyOptions {
+    /// The command to run instead of the one requested by the client (`command="..."`)
+    pub command: Option<String>,
+}
+
+impl KeyOptions {
+    /// Parse the options and key type at the start of an `authorized_keys` line
+    ///
+    /// Options are separated by commas and take the form `name` or `name="value"`, where `\"`
+    /// in a value stands for a literal quote. Names are case-insensitive. Whitespace is only
+    /// allowed inside quoted values, and ends the options. Unknown, duplicate or malformed
+    /// options invalidate the line, in which case no key type is returned.
+    ///
+    /// Returns the options, the key type and the rest of the line after the key type.
+    fn parse(s: &str) -> (Self, Option<PublicKeyAlgorithm<'_>>, &str) {
+        let (first, next) = s.split_once([' ', '\t']).unwrap_or((s, ""));
+        match PublicKeyAlgorithm::typed(first) {
+            PublicKeyAlgorithm::Unknown(_) => {}
+            alg => return (Self::default(), Some(alg), next),
+        }
+
+        let mut options = Self::default();
+        let mut rest = s;
+        loop {
+            let end = rest.find(['=', ',', ' ', '\t']).unwrap_or(rest.len());
+            let (name, next) = rest.split_at(end);
+            let (value, next) = match next.strip_prefix('=') {
+                Some(next) => {
+                    let Some(mut rest) = next.strip_prefix('"') else {
+                        debug!("missing start quote in key option value");
+                        return (options, None, rest);
+                    };
+
+                    let mut value = String::new();
+                    loop {
+                        let Some((literal, next)) = rest.split_once('"') else {
+                            debug!("missing end quote in key option value");
+                            return (options, None, rest);
+                        };
+
+                        let Some(literal) = literal.strip_suffix('\\') else {
+                            value.push_str(literal);
+                            break (Some(value), next);
+                        };
+
+                        value.push_str(literal);
+                        value.push('"');
+                        rest = next;
+                    }
+                }
+                None => (None, next),
+            };
+
+            match (name.to_ascii_lowercase().as_str(), value) {
+                ("command", Some(command)) if options.command.is_none() => {
+                    options.command = Some(command)
+                }
+                _ => {
+                    debug!(option = name, "invalid key option");
+                    return (options, None, rest);
+                }
+            }
+
+            match next.chars().next() {
+                Some(',') => rest = &next[1..],
+                Some(' ' | '\t') | None => {
+                    let rest = next.trim_start();
+                    let (key_type, rest) = rest.split_once([' ', '\t']).unwrap_or((rest, ""));
+                    return match key_type.is_empty() {
+                        true => (options, None, rest),
+                        false => (options, Some(PublicKeyAlgorithm::typed(key_type)), rest),
+                    };
+                }
+                Some(_) => {
+                    debug!("unexpected character after key option");
+                    return (options, None, next);
+                }
+            }
+        }
+    }
+}
+
+impl Encode for KeyOptions {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let Self { command } = self;
+        match command {
+            Some(command) => {
+                true.encode(buf);
+                command.as_bytes().encode(buf);
+            }
+            None => false.encode(buf),
+        }
+    }
+}
+
+impl Decode<'_> for KeyOptions {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded {
+            value: has_command,
+            next,
+        } = bool::decode(bytes)?;
+
+        let (command, next) = match has_command {
+            true => {
+                let Decoded {
+                    value: command,
+                    next,
+                } = <&[u8]>::decode(next)?;
+
+                let command = str::from_utf8(command)
+                    .map_err(|_| ProtoError::InvalidPacket("invalid UTF-8 in forced command"))?;
+
+                (Some(command.to_owned()), next)
+            }
+            false => (None, next),
+        };
+
+        Ok(Decoded {
+            value: Self { command },
+            next,
+        })
     }
 }
 
@@ -537,4 +668,61 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
 
         Ok(ServiceRequest { service_name })
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_options() {
+        let cases: &[(&str, Option<Option<&str>>)] = &[
+            ("", Some(None)),
+            (r#"command="echo hi""#, Some(Some("echo hi"))),
+            (r#"COMMAND="echo hi""#, Some(Some("echo hi"))),
+            (r#"command="echo #hash""#, Some(Some("echo #hash"))),
+            (r#"command="echo café""#, Some(Some("echo café"))),
+            (r#"command="say \"hi\"""#, Some(Some(r#"say "hi""#))),
+            (r#"command="a\b""#, Some(Some(r"a\b"))),
+            (r#"command="a\\"b""#, Some(Some(r#"a\"b"#))),
+            (r#"command="a,b c""#, Some(Some("a,b c"))),
+            (r#"command="""#, Some(Some(""))),
+            ("command=\"echo hi\"\t", Some(Some("echo hi"))),
+            (r#"command="trailing \\""#, None),
+            (r#"command="a",command="b""#, None),
+            (r#"command="a" ,command="b""#, None),
+            ("command", None),
+            ("command=unquoted", None),
+            (r#"command="unterminated"#, None),
+            (r#"command="echo hi"junk"#, None),
+            (r#",command="echo hi""#, None),
+            (r#"command="echo hi","#, None),
+            (r#"command="echo hi",,"#, None),
+            ("no-pty", None),
+            (r#"no-pty,command="echo hi""#, None),
+            (r#"command="echo hi",no-pty"#, None),
+        ];
+
+        for (options, expected) in cases {
+            let line = match options.is_empty() {
+                true => format!("ssh-ed25519 {KEY}"),
+                false => format!("{options} ssh-ed25519 {KEY}"),
+            };
+
+            let (parsed, key_type, rest) = KeyOptions::parse(&line);
+            let parsed = match (key_type, rest) {
+                (Some(PublicKeyAlgorithm::Ed25519), KEY) => Some(parsed.command),
+                _ => None,
+            };
+
+            assert_eq!(
+                parsed.as_ref().map(|command| command.as_deref()),
+                *expected,
+                "unexpected result for options {options:?}",
+            );
+        }
+    }
+
+    const KEY: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAIMPdEXeWrpzl1Lgk7akX7+7x4B1eoyV5tyD6674DIh3R user@host";
 }

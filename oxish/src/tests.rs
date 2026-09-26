@@ -3,7 +3,7 @@ use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    env, fs,
+    env, fs, io,
     panic::resume_unwind,
     path::Path,
     path::PathBuf,
@@ -14,7 +14,7 @@ use std::{
 use anyhow::Context;
 use proto::{
     Decoded, Encode, HostKeys, OpenSshKeyV1, ServerHostKey, SshPrivateKey,
-    auth::AuthorizedKey,
+    auth::{AuthorizedKey, KeyOptions},
     crypto::{CryptoProvider, Digest, KeySourceSide},
     key_exchange::Identities,
     named::{EncryptionAlgorithm, PublicKeyAlgorithm},
@@ -152,12 +152,14 @@ async fn handshake_x25519(provider: &'static dyn CryptoProvider) -> anyhow::Resu
     subscribe();
 
     let (_key_dir, mut client, server) =
-        setup(&PublicKeyAlgorithm::Ed25519, None, provider).await?;
+        setup(&PublicKeyAlgorithm::Ed25519, None, None, provider).await?;
     // Restrict the client to the non-PQ key exchange so the test fails if the
     // server no longer supports it.
     client.cmd.args(["-o", "KexAlgorithms=curve25519-sha256"]);
 
-    let (_, stdout, stderr) = client.run(COMMAND, Duration::from_secs(10), server).await?;
+    let (_, stdout, stderr) = client
+        .assert_run(COMMAND, Duration::from_secs(10), server)
+        .await?;
     anyhow::ensure!(
         stderr.contains("kex: algorithm: curve25519-sha256"),
         "client did not negotiate curve25519-sha256"
@@ -178,6 +180,7 @@ async fn no_spawn() {
 
     let (_key_dir, client, server) = setup(
         &PublicKeyAlgorithm::Ed25519,
+        None,
         Some(Config {
             spawn: false,
             ..Config::default()
@@ -188,7 +191,7 @@ async fn no_spawn() {
     .expect("failed to set up test");
 
     client
-        .run(
+        .assert_run(
             COMMAND,
             // In the rekey scenario, keep the session open long enough for several rekeys before the
             // sentinel; it only arrives if the session survived them.
@@ -199,6 +202,40 @@ async fn no_spawn() {
         .unwrap();
 }
 
+/// Check that a `command` key option replaces the command the client asked to run
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn force_command() {
+    subscribe();
+
+    let (_key_dir, client, server) = setup(
+        &PublicKeyAlgorithm::Ed25519,
+        Some(r#"command="echo OXISH-FORCED-$((6*7))""#),
+        None,
+        graviola::DEFAULT_PROVIDER,
+    )
+    .await
+    .expect("failed to set up test");
+
+    // The arithmetic is only expanded when a shell runs the command, so the terminal echoing
+    // the client's input back cannot satisfy these assertions.
+    let (_, stdout, stderr) = client
+        .run(COMMAND, Duration::from_secs(10), server)
+        .await
+        .unwrap();
+
+    assert!(
+        stdout.contains(FORCED),
+        "forced command did not run.\n\
+        --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+    );
+    assert!(
+        !stdout.contains(OUTPUT),
+        "client command ran despite the forced command.\n\
+        --- stdout ---\n{stdout}",
+    );
+}
+
 /// Exercise a client-initiated rekey against the graviola provider
 #[cfg(feature = "graviola")]
 #[tokio::test]
@@ -207,6 +244,7 @@ async fn rekey_graviola() {
     subscribe();
     let (_key_dir, mut client, server) = setup(
         &PublicKeyAlgorithm::Ed25519,
+        None,
         None,
         graviola::DEFAULT_PROVIDER,
     )
@@ -219,7 +257,7 @@ async fn rekey_graviola() {
     client.cmd.args(["-o", "RekeyLimit=default 1"]);
 
     let (status, _stdout, stderr) = client
-        .run(
+        .assert_run(
             b"sleep 10\necho OXISH-$((6*7))\nexit\n",
             // In the rekey scenario, keep the session open long enough for several rekeys before the
             // sentinel; it only arrives if the session survived them.
@@ -260,10 +298,10 @@ async fn handshake(
 ) -> anyhow::Result<()> {
     subscribe();
 
-    let (_key_dir, client, server) = setup(&algorithm, None, provider).await?;
+    let (_key_dir, client, server) = setup(&algorithm, None, None, provider).await?;
 
     let (_, stdout, stderr) = client
-        .run(
+        .assert_run(
             COMMAND,
             // In the rekey scenario, keep the session open long enough for several rekeys before the
             // sentinel; it only arrives if the session survived them.
@@ -284,10 +322,11 @@ async fn handshake(
 
 async fn setup(
     algorithm: &PublicKeyAlgorithm<'_>,
+    options: Option<&str>,
     config: Option<Config>,
     provider: &'static dyn CryptoProvider,
 ) -> anyhow::Result<(TempDir, CliClient, JoinHandle<anyhow::Result<()>>)> {
-    let (key_dir, store) = store(algorithm, provider).await?;
+    let (key_dir, store) = store(algorithm, options, provider).await?;
     let (_, pkcs8) = provider.generate_signing_key(algorithm)?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
@@ -340,6 +379,25 @@ impl CliClient {
         Self { addr, cmd }
     }
 
+    async fn assert_run(
+        self,
+        command: &[u8],
+        wait_for: Duration,
+        server: JoinHandle<anyhow::Result<()>>,
+    ) -> anyhow::Result<(ExitStatus, String, String)> {
+        let (status, stdout, stderr) = self.run(command, wait_for, server).await?;
+        assert!(
+            stdout.contains(OUTPUT),
+            "expected command output {OUTPUT:?} in session output.\n\
+            --- ssh exit status: {status} ---\n\
+            --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
+            --- stderr ({stderr_len} bytes) ---\n{stderr}",
+            stdout_len = stdout.len(),
+            stderr_len = stderr.len(),
+        );
+        Ok((status, stdout, stderr))
+    }
+
     async fn run(
         mut self,
         command: &[u8],
@@ -356,7 +414,12 @@ impl CliClient {
             .spawn()?;
 
         let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(command).await?;
+        // A forced command can exit before reading stdin, so a broken pipe is not a failure
+        match stdin.write_all(command).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+            Err(error) => return Err(error.into()),
+        }
         drop(stdin); // close stdin so the session ends after `exit`
 
         let output = timeout(wait_for, child.wait_with_output()).await??;
@@ -375,17 +438,6 @@ impl CliClient {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stdout.contains(OUTPUT),
-            "expected command output {OUTPUT:?} in session output.\n\
-            --- ssh exit status: {status} ---\n\
-            --- stdout ({stdout_len} bytes) ---\n{stdout}\n\
-            --- stderr ({stderr_len} bytes) ---\n{stderr}",
-            status = output.status,
-            stdout_len = output.stdout.len(),
-            stderr_len = output.stderr.len(),
-        );
-
         Ok((output.status, stdout.into_owned(), stderr.into_owned()))
     }
 }
@@ -508,6 +560,9 @@ fn session_state_round_trip() {
             sequence_number: 23,
         },
         read_buf: b"pipelined".to_vec(),
+        options: KeyOptions {
+            command: Some("/bin/true".to_owned()),
+        },
     };
 
     let mut buf = Vec::new();
@@ -542,10 +597,12 @@ fn session_state_round_trip() {
     assert_eq!(decoded.read.sequence_number, 17);
     assert_eq!(decoded.write.counter, 7);
     assert_eq!(decoded.write.sequence_number, 23);
+    assert_eq!(decoded.options.command.as_deref(), Some("/bin/true"));
 }
 
 async fn store(
     algorithm: &PublicKeyAlgorithm<'_>,
+    options: Option<&str>,
     provider: &dyn CryptoProvider,
 ) -> anyhow::Result<(TempDir, Box<dyn UserStore>)> {
     let dir = TempDir::new()?;
@@ -570,6 +627,11 @@ async fn store(
     assert!(status.success(), "ssh-keygen failed");
 
     let authorized_key = fs::read_to_string(key_path.with_extension("pub"))?;
+    let authorized_key = match options {
+        Some(options) => format!("{options} {authorized_key}"),
+        None => authorized_key,
+    };
+
     let key = AuthorizedKey::from_str(&authorized_key, provider)
         .ok_or_else(|| anyhow::anyhow!("failed to parse generated public key"))?;
 
@@ -645,4 +707,5 @@ fn subscribe() {
 const USER: &str = "oxish-e2e";
 const COMMAND: &[u8] = b"echo OXISH-$((6*7))\nexit\n";
 const OUTPUT: &str = "OXISH-42";
+const FORCED: &str = "OXISH-FORCED-42";
 const KX_WARNING_MARKER: &str = "post-quantum secure";
