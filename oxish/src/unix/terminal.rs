@@ -36,7 +36,11 @@ pub(crate) struct Terminal {
 }
 
 impl Terminal {
-    pub(crate) fn spawn(req: &PtyReq<'_>, env: &[(String, String)]) -> io::Result<Self> {
+    pub(crate) fn spawn(
+        command: Option<&str>,
+        req: &PtyReq<'_>,
+        env: &[(String, String)],
+    ) -> io::Result<Self> {
         debug!(?req, ?env, "spawning new session with PTY");
         let controller = pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
         pty::grantpt(&controller)?;
@@ -62,7 +66,10 @@ impl Terminal {
 
         let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let mut cmd = Command::new(&shell);
-        cmd.arg("-l");
+        match command {
+            Some(command) => cmd.arg("-c").arg(command),
+            None => cmd.arg("-l"),
+        };
 
         for (k, v) in env {
             cmd.env(k, v);

@@ -4,8 +4,8 @@ use std::{borrow::Cow, ffi::CStr, io, path::PathBuf, str};
 use proto::{
     Disconnect, DisconnectReason, IncomingPacket, MessageType, ProtoError, WriteState,
     auth::{
-        AuthorizedKey, Method, ServiceAccept, ServiceRequest, SignatureData, UserAuthFailure,
-        UserAuthPkOk, UserAuthRequest,
+        AuthorizedKey, KeyOptions, Method, ServiceAccept, ServiceRequest, SignatureData,
+        UserAuthFailure, UserAuthPkOk, UserAuthRequest,
     },
     crypto::{CryptoError, CryptoProvider, Digest},
     named::{MethodName, PublicKeyAlgorithm, ServiceName},
@@ -26,7 +26,7 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
     store: &dyn UserStore,
     root_policy: RootPolicy,
     provider: &dyn CryptoProvider,
-) -> anyhow::Result<User> {
+) -> anyhow::Result<Authenticated> {
     let mut state = AuthenticationState::default();
     let future = async {
         loop {
@@ -43,7 +43,7 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
                 .await;
 
             match (handled, conn.flush().await) {
-                (Ok(AuthenticationState::Complete(user)), Ok(())) => return Ok(user),
+                (Ok(AuthenticationState::Complete(auth)), Ok(())) => return Ok(auth),
                 (Ok(next), Ok(())) => state = next,
                 (Err(error), _) | (_, Err(error)) => return Err(error),
             }
@@ -51,7 +51,7 @@ pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
     };
 
     let (error, disconnect) = match timeout(Duration::from_secs(60), future).await {
-        Ok(Ok(user)) => return Ok(user),
+        Ok(Ok(auth)) => return Ok(auth),
         Ok(Err(error)) => {
             let disconnect = match &error {
                 Error::Auth(AuthError::TooManyAttempts) => Disconnect {
@@ -100,7 +100,7 @@ enum AuthenticationState {
         cached: Option<CachedUser>,
         attempts: u8,
     },
-    Complete(User),
+    Complete(Authenticated),
 }
 
 impl AuthenticationState {
@@ -253,15 +253,19 @@ impl AuthenticationState {
                     }
                 };
 
+                let options = authorized_key.options.clone();
                 match spawn_blocking(move || authorized_key.verify(message, signature)).await {
                     Ok(Ok(())) => {
                         let Some(user) = cached else {
                             return Err(ProtoError::Unreachable("must have cached user").into());
                         };
-
                         info!(user = %user.data.name, "authentication successful");
+
                         write.encode(&MessageType::UserAuthSuccess)?;
-                        Ok(Self::Complete(user.data))
+                        Ok(Self::Complete(Authenticated {
+                            user: user.data,
+                            options,
+                        }))
                     }
                     _ => {
                         send_auth_failed(write)?;
@@ -360,6 +364,14 @@ pub trait UserStore: Send + Sync + 'static {
 pub(crate) struct CachedUser {
     pub(crate) data: User,
     pub(crate) keys: Vec<AuthorizedKey>,
+}
+
+/// A successfully authenticated user, together with the options on the key they authenticated with
+pub(crate) struct Authenticated {
+    /// The authenticated user
+    pub(crate) user: User,
+    /// Options from the `authorized_keys` entry that matched
+    pub(crate) options: KeyOptions,
 }
 
 /// User data as retrieved from the system database
