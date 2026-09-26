@@ -291,6 +291,7 @@ pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream
         read,
         write,
         read_buf,
+        options,
     } = state;
 
     let opener = provider.opening_key(read.counter, &read.source)?;
@@ -320,6 +321,7 @@ pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream
         kx: RekeyState::new(session_id, strict_kx, identities, host_key),
         channels: Channels::default(),
         post_quantum_kx,
+        options,
     })
 }
 
