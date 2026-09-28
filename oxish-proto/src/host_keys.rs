@@ -371,17 +371,17 @@ impl<'a> Decode<'a> for SshEcdsaKey<'a> {
     }
 }
 
-struct SshEd25519Key<'a> {
+struct SshEd25519Key {
     #[expect(dead_code)]
-    public: &'a [u8],
-    private: &'a [u8],
+    public: [u8; 32],
+    seed: Zeroizing<[u8; 32]>,
 }
 
-impl SshEd25519Key<'_> {
+impl SshEd25519Key {
     fn to_pkcs8(&self) -> Zeroizing<Vec<u8>> {
         let mut pkcs8 = Zeroizing::new(Vec::with_capacity(Self::PKCS8_PREFIX.len() + 32));
         pkcs8.extend_from_slice(Self::PKCS8_PREFIX);
-        pkcs8.extend_from_slice(&self.private[..32]);
+        pkcs8.extend_from_slice(&*self.seed);
         pkcs8
     }
 
@@ -394,7 +394,7 @@ impl SshEd25519Key<'_> {
     ];
 }
 
-impl<'a> Decode<'a> for SshEd25519Key<'a> {
+impl<'a> Decode<'a> for SshEd25519Key {
     fn decode(bytes: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded {
             value: public,
@@ -410,10 +410,13 @@ impl<'a> Decode<'a> for SshEd25519Key<'a> {
             return Err(ProtoError::InvalidHostKey("invalid ed25519 key data"));
         }
 
-        Ok(Decoded {
-            value: Self { public, private },
-            next,
-        })
+        let mut key = Self {
+            public: [0; 32],
+            seed: Zeroizing::new([0; 32]),
+        };
+        key.public.copy_from_slice(public); // Checked public.len() is 32
+        key.seed.copy_from_slice(&private[..32]);
+        Ok(Decoded { value: key, next })
     }
 }
 
