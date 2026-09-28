@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 use crate::{
     Decode, Decoded, Encode, ProtoError, PublicKeyAlgorithm,
     crypto::{CryptoError, CryptoProvider, SigningKey},
-    key_exchange::Negotiated,
+    key_exchange::{Negotiated, encode_mpint},
     named::Named,
 };
 
@@ -294,6 +294,23 @@ impl SshPrivateKey {
             Self::EcdsaSha2Nistp256(key) => key.to_pkcs8(),
         }
     }
+
+    fn algorithm(&self) -> PublicKeyAlgorithm<'static> {
+        match self {
+            Self::Ed25519(_) => PublicKeyAlgorithm::Ed25519,
+            Self::EcdsaSha2Nistp256(_) => PublicKeyAlgorithm::EcdsaSha2Nistp256,
+        }
+    }
+}
+
+impl Encode for SshPrivateKey {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.algorithm().name().as_bytes().encode(buf);
+        match self {
+            Self::Ed25519(key) => key.encode(buf),
+            Self::EcdsaSha2Nistp256(key) => key.encode(buf),
+        }
+    }
 }
 
 impl<'a> Decode<'a> for SshPrivateKey {
@@ -362,6 +379,14 @@ impl SshEcdsaKey {
     const PKCS8_MIDDLE: &'static [u8] = &[0xa1, 0x44, 0x03, 0x42, 0x00];
 }
 
+impl Encode for SshEcdsaKey {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        b"nistp256".encode(buf);
+        self.public.encode(buf);
+        encode_mpint(&*self.scalar, buf);
+    }
+}
+
 impl<'a> Decode<'a> for SshEcdsaKey {
     fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: curve, next } = <&[u8]>::decode(input)?;
@@ -426,6 +451,16 @@ impl SshEd25519Key {
         0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
         0x20,
     ];
+}
+
+impl Encode for SshEd25519Key {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.public.encode(buf);
+        // OpenSSH stores the 64-byte `seed || public` form as the private key
+        64u32.encode(buf);
+        buf.extend_from_slice(&*self.seed);
+        buf.extend_from_slice(&self.public);
+    }
 }
 
 impl<'a> Decode<'a> for SshEd25519Key {
