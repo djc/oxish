@@ -25,32 +25,82 @@ impl AuthorizedKey {
         // Empty lines and lines starting with `#` are ignored (sshd(8)).
         // A line with `#` after leading whitespace can't be a valid key
         // line either, so skip it here too.
-        let mut key = s.trim();
-        if key.is_empty() || key.starts_with('#') {
+        let mut rest = s.trim();
+        if rest.is_empty() || rest.starts_with('#') {
             return None;
         }
 
-        let mut parts = key.split_whitespace();
+        let mut options = KeyOptions::default();
+        let first = rest.split_whitespace().next().unwrap_or(rest);
+        if matches!(
+            PublicKeyAlgorithm::typed(first),
+            PublicKeyAlgorithm::Unknown(_)
+        ) {
+            loop {
+                let end = rest.find(['=', ',', ' ', '\t']).unwrap_or(rest.len());
+                let (name, mut tail) = rest.split_at_checked(end)?;
+
+                if !name.eq_ignore_ascii_case("command") {
+                    debug!(option = name, "unknown key option");
+                    return None;
+                }
+
+                let Some(value) = tail.strip_prefix('=') else {
+                    debug!("`command` option requires a quoted value");
+                    return None;
+                };
+
+                if options.command.is_some() {
+                    debug!("duplicate `command` option");
+                    return None;
+                }
+
+                let Some(mut quoted) = value.strip_prefix('"') else {
+                    debug!("missing start quote");
+                    return None;
+                };
+
+                let mut command = String::new();
+                tail = loop {
+                    if let Some(next) = quoted.strip_prefix("\\\"") {
+                        command.push('"');
+                        quoted = next;
+                    } else if let Some(next) = quoted.strip_prefix('"') {
+                        break next;
+                    } else {
+                        let Some(c) = quoted.chars().next() else {
+                            debug!("missing end quote");
+                            return None;
+                        };
+
+                        command.push(c);
+                        quoted = quoted.strip_prefix(c)?;
+                    }
+                };
+
+                options.command = Some(command);
+
+                match tail.chars().next() {
+                    Some(',') => rest = tail.strip_prefix(',')?,
+                    Some(' ' | '\t') => {
+                        rest = tail.trim_start();
+                        break;
+                    }
+                    _ => {
+                        debug!("unexpected data after key options");
+                        return None;
+                    }
+                }
+            }
+        }
+
+        let mut parts = rest.split_whitespace();
         let Some(alg) = parts.next() else {
             debug!("missing algorithm");
             return None;
         };
 
-        let (algorithm, auth_options) = match peek_authoption(&mut key, alg) {
-            None => return None,
-            Some(RetType::Algorithm(algorithm)) => (algorithm, KeyOptions::default()),
-            Some(RetType::OptAndRest((mut options, rest))) => {
-                parts = rest.split_whitespace();
-                let Some(alg) = parts.next() else {
-                    debug!("missing algorithm");
-                    return None;
-                };
-                (
-                    PublicKeyAlgorithm::typed(alg),
-                    KeyOptions::new(&mut options),
-                )
-            }
-        };
+        let algorithm = PublicKeyAlgorithm::typed(alg);
         let Some(key_data) = parts.next() else {
             debug!("missing key data");
             return None;
@@ -127,7 +177,7 @@ impl AuthorizedKey {
             algorithm: algorithm.to_owned(),
             key,
             blob,
-            options: auth_options,
+            options,
         })
     }
 
@@ -170,123 +220,6 @@ impl fmt::Debug for AuthorizedKey {
 pub struct KeyOptions {
     /// The command to run instead of the one requested by the client (`command="..."`)
     pub command: Option<String>,
-}
-
-impl KeyOptions {
-    /// Parse the option list preceding a key, consuming `text`
-    pub fn new(text: &mut &str) -> Self {
-        let mut auth_options = Self::default();
-
-        while !text.is_empty() {
-            if try_key(text, "command") {
-                if auth_options.command.is_some() {
-                    debug!("command must be specified atmost one");
-                    return Self::default();
-                }
-
-                if let Some(command) = dequote(text) {
-                    auth_options.command = Some(command);
-                };
-            }
-
-            match text.get(1..) {
-                Some(next) => *text = next,
-                None => break,
-            }
-        }
-
-        auth_options
-    }
-}
-
-fn try_key(options: &mut &str, opt: &str) -> bool {
-    if let Some(rest) = options.strip_prefix(opt) {
-        if let Some(rest) = rest.strip_prefix('=') {
-            *options = rest;
-            return true;
-        }
-    }
-    false
-}
-
-fn dequote(text: &mut &str) -> Option<String> {
-    let mut chars = text.char_indices();
-    match chars.next() {
-        Some((_, '"')) => {}
-        _ => {
-            return None;
-        }
-    }
-
-    let mut result = String::new();
-    let mut end = None;
-    let mut escaped = false;
-
-    for (i, c) in chars {
-        if escaped {
-            if c == '\\' {
-                result.push('\\');
-            }
-            result.push(c);
-            escaped = false;
-            continue;
-        }
-
-        match c {
-            '\\' => escaped = true,
-            '"' => {
-                end = Some(i + c.len_utf8());
-                break;
-            }
-            _ => result.push(c),
-        }
-    }
-
-    let (_, rest) = text.split_at_checked(end?)?;
-    *text = rest;
-    Some(result)
-}
-
-enum RetType<'a> {
-    Algorithm(PublicKeyAlgorithm<'a>),
-    OptAndRest((&'a str, &'a str)),
-}
-
-fn peek_authoption<'a>(line: &'a mut &'a str, algo: &'a str) -> Option<RetType<'a>> {
-    let alg = PublicKeyAlgorithm::typed(algo);
-    match alg {
-        PublicKeyAlgorithm::Unknown(_) => {}
-        _ => {
-            return Some(RetType::Algorithm(alg));
-        }
-    }
-
-    try_advance_past_options(line).map(RetType::OptAndRest)
-}
-
-fn try_advance_past_options<'a>(line: &'a mut &'a str) -> Option<(&'a str, &'a str)> {
-    let mut escaped = false;
-    let mut in_quotes = false;
-    let mut end = line.len();
-
-    for (i, c) in line.chars().enumerate() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-
-        match c {
-            '\\' => escaped = true,
-            '"' => in_quotes = !in_quotes,
-            x if !in_quotes && x.is_whitespace() => {
-                end = i;
-                break;
-            }
-            _ => continue,
-        }
-    }
-
-    line.split_at_checked(end)
 }
 
 /// The `SSH_MSG_USERAUTH_REQUEST` message

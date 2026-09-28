@@ -592,6 +592,45 @@ fn subscribe() {
     });
 }
 
+#[test]
+fn authorized_key_options() {
+    use crate::DEFAULT_PROVIDER;
+
+    const KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMPdEXeWrpzl1Lgk7akX7+7x4B1eoyV5tyD6674DIh3R";
+
+    let cases: &[(&str, Option<Option<&str>>)] = &[
+        ("", Some(None)),
+        (r#"command="echo hi""#, Some(Some("echo hi"))),
+        (r#"COMMAND="echo hi""#, Some(Some("echo hi"))),
+        (r#"command="echo #hash""#, Some(Some("echo #hash"))),
+        (r#"command="echo café""#, Some(Some("echo café"))),
+        (r#"command="say \"hi\"""#, Some(Some(r#"say "hi""#))),
+        (r#"command="trailing \\""#, None),
+        (r#"command="a",command="b""#, None),
+        (r#"command="a" ,command="b""#, None),
+        ("command=unquoted", None),
+        (r#"command="unterminated"#, None),
+        ("no-pty", None),
+        (r#"no-pty,command="echo hi""#, None),
+    ];
+
+    for (options, expected) in cases {
+        let line = match options.is_empty() {
+            true => KEY.to_owned(),
+            false => format!("{options} {KEY}"),
+        };
+
+        let parsed =
+            AuthorizedKey::from_str(&line, DEFAULT_PROVIDER).map(|key| key.options.command);
+        assert_eq!(
+            parsed.as_ref().map(|command| command.as_deref()),
+            *expected,
+            "unexpected result for options {options:?}",
+        );
+    }
+}
+
 /// A `command="..."` option in `authorized_keys` replaces the command the client asked to run.
 #[cfg(feature = "graviola")]
 #[tokio::test]
