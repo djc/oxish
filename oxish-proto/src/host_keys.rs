@@ -379,19 +379,19 @@ struct SshEd25519Key<'a> {
 
 impl SshEd25519Key<'_> {
     fn to_pkcs8(&self) -> Zeroizing<Vec<u8>> {
-        /// PKCS#8 v1 (RFC 5208) prefix for an Ed25519 private key (RFC 8410), up to the 32-byte seed
-        ///
-        /// `SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.112 }, OCTET STRING { OCTET STRING } }`
-        const ED25519_PKCS8_PREFIX: &[u8] = &[
-            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
-            0x04, 0x20,
-        ];
-
-        let mut pkcs8 = Zeroizing::new(Vec::with_capacity(ED25519_PKCS8_PREFIX.len() + 32));
-        pkcs8.extend_from_slice(ED25519_PKCS8_PREFIX);
+        let mut pkcs8 = Zeroizing::new(Vec::with_capacity(Self::PKCS8_PREFIX.len() + 32));
+        pkcs8.extend_from_slice(Self::PKCS8_PREFIX);
         pkcs8.extend_from_slice(&self.private[..32]);
         pkcs8
     }
+
+    /// PKCS#8 v1 (RFC 5208) prefix for an Ed25519 private key (RFC 8410), up to the 32-byte seed
+    ///
+    /// `SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.112 }, OCTET STRING { OCTET STRING } }`
+    const PKCS8_PREFIX: &'static [u8] = &[
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
+        0x20,
+    ];
 }
 
 impl<'a> Decode<'a> for SshEd25519Key<'a> {
