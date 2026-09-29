@@ -524,15 +524,26 @@ async fn store(
 /// Build and locate the `oxish-session` binary
 ///
 /// `cargo test` only builds the crate's binaries as test harnesses, so build the real
-/// binary here (a no-op when fresh). Unit tests run from `target/<profile>/deps/`, while
-/// cargo places the binary in `target/<profile>/`.
+/// binary here (a no-op when fresh). Unit tests run from `target/<profile>/deps/` (or
+/// `target/<profile>/build/<package>/<hash>/out/` with Cargo's newer build directory layout),
+/// while cargo places the binary in `target/<profile>/`.
 static SESSION_BINARY: OnceCell<PathBuf> = OnceCell::const_new();
 
 async fn build_session_binary() -> anyhow::Result<PathBuf> {
     let exe = env::current_exe()?;
-    let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    // TODO: simplify for new build directory layout once MSRV hits 1.100
+    let Some(profile_dir) = exe
+        .ancestors()
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "deps" || name == "build")
+        })
+        .and_then(Path::parent)
+    else {
+        anyhow::bail!("no profile directory found for `{}`", exe.display());
+    };
 
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command.args(["build", "-q", "-p", "oxish", "--bin", "oxish-session"]);
     command
