@@ -301,7 +301,7 @@ impl CliClient {
         // — the server never noticing the disconnect — should fail the test.
         match timeout(Duration::from_secs(10), server).await {
             Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(error))) => println!("server task yielded {error}"),
+            Ok(Ok(Err(error))) => println!("server task yielded {error:#}"),
             Ok(Err(err)) => resume_unwind(err.into_panic()),
             Err(_elapsed) => panic!("server still running after client disconnected"),
         };
