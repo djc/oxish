@@ -18,7 +18,8 @@ use proto::{
 };
 use tempfile::TempDir;
 use tokio::{
-    io::AsyncWriteExt, net::TcpListener, process::Command, task::JoinHandle, time::timeout,
+    io::AsyncWriteExt, net::TcpListener, process::Command, sync::OnceCell, task::JoinHandle,
+    time::timeout,
 };
 use zeroize::Zeroizing;
 
@@ -232,7 +233,10 @@ async fn setup(
     let server = Server::new(
         store,
         HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider)?,
-        session_binary().await?,
+        SESSION_BINARY
+            .get_or_try_init(build_session_binary)
+            .await
+            .cloned()?,
         provider,
     )?;
 
@@ -522,7 +526,9 @@ async fn store(
 /// `cargo test` only builds the crate's binaries as test harnesses, so build the real
 /// binary here (a no-op when fresh). Unit tests run from `target/<profile>/deps/`, while
 /// cargo places the binary in `target/<profile>/`.
-async fn session_binary() -> anyhow::Result<PathBuf> {
+static SESSION_BINARY: OnceCell<PathBuf> = OnceCell::const_new();
+
+async fn build_session_binary() -> anyhow::Result<PathBuf> {
     let exe = env::current_exe()?;
     let profile_dir = exe.parent().and_then(|deps| deps.parent()).unwrap();
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
