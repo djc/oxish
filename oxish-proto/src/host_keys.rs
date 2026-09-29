@@ -309,32 +309,32 @@ struct SshEcdsaKey<'a> {
 
 impl<'a> SshEcdsaKey<'a> {
     fn to_pkcs8(&self) -> Zeroizing<Vec<u8>> {
-        /// PKCS#8 v1 prefix for an ECDSA P-256 private key (RFC 5915), up to the 32-byte scalar
-        ///
-        /// `SEQUENCE { INTEGER 0, SEQUENCE { OID 1.2.840.10045.2.1, OID 1.2.840.10045.3.1.7 },
-        /// OCTET STRING { SEQUENCE { INTEGER 1, OCTET STRING ... } } }`
-        const ECDSA_P256_PKCS8_PREFIX: &[u8] = &[
-            0x30, 0x81, 0x87, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce,
-            0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04,
-            0x6d, 0x30, 0x6b, 0x02, 0x01, 0x01, 0x04, 0x20,
-        ];
-
-        /// Continuation of [`ECDSA_P256_PKCS8_PREFIX`] between the scalar and the 65-byte public point
-        ///
-        /// `[1] { BIT STRING }`
-        const ECDSA_P256_PKCS8_MIDDLE: &[u8] = &[0xa1, 0x44, 0x03, 0x42, 0x00];
-
         let mut pkcs8 = Zeroizing::new(Vec::with_capacity(
-            ECDSA_P256_PKCS8_PREFIX.len() + 32 + ECDSA_P256_PKCS8_MIDDLE.len() + 65,
+            Self::PKCS8_PREFIX.len() + 32 + Self::PKCS8_MIDDLE.len() + 65,
         ));
-        pkcs8.extend_from_slice(ECDSA_P256_PKCS8_PREFIX);
-        let padded = ECDSA_P256_PKCS8_PREFIX.len() + (32 - self.scalar.len());
+        pkcs8.extend_from_slice(Self::PKCS8_PREFIX);
+        let padded = Self::PKCS8_PREFIX.len() + (32 - self.scalar.len());
         pkcs8.resize(padded, 0);
         pkcs8.extend_from_slice(self.scalar);
-        pkcs8.extend_from_slice(ECDSA_P256_PKCS8_MIDDLE);
+        pkcs8.extend_from_slice(Self::PKCS8_MIDDLE);
         pkcs8.extend_from_slice(self.public);
         pkcs8
     }
+
+    /// PKCS#8 v1 prefix for an ECDSA P-256 private key (RFC 5915), up to the 32-byte scalar
+    ///
+    /// `SEQUENCE { INTEGER 0, SEQUENCE { OID 1.2.840.10045.2.1, OID 1.2.840.10045.3.1.7 },
+    /// OCTET STRING { SEQUENCE { INTEGER 1, OCTET STRING ... } } }`
+    const PKCS8_PREFIX: &'static [u8] = &[
+        0x30, 0x81, 0x87, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+        0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04, 0x6d, 0x30,
+        0x6b, 0x02, 0x01, 0x01, 0x04, 0x20,
+    ];
+
+    /// Continuation of [`Self::PKCS8_PREFIX`] between the scalar and the 65-byte public point
+    ///
+    /// `[1] { BIT STRING }`
+    const PKCS8_MIDDLE: &'static [u8] = &[0xa1, 0x44, 0x03, 0x42, 0x00];
 }
 
 impl<'a> Decode<'a> for SshEcdsaKey<'a> {
