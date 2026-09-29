@@ -209,13 +209,7 @@ impl Encode for SessionState<ServerHostKey<'_>> {
         read.encode(buf);
         write.encode(buf);
         read_buf.encode(buf);
-        match &options.command {
-            Some(command) => {
-                true.encode(buf);
-                command.as_bytes().encode(buf);
-            }
-            None => false.encode(buf),
-        }
+        options.encode(buf);
     }
 }
 
@@ -266,23 +260,9 @@ impl SessionState<SessionHostKey> {
         } = <&[u8]>::decode(next)?;
 
         let Decoded {
-            value: has_command,
+            value: options,
             next,
-        } = bool::decode(next)?;
-
-        let (command, next) = match has_command {
-            true => {
-                let Decoded {
-                    value: command,
-                    next,
-                } = <&[u8]>::decode(next)?;
-                let Ok(command) = str::from_utf8(command) else {
-                    return Err(ProtoError::InvalidPacket("invalid UTF-8 in forced command"));
-                };
-                (Some(command.to_owned()), next)
-            }
-            false => (None, next),
-        };
+        } = KeyOptions::decode(next)?;
 
         Ok(Decoded {
             value: Self {
@@ -295,7 +275,7 @@ impl SessionState<SessionHostKey> {
                 read,
                 write,
                 read_buf: read_buf.to_vec(),
-                options: KeyOptions { command },
+                options,
             },
             next,
         })

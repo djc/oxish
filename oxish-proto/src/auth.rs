@@ -222,6 +222,48 @@ pub struct KeyOptions {
     pub command: Option<String>,
 }
 
+impl Encode for KeyOptions {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let Self { command } = self;
+        match command {
+            Some(command) => {
+                true.encode(buf);
+                command.as_bytes().encode(buf);
+            }
+            None => false.encode(buf),
+        }
+    }
+}
+
+impl Decode<'_> for KeyOptions {
+    fn decode(bytes: &[u8]) -> Result<Decoded<'_, Self>, ProtoError> {
+        let Decoded {
+            value: has_command,
+            next,
+        } = bool::decode(bytes)?;
+
+        let (command, next) = match has_command {
+            true => {
+                let Decoded {
+                    value: command,
+                    next,
+                } = <&[u8]>::decode(next)?;
+
+                let command = str::from_utf8(command)
+                    .map_err(|_| ProtoError::InvalidPacket("invalid UTF-8 in forced command"))?;
+
+                (Some(command.to_owned()), next)
+            }
+            false => (None, next),
+        };
+
+        Ok(Decoded {
+            value: Self { command },
+            next,
+        })
+    }
+}
+
 /// The `SSH_MSG_USERAUTH_REQUEST` message
 ///
 /// Sent by the client to start or continue authentication.
@@ -613,5 +655,118 @@ impl<'a> TryFrom<IncomingPacket<'a>> for ServiceRequest<'a> {
         }
 
         Ok(ServiceRequest { service_name })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::{
+        CryptoError, Hash, KeyExchange, KeySourceSide, OpeningKey, SealingKey, SecureRandom,
+        SigningKey, SupportedAlgorithms,
+    };
+    use crate::named::KeyExchangeAlgorithm;
+
+    const KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMPdEXeWrpzl1Lgk7akX7+7x4B1eoyV5tyD6674DIh3R";
+
+    #[test]
+    fn key_options() {
+        let cases: &[(&str, Option<Option<&str>>)] = &[
+            ("", Some(None)),
+            (r#"command="echo hi""#, Some(Some("echo hi"))),
+            (r#"COMMAND="echo hi""#, Some(Some("echo hi"))),
+            (r#"command="echo #hash""#, Some(Some("echo #hash"))),
+            (r#"command="echo café""#, Some(Some("echo café"))),
+            (r#"command="say \"hi\"""#, Some(Some(r#"say "hi""#))),
+            (r#"command="trailing \\""#, None),
+            (r#"command="a",command="b""#, None),
+            (r#"command="a" ,command="b""#, None),
+            ("command=unquoted", None),
+            (r#"command="unterminated"#, None),
+            ("no-pty", None),
+            (r#"no-pty,command="echo hi""#, None),
+        ];
+
+        for (options, expected) in cases {
+            let line = match options.is_empty() {
+                true => KEY.to_owned(),
+                false => format!("{options} {KEY}"),
+            };
+
+            let parsed =
+                AuthorizedKey::from_str(&line, &StubProvider).map(|key| key.options.command);
+            assert_eq!(
+                parsed.as_ref().map(|command| command.as_deref()),
+                *expected,
+                "unexpected result for options {options:?}",
+            );
+        }
+    }
+
+    struct StubProvider;
+
+    impl CryptoProvider for StubProvider {
+        fn verifying_key(
+            &self,
+            _: &[u8],
+            _: &PublicKeyAlgorithm<'_>,
+        ) -> Result<Arc<dyn VerifyingKey>, CryptoError> {
+            Ok(Arc::new(StubKey))
+        }
+
+        fn generate_signing_key(
+            &self,
+            _: &PublicKeyAlgorithm<'_>,
+        ) -> Result<(Box<dyn SigningKey>, Vec<u8>), CryptoError> {
+            unimplemented!()
+        }
+
+        fn signing_key_from_pkcs8(&self, _: &[u8]) -> Result<Box<dyn SigningKey>, CryptoError> {
+            unimplemented!()
+        }
+
+        fn opening_key(
+            &self,
+            _: u64,
+            _: &KeySourceSide,
+        ) -> Result<Box<dyn OpeningKey>, CryptoError> {
+            unimplemented!()
+        }
+
+        fn sealing_key(
+            &self,
+            _: u64,
+            _: &KeySourceSide,
+        ) -> Result<Box<dyn SealingKey>, CryptoError> {
+            unimplemented!()
+        }
+
+        fn key_exchange(
+            &self,
+            _: &KeyExchangeAlgorithm<'_>,
+        ) -> Result<&'static dyn KeyExchange, CryptoError> {
+            unimplemented!()
+        }
+
+        fn hash(&self, _: &KeyExchangeAlgorithm<'_>) -> Result<&'static dyn Hash, CryptoError> {
+            unimplemented!()
+        }
+
+        fn supported_algorithms(&self) -> SupportedAlgorithms {
+            unimplemented!()
+        }
+
+        fn secure_random(&self) -> &'static dyn SecureRandom {
+            unimplemented!()
+        }
+    }
+
+    struct StubKey;
+
+    impl VerifyingKey for StubKey {
+        fn verify(&self, _: &[u8], _: &[u8]) -> Result<(), CryptoError> {
+            unimplemented!()
+        }
     }
 }
