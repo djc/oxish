@@ -521,14 +521,14 @@ async fn store(
     Ok((dir, Box::new(SingleUser::with_keys(user, vec![key]))))
 }
 
+static SESSION_BINARY: OnceCell<PathBuf> = OnceCell::const_new();
+
 /// Build and locate the `oxish-session` binary
 ///
 /// `cargo test` only builds the crate's binaries as test harnesses, so build the real
 /// binary here (a no-op when fresh). Unit tests run from `target/<profile>/deps/` (or
 /// `target/<profile>/build/<package>/<hash>/out/` with Cargo's newer build directory layout),
 /// while cargo places the binary in `target/<profile>/`.
-static SESSION_BINARY: OnceCell<PathBuf> = OnceCell::const_new();
-
 async fn build_session_binary() -> anyhow::Result<PathBuf> {
     let exe = env::current_exe()?;
     // TODO: simplify for new build directory layout once MSRV hits 1.100
