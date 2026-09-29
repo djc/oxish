@@ -648,7 +648,10 @@ async fn force_command_path(spawn: bool) -> anyhow::Result<()> {
     let server = Server::new(
         Box::new(SingleUser::with_keys(user, vec![key])),
         HostKeys::new([Zeroizing::new(pkcs8)].into_iter(), provider)?,
-        session_binary().await?,
+        SESSION_BINARY
+            .get_or_try_init(build_session_binary)
+            .await
+            .cloned()?,
         provider,
     )?
     .with_config(Config {
