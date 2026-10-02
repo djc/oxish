@@ -17,7 +17,10 @@ pub mod channels;
 pub mod crypto;
 use crypto::CryptoError;
 mod host_keys;
-pub use host_keys::{HostKeys, ServerHostKey, SessionHostKey};
+pub use host_keys::{
+    HostKeys, OpenSshKeyV1, ServerHostKey, SessionHostKey, SshEcdsaKey, SshEd25519Key,
+    SshPrivateKey, pem_encode,
+};
 mod io;
 pub use io::{ReadState, WriteState};
 /// Key exchange messages and negotiation (RFC 4253 section 7, RFC 5656)

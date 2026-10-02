@@ -1,7 +1,10 @@
 use core::net::{Ipv4Addr, SocketAddr};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     env,
-    fs::{self, File},
+    fs::{self, OpenOptions},
     io::{self, Write},
     path::PathBuf,
     sync::Arc,
@@ -15,12 +18,12 @@ use clap::Parser;
 use listenfd::ListenFd;
 use oxish::{Config, DEFAULT_PROVIDER, DefaultStore, Server};
 use proto::{
-    HostKeys,
+    HostKeys, OpenSshKeyV1, SshPrivateKey,
     named::{Named, PublicKeyAlgorithm},
+    pem_encode,
 };
 use tokio::net::TcpListener;
 use tracing::info;
-use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -32,15 +35,23 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     if let Some(path) = &args.generate_host_key {
-        return match File::create_new(path) {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path);
+
+        return match file {
             Ok(mut host_key_file) => {
-                let Ok((_, pkcs8)) = provider.generate_signing_key(&args.host_key_type) else {
+                let Ok((signing_key, pkcs8)) = provider.generate_signing_key(&args.host_key_type)
+                else {
                     anyhow::bail!("failed to generate host key");
                 };
 
-                // FIXME ensure the host key is only readable by the ssh server user
-                let pkcs8 = Zeroizing::new(pkcs8);
-                let result = host_key_file.write_all(&pkcs8);
+                let single = SshPrivateKey::from_pkcs8(&pkcs8, &*signing_key)?;
+                let openssh = OpenSshKeyV1::new([single]).context("no host key to encode")?;
+                let pem = pem_encode("OPENSSH PRIVATE KEY", &openssh.to_bytes(provider)?);
+                let result = host_key_file.write_all(pem.as_bytes());
                 result?;
 
                 eprintln!("generated host key at {}", path.display());
