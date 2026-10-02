@@ -38,7 +38,7 @@ impl HostKeys {
             };
 
             match OpenSshKeyV1::from_str(&pem) {
-                Ok(decoded) => keys.extend(decoded.keys),
+                Ok(openssh) => keys.extend(openssh.keys.iter().map(SshPrivateKey::to_pkcs8)),
                 Err(error) => warn!(?path, %error, "skipping host key file with invalid format"),
             }
         }
@@ -146,11 +146,11 @@ impl SessionHostKey {
     }
 }
 
-/// Extract a PKCS#8 document from an unencrypted OpenSSH-format private key file
+/// Private keys held in an unencrypted OpenSSH-format private key file
 ///
 /// Only supports unencrypted keys for now.
 struct OpenSshKeyV1 {
-    keys: Vec<Zeroizing<Vec<u8>>>,
+    keys: Vec<SshPrivateKey>,
 }
 
 // Format:
@@ -265,30 +265,8 @@ impl FromStr for OpenSshKeyV1 {
         let mut keys = Vec::with_capacity(key_count as usize);
         let mut next_key = next;
         for _ in 0..key_count {
-            let Decoded {
-                value: key_type,
-                next,
-            } = <&[u8]>::decode(next_key)?;
-            let Ok(key_type) = str::from_utf8(key_type) else {
-                return Err(ProtoError::InvalidHostKey("invalid key type"));
-            };
-
-            let next = match PublicKeyAlgorithm::typed(key_type) {
-                PublicKeyAlgorithm::Ed25519 => {
-                    let Decoded { value, next } = SshEd25519Key::decode(next)?;
-                    keys.push(value.to_pkcs8());
-                    next
-                }
-                PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
-                    let Decoded { value, next } = SshEcdsaKey::decode(next)?;
-                    keys.push(value.to_pkcs8());
-                    next
-                }
-                PublicKeyAlgorithm::Unknown(_) => {
-                    return Err(ProtoError::InvalidHostKey("unsupported key type"));
-                }
-            };
-
+            let Decoded { value, next } = SshPrivateKey::decode(next_key)?;
+            keys.push(value);
             next_key = <&[u8]>::decode(next)?.next;
         }
 
@@ -299,6 +277,54 @@ impl FromStr for OpenSshKeyV1 {
         }
 
         Ok(Self { keys })
+    }
+}
+
+/// A private key held in an OpenSSH-format private key file
+#[non_exhaustive]
+enum SshPrivateKey {
+    Ed25519(SshEd25519Key),
+    EcdsaSha2Nistp256(SshEcdsaKey),
+}
+
+impl SshPrivateKey {
+    fn to_pkcs8(&self) -> Zeroizing<Vec<u8>> {
+        match self {
+            Self::Ed25519(key) => key.to_pkcs8(),
+            Self::EcdsaSha2Nistp256(key) => key.to_pkcs8(),
+        }
+    }
+}
+
+impl<'a> Decode<'a> for SshPrivateKey {
+    fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
+        let Decoded {
+            value: key_type,
+            next,
+        } = <&[u8]>::decode(input)?;
+        let Ok(key_type) = str::from_utf8(key_type) else {
+            return Err(ProtoError::InvalidHostKey("invalid key type"));
+        };
+
+        match PublicKeyAlgorithm::typed(key_type) {
+            PublicKeyAlgorithm::Ed25519 => {
+                let Decoded { value, next } = SshEd25519Key::decode(next)?;
+                Ok(Decoded {
+                    value: Self::Ed25519(value),
+                    next,
+                })
+            }
+            PublicKeyAlgorithm::EcdsaSha2Nistp256 => {
+                let Decoded { value, next } = SshEcdsaKey::decode(next)?;
+                Ok(Decoded {
+                    value: Self::EcdsaSha2Nistp256(value),
+                    next,
+                })
+            }
+            PublicKeyAlgorithm::Unknown(_) => {
+                Err(ProtoError::InvalidHostKey("unsupported key type"))
+            }
+        }
     }
 }
 
@@ -381,7 +407,6 @@ impl<'a> Decode<'a> for SshEcdsaKey {
 }
 
 struct SshEd25519Key {
-    #[expect(dead_code)]
     public: [u8; 32],
     seed: Zeroizing<[u8; 32]>,
 }
@@ -439,7 +464,7 @@ mod tests {
         let expected = data_encoding::HEXLOWER
             .decode(b"302e020100300506032b657004220420973548d5e2993b158ba0bd0d3582c155560e68ff3a0950f650939cc87aab45ba")
             .unwrap();
-        assert_eq!(*keys.keys[0], expected);
+        assert_eq!(*keys.keys[0].to_pkcs8(), expected);
     }
 
     #[test]
@@ -448,7 +473,7 @@ mod tests {
         let expected = data_encoding::HEXLOWER
             .decode(b"308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b020101042018a3b62a37e956048f449849d41825b8491a6d1d0091589bcf0146edbf517464a1440342000470c85a09c02960bc0da257d4437611c3f0bc4abb10cb6ef0e858cad06b44e40d54be0a8bf1007192ef04802672dc9f88f0a3b813a9545b9d9de797492eaf46ab")
             .unwrap();
-        assert_eq!(*keys.keys[0], expected);
+        assert_eq!(*keys.keys[0].to_pkcs8(), expected);
     }
 
     const ED25519_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
