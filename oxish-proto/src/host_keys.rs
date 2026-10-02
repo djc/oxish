@@ -302,22 +302,21 @@ impl FromStr for OpenSshKeyV1 {
     }
 }
 
-struct SshEcdsaKey<'a> {
-    scalar: &'a [u8],
-    public: &'a [u8],
+struct SshEcdsaKey {
+    /// Big-endian, left-padded to 32 bytes
+    scalar: Zeroizing<[u8; 32]>,
+    public: [u8; 65],
 }
 
-impl<'a> SshEcdsaKey<'a> {
+impl SshEcdsaKey {
     fn to_pkcs8(&self) -> Zeroizing<Vec<u8>> {
         let mut pkcs8 = Zeroizing::new(Vec::with_capacity(
             Self::PKCS8_PREFIX.len() + 32 + Self::PKCS8_MIDDLE.len() + 65,
         ));
         pkcs8.extend_from_slice(Self::PKCS8_PREFIX);
-        let padded = Self::PKCS8_PREFIX.len() + (32 - self.scalar.len());
-        pkcs8.resize(padded, 0);
-        pkcs8.extend_from_slice(self.scalar);
+        pkcs8.extend_from_slice(&*self.scalar);
         pkcs8.extend_from_slice(Self::PKCS8_MIDDLE);
-        pkcs8.extend_from_slice(self.public);
+        pkcs8.extend_from_slice(&self.public);
         pkcs8
     }
 
@@ -337,7 +336,7 @@ impl<'a> SshEcdsaKey<'a> {
     const PKCS8_MIDDLE: &'static [u8] = &[0xa1, 0x44, 0x03, 0x42, 0x00];
 }
 
-impl<'a> Decode<'a> for SshEcdsaKey<'a> {
+impl<'a> Decode<'a> for SshEcdsaKey {
     fn decode(input: &'a [u8]) -> Result<Decoded<'a, Self>, ProtoError> {
         let Decoded { value: curve, next } = <&[u8]>::decode(input)?;
         if curve != b"nistp256" {
@@ -364,10 +363,20 @@ impl<'a> Decode<'a> for SshEcdsaKey<'a> {
             return Err(ProtoError::InvalidHostKey("invalid ecdsa key data"));
         }
 
-        Ok(Decoded {
-            value: Self { scalar, public },
-            next,
-        })
+        let mut key = Self {
+            scalar: Zeroizing::new([0; 32]),
+            public: [0; 65],
+        };
+
+        // Left-pad the big-endian scalar with zeros:
+        //
+        //   0                32 - scalar.len()    32
+        //   +----------------+--------------------+
+        //   |   00 ... 00    |       scalar       |
+        //   +----------------+--------------------+
+        key.scalar[32 - scalar.len()..].copy_from_slice(scalar);
+        key.public.copy_from_slice(public);
+        Ok(Decoded { value: key, next })
     }
 }
 
