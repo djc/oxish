@@ -200,8 +200,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            // TODO: Windows cannot hand a connection to a session process yet
             #[cfg(debug_assertions)]
-            spawn: true,
+            spawn: cfg!(unix),
             root_policy: RootPolicy::default(),
         }
     }

@@ -17,7 +17,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::{Connection, Error, RootPolicy, receive};
+use crate::{Connection, Error, RootPolicy, platform, receive};
 
 #[instrument(name = "authentication", skip(session_id, conn, store, provider), fields(addr = %conn.addr))]
 pub(crate) async fn authenticate<T: AsyncRead + AsyncWrite + Unpin>(
@@ -323,7 +323,7 @@ impl SingleUser {
 
 impl UserStore for SingleUser {
     fn lookup(&self, name: Username, _: RootPolicy) -> Option<User> {
-        match self.0.data.name == name {
+        match platform::same_user(&self.0.data.name, &name) {
             true => Some(self.0.data.clone()),
             false => {
                 warn!(
@@ -380,7 +380,7 @@ pub struct User {
 
 /// A validated username
 ///
-/// Must be valid UTF-8 without any ASCII control characters or slashes.
+/// Must be valid UTF-8 without any control characters or slashes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Username(String);
 

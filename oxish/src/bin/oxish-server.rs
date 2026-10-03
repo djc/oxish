@@ -35,13 +35,12 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     if let Some(path) = &args.generate_host_key {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
 
-        return match file {
+        return match options.open(path) {
             Ok(mut host_key_file) => {
                 let Ok((signing_key, pkcs8)) = provider.generate_signing_key(&args.host_key_type)
                 else {

@@ -197,6 +197,11 @@ pub(crate) async fn spawn(
     }
 }
 
+/// Whether `requested` names the `authorized` account
+pub(crate) fn same_user(authorized: &str, requested: &str) -> bool {
+    authorized == requested
+}
+
 /// Resume an SSH session from the session state received over the Unix socket `source`
 pub fn resume(provider: &'static dyn CryptoProvider) -> Result<Session<TcpStream>, Error> {
     let source = rustix::stdio::stdin();
