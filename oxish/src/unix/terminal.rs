@@ -96,7 +96,9 @@ impl Terminal {
         let child = cmd.spawn()?;
         rustix::fs::fcntl_setfl(&controller, OFlags::NONBLOCK)?;
         Ok(Self {
-            pty: AsyncFd::new(controller)?,
+            // SAFETY: `controller` is an open `OwnedFd` that the `AsyncFd` takes ownership of,
+            // so it stays open until dropped; we never swap it out via `get_mut()`.
+            pty: unsafe { AsyncFd::register(controller)? },
             child,
         })
     }
