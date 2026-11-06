@@ -181,13 +181,14 @@ impl AuthenticationState {
                             return Ok(Self::AwaitAuthRequest { cached, attempts });
                         };
 
-                        let Some(user) = store.lookup(name, root_policy) else {
-                            send_auth_failed(write)?;
-                            return Ok(Self::AwaitAuthRequest { cached, attempts });
-                        };
-
-                        let keys = store.keys(&user, provider);
-                        cached.insert(CachedUser { data: user, keys })
+                        cached.insert(match store.lookup(name.clone(), root_policy) {
+                            Some(user) => {
+                                let keys = store.keys(&user, provider);
+                                CachedUser { data: user, keys }
+                            }
+                            // To signature be still checked against `fake_key()` below
+                            None => CachedUser::fake(name),
+                        })
                     }
                 };
 
@@ -364,6 +365,23 @@ pub trait UserStore: Send + Sync + 'static {
 pub(crate) struct CachedUser {
     pub(crate) data: User,
     pub(crate) keys: Vec<AuthorizedKey>,
+}
+
+impl CachedUser {
+    /// fake user with empty key
+    #[cfg(unix)]
+    fn fake(name: Username) -> Self {
+        Self {
+            data: User {
+                name,
+                id: u32::MAX,
+                gid: u32::MAX,
+                home_dir: PathBuf::from("/var/empty"),
+                shell: PathBuf::from("/bin/sh"),
+            },
+            keys: Vec::new(),
+        }
+    }
 }
 
 /// A successfully authenticated user, together with the options on the key they authenticated with
