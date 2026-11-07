@@ -90,14 +90,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     #[cfg(target_os = "linux")]
-    let listeners = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
-        (Some(listener), None) => {
-            listener.set_nonblocking(true)?;
-            vec![TcpListener::from_std(listener)?]
+    let listeners = {
+        // There may be several, e.g. from separate IPv4 and IPv6 `ListenStream=` lines
+        let mut fds = ListenFd::from_env();
+        let mut listeners = Vec::new();
+        for idx in 0..fds.len() {
+            if let Some(listener) = fds.take_tcp_listener(idx)? {
+                listener.set_nonblocking(true)?;
+                listeners.push(TcpListener::from_std(listener)?);
+            }
         }
-        (None, Some(port)) => bind(port)?,
-        (Some(_), Some(_)) => anyhow::bail!("LISTEN_FDS and --port conflict with each other"),
-        (None, None) => anyhow::bail!("unless LISTEN_FDS is set, --port is required"),
+
+        match (listeners.is_empty(), args.port) {
+            (false, None) => listeners,
+            (true, Some(port)) => bind(port)?,
+            (false, Some(_)) => anyhow::bail!("LISTEN_FDS and --port conflict with each other"),
+            (true, None) => anyhow::bail!("unless LISTEN_FDS is set, --port is required"),
+        }
     };
 
     #[cfg(not(target_os = "linux"))]
