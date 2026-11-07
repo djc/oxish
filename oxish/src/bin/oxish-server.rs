@@ -21,7 +21,7 @@ use proto::{
     named::{Named, PublicKeyAlgorithm},
     pem_encode,
 };
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, task::JoinSet};
 use tracing::info;
 
 #[tokio::main]
@@ -86,24 +86,24 @@ async fn main() -> anyhow::Result<()> {
     }
 
     #[cfg(target_os = "linux")]
-    let listener = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
+    let listeners = match (ListenFd::from_env().take_tcp_listener(0)?, args.port) {
         (Some(listener), None) => {
             listener.set_nonblocking(true)?;
-            TcpListener::from_std(listener)?
+            vec![TcpListener::from_std(listener)?]
         }
         (None, Some(port)) => {
             let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
-            TcpListener::bind(addr).await?
+            vec![TcpListener::bind(addr).await?]
         }
         (Some(_), Some(_)) => anyhow::bail!("LISTEN_FDS and --port conflict with each other"),
         (None, None) => anyhow::bail!("unless LISTEN_FDS is set, --port is required"),
     };
 
     #[cfg(not(target_os = "linux"))]
-    let listener = match args.port {
+    let listeners = match args.port {
         Some(port) => {
             let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
-            TcpListener::bind(addr).await?
+            vec![TcpListener::bind(addr).await?]
         }
         None => anyhow::bail!("--port is required"),
     };
@@ -123,8 +123,7 @@ async fn main() -> anyhow::Result<()> {
         config.spawn = args.spawn;
     }
 
-    info!(addr = %listener.local_addr()?, "listening for connections");
-    Arc::new(
+    let server = Arc::new(
         Server::new(
             DefaultStore::new(provider)?,
             host_keys,
@@ -132,9 +131,21 @@ async fn main() -> anyhow::Result<()> {
             provider,
         )?
         .with_config(config),
-    )
-    .run(listener)
-    .await
+    );
+
+    let mut tasks = JoinSet::new();
+    for listener in listeners {
+        info!(addr = %listener.local_addr()?, "listening for connections");
+        let server = server.clone();
+        tasks.spawn(async move { server.run(listener).await });
+    }
+
+    // `Server::run()` doesn't currently return, but if any listener stops (or its task panics),
+    // exit rather than keep serving on only some of the addresses
+    match tasks.join_next().await {
+        Some(result) => result?,
+        None => Ok(()),
+    }
 }
 
 #[derive(Debug, Parser)]

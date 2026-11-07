@@ -62,7 +62,7 @@ impl Server {
     /// serve the connected client after authentication. When [`Config::spawn`] is `false`,
     /// the session will continue running in the server process.
     ///
-    /// This function never returns unless the listener is closed or an error occurs.
+    /// This function never returns: failures to accept a connection are logged and skipped.
     pub async fn run(self: &Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
         loop {
             let (stream, mut addr) = match listener.accept().await {
