@@ -65,13 +65,17 @@ impl Server {
     /// This function never returns unless the listener is closed or an error occurs.
     pub async fn run(self: &Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
         loop {
-            let (stream, addr) = match listener.accept().await {
+            let (stream, mut addr) = match listener.accept().await {
                 Ok((stream, addr)) => (stream, addr),
                 Err(error) => {
                     warn!(%error, "failed to accept connection");
                     continue;
                 }
             };
+
+            // On an IPv6 socket that accepts IPv4, IPv4 peers show up as IPv4-mapped addresses
+            // (`set_ip()` keeps the scope ID of other IPv6 addresses)
+            addr.set_ip(addr.ip().to_canonical());
 
             let server = self.clone();
             tokio::spawn(async move {
