@@ -66,7 +66,11 @@ impl Server {
     pub async fn run(self: &Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
         loop {
             let (stream, addr) = match listener.accept().await {
-                Ok((stream, addr)) => (stream, addr),
+                // On a dual-stack listener, IPv4 peers show up as IPv4-mapped IPv6 addresses
+                Ok((stream, addr)) => (
+                    stream,
+                    SocketAddr::new(addr.ip().to_canonical(), addr.port()),
+                ),
                 Err(error) => {
                     warn!(%error, "failed to accept connection");
                     continue;
