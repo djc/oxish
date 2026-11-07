@@ -1,4 +1,4 @@
-use core::net::{Ipv4Addr, SocketAddr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -22,8 +22,9 @@ use proto::{
     named::{Named, PublicKeyAlgorithm},
     pem_encode,
 };
-use tokio::net::TcpListener;
-use tracing::info;
+use rustix::{io::Errno, net::sockopt};
+use tokio::net::{TcpListener, TcpSocket};
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -92,20 +93,14 @@ async fn main() -> anyhow::Result<()> {
             listener.set_nonblocking(true)?;
             TcpListener::from_std(listener)?
         }
-        (None, Some(port)) => {
-            let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
-            TcpListener::bind(addr).await?
-        }
+        (None, Some(port)) => bind(port)?,
         (Some(_), Some(_)) => anyhow::bail!("LISTEN_FDS and --port conflict with each other"),
         (None, None) => anyhow::bail!("unless LISTEN_FDS is set, --port is required"),
     };
 
     #[cfg(not(target_os = "linux"))]
     let listener = match args.port {
-        Some(port) => {
-            let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
-            TcpListener::bind(addr).await?
-        }
+        Some(port) => bind(port)?,
         None => anyhow::bail!("--port is required"),
     };
 
@@ -156,6 +151,30 @@ struct Args {
     #[cfg(debug_assertions)]
     #[clap(long, action = ArgAction::Set, default_value_t = true)]
     spawn: bool,
+}
+
+/// Bind a listener on all local addresses, accepting both IPv6 and IPv4 connections
+///
+/// Falls back to listening on IPv4 only if the host does not support IPv6.
+fn bind(port: u16) -> io::Result<TcpListener> {
+    let (socket, ip) = match TcpSocket::new_v6() {
+        Ok(socket) => {
+            // The default for `IPV6_V6ONLY` varies by platform and system configuration, so
+            // clear it explicitly to also accept IPv4 connections (as IPv4-mapped addresses).
+            sockopt::set_ipv6_v6only(&socket, false)?;
+            (socket, IpAddr::from(Ipv6Addr::UNSPECIFIED))
+        }
+        Err(error) if Errno::from_io_error(&error) == Some(Errno::AFNOSUPPORT) => {
+            warn!(%error, "IPv6 not supported, listening on IPv4 only");
+            (TcpSocket::new_v4()?, IpAddr::from(Ipv4Addr::UNSPECIFIED))
+        }
+        Err(error) => return Err(error),
+    };
+
+    socket.set_reuseaddr(true)?;
+    socket.bind(SocketAddr::new(ip, port))?;
+    // Same backlog as `tokio::net::TcpListener::bind()` (from mio, which copies it from `std`)
+    socket.listen(128)
 }
 
 fn host_key_type(name: &str) -> Result<PublicKeyAlgorithm<'static>, String> {
