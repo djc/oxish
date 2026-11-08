@@ -408,6 +408,14 @@ pub struct User {
     pub shell: PathBuf,
 }
 
+impl User {
+    /// Is unknown user returned by `UserLookup::resolve()`
+    #[cfg(unix)]
+    pub(crate) fn is_unknown(&self) -> bool {
+        self.id == u32::MAX || self.gid == u32::MAX
+    }
+}
+
 /// A validated username
 ///
 /// Must be valid UTF-8 without any ASCII control characters or slashes.
