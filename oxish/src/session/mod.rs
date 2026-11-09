@@ -207,8 +207,7 @@ const NO_PQ_WARNING_OPENSSH: &str =
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-    use std::collections::BTreeMap;
+    use std::{borrow::Cow, collections::BTreeMap};
 
     use proto::channels::PtyReq;
 

@@ -1,5 +1,4 @@
 use core::net::{Ipv4Addr, SocketAddr};
-
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::{

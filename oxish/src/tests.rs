@@ -1,12 +1,13 @@
-use core::{net::Ipv4Addr, net::SocketAddr, time::Duration};
-
+use core::{
+    net::{Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
     env, fs, io,
     panic::resume_unwind,
-    path::Path,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
     sync::Once,
 };
