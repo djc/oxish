@@ -37,8 +37,7 @@ use crate::{
     Connection, Error, RootPolicy, SessionState,
     authentication::{CachedUser, SingleUser, User, UserStore, Username},
     server::Server,
-    session::Channels,
-    session::Session,
+    session::{Channels, Session},
 };
 
 mod terminal;

@@ -55,15 +55,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check -p oxish --no-default-features --features aws-lc-fips
 
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check --config-path .rustfmt.unstable.toml
+
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          components: rustfmt, clippy
-      - run: cargo fmt --all -- --check
+          components: clippy
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   docs:
