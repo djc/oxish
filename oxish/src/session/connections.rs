@@ -85,9 +85,14 @@ impl Channels {
             ChannelRequestType::Env(env) => {
                 const ALLOW_ENV: &[&str] = &["TZ", "LANG"];
                 match ALLOW_ENV.contains(&env.name) || env.name.starts_with("LC_") {
-                    true if channel.env.len() < 32 => channel
-                        .env
-                        .push((env.name.to_owned(), env.value.to_owned())),
+                    true if channel.env.len() < MAX_ENV_VARIABLE_COUNT
+                        && env.name.len() <= MAX_ENV_VARIABLE_NAME_LEN
+                        && env.value.len() <= MAX_ENV_VARIABLE_VALUE_LEN =>
+                    {
+                        channel
+                            .env
+                            .push((env.name.to_owned(), env.value.to_owned()))
+                    }
                     _ => {
                         debug!(name = env.name, "ignoring environment variable request");
                         if request.want_reply {
@@ -571,3 +576,10 @@ const INITIAL_WINDOW_SIZE: u32 = 16 * MAX_PACKET_LEN;
 /// How long to wait for a shell to become reapable after its PTY reports EOF
 /// or after it is killed
 const EXIT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+/// Maximum number of environment variables allowed
+const MAX_ENV_VARIABLE_COUNT: usize = 128;
+/// Maximum length of an environment variable name
+const MAX_ENV_VARIABLE_NAME_LEN: usize = 256;
+/// Maximum length of an environment variable value
+const MAX_ENV_VARIABLE_VALUE_LEN: usize = 16 * 1024;
