@@ -110,6 +110,15 @@ pub struct ChannelOpenFailure<'a> {
 }
 
 impl ChannelOpenFailure<'static> {
+    /// Failure response for a channel open with too many open channels
+    pub fn connect_failed(recipient_channel: u32) -> Self {
+        Self {
+            recipient_channel,
+            reason_code: ChannelOpenFailureReason::ConnectFailed,
+            description: "too many open channels",
+        }
+    }
+
     /// Failure response for a channel open reusing an active channel identifier
     pub fn duplicate_id(recipient_channel: u32) -> Self {
         Self {

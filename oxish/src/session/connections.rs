@@ -43,6 +43,11 @@ impl Channels {
             return Ok(());
         }
 
+        if self.channels.len() + 1 >= MAX_OPEN_CHANNELS_PER_SESSION {
+            write.encode(&ChannelOpenFailure::connect_failed(open.sender_channel))?;
+            return Ok(());
+        }
+
         let local_id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let entry = match self.channels.entry(local_id) {
@@ -583,3 +588,6 @@ const MAX_ENV_VARIABLE_COUNT: usize = 128;
 const MAX_ENV_VARIABLE_NAME_LEN: usize = 256;
 /// Maximum length of an environment variable value
 const MAX_ENV_VARIABLE_VALUE_LEN: usize = 16 * 1024;
+
+/// Maximum number of open channels per session
+const MAX_OPEN_CHANNELS_PER_SESSION: usize = 256;
