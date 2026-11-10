@@ -20,7 +20,7 @@ use proto::{
 };
 use rustix::{
     fs::{Mode, OFlags, open, openat},
-    io::FdFlags,
+    io::{Errno, FdFlags},
     net::{
         RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
         SendAncillaryMessage, SendFlags,
@@ -602,6 +602,23 @@ impl UserLookup {
 
     const FAKE_HOME: *const c_char = c"/var/empty".as_ptr().cast::<c_char>();
     const DEFAULT_SHELL: *const c_char = c"/bin/sh".as_ptr().cast::<c_char>();
+}
+
+/// Whether an `accept()` error is caused by the process or system running out of resources
+///
+/// Unlike errors for an individual connection, these persist until resources are released.
+pub(crate) fn is_resource_exhaustion(error: &io::Error) -> bool {
+    // Match on the raw errno, as `io::ErrorKind` can't express most of these on stable: std maps
+    // `EMFILE` and `ENFILE` to the unstable `TooManyOpenFiles`, and doesn't categorize `ENOBUFS`
+    // or `ENOSR` at all
+    match Errno::from_io_error(error) {
+        // TODO: on Windows, `accept()` reports these as `WSAEMFILE` and `WSAENOBUFS`
+        Some(Errno::MFILE | Errno::NFILE | Errno::NOBUFS | Errno::NOMEM) => true,
+        // Out of STREAMS resources
+        #[cfg(any(target_os = "illumos", target_os = "solaris"))]
+        Some(Errno::NOSR) => true,
+        _ => false,
+    }
 }
 
 fn check_permissions(file: &File, uid: u32, level: &str) -> ControlFlow<()> {

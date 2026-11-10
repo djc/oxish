@@ -9,7 +9,7 @@ use serde::Deserialize;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{Semaphore, TryAcquireError},
-    time::timeout,
+    time::{sleep, timeout},
 };
 use tracing::{debug, instrument, warn};
 
@@ -18,7 +18,7 @@ use crate::Session;
 use crate::{
     Connection, Error, SessionState, SideState,
     authentication::{Authenticated, UserStore, authenticate},
-    platform::spawn,
+    platform::{is_resource_exhaustion, spawn},
 };
 
 /// State for an SSH server
@@ -67,6 +67,11 @@ impl Server {
         loop {
             let (stream, mut addr) = match listener.accept().await {
                 Ok((stream, addr)) => (stream, addr),
+                Err(error) if is_resource_exhaustion(&error) => {
+                    warn!(%error, "failed to accept connection, retrying in 1s");
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
                 Err(error) => {
                     warn!(%error, "failed to accept connection");
                     continue;
