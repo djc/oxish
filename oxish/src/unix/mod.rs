@@ -355,13 +355,14 @@ pub(crate) struct SystemStore;
 impl UserStore for SystemStore {
     fn lookup(&self, name: Username, root_policy: RootPolicy) -> Option<User> {
         match UserLookup::Name(name).resolve() {
-            Ok(user) => match (user.id, root_policy) {
-                (0, RootPolicy::Allow) => Some(user),
-                (0, RootPolicy::Deny) => {
+            Ok(user) => match (user.id, root_policy, user.is_unknown()) {
+                (_, _, true) => None,
+                (0, RootPolicy::Allow, false) => Some(user),
+                (0, RootPolicy::Deny, false) => {
                     warn!(user = %user.name, "refusing to authenticate root user");
                     None
                 }
-                _ => Some(user),
+                (_, _, false) => Some(user),
             },
             Err(error) => {
                 error!(%error, "failed to get user information");
@@ -469,6 +470,16 @@ enum UserLookup {
 }
 
 impl UserLookup {
+    /// Resolve the passwd entry for this lookup
+    ///
+    /// If the user does not exist or the passwd lookup fails, returns a placeholder user with
+    /// `u32::MAX` as uid and gid, with `FAKE_HOME` and `DEFAULT_SHELL` (and `nobody` as name for
+    /// lookups by id).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name cannot be converted to a C string or the resolved name is not a
+    /// valid `Username`.
     fn resolve(self) -> Result<User, Error> {
         /// Upper bound on the buffer used to hold the passwd entry
         const MAX_BUF_LEN: usize = 1_048_576;
@@ -653,5 +664,11 @@ mod tests {
 
         let user = SystemStore.lookup(root, RootPolicy::Allow).unwrap();
         assert_eq!(user.id, 0);
+    }
+
+    #[test]
+    fn lookup_unknown_user() {
+        let name = Username::try_from("oxish-nonexistent-user".to_owned()).unwrap();
+        assert!(SystemStore.lookup(name, RootPolicy::Deny).is_none());
     }
 }
