@@ -209,7 +209,8 @@ impl AuthenticationState {
                             }
                         },
                     ),
-                    // Signature, authorized key but mismatched algorithms => fail authentication without verifying signature
+                    // Signature, authorized key but mismatched algorithms => fail authentication
+                    // without verifying signature
                     (Some(_), Some(_)) => {
                         warn!(
                             algorithm = ?public_key.algorithm,
