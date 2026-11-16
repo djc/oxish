@@ -183,6 +183,7 @@ async fn no_spawn() {
         &PublicKeyAlgorithm::Ed25519,
         None,
         Some(Config {
+            #[cfg(debug_assertions)]
             spawn: false,
             ..Config::default()
         }),
