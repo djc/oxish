@@ -148,6 +148,10 @@ impl Channels {
                 let command = match options.command.as_deref() {
                     Some(command) => {
                         info!(channel_id = %request.recipient_channel, command, "running forced command from authorized key");
+                        // Clients cannot set this themselves, see `ALLOW_ENV`
+                        channel
+                            .env
+                            .push((ORIGINAL_COMMAND_ENV.to_owned(), requested.to_owned()));
                         command
                     }
                     None => requested,
@@ -626,6 +630,9 @@ const INITIAL_WINDOW_SIZE: u32 = 16 * MAX_PACKET_LEN;
 /// How long to wait for a shell to become reapable after its PTY reports EOF
 /// or after it is killed
 const EXIT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+/// Environment variable holding the command requested by the client when a forced command runs
+const ORIGINAL_COMMAND_ENV: &str = "SSH_ORIGINAL_COMMAND";
 
 /// Maximum number of environment variables allowed
 const MAX_ENV_VARIABLE_COUNT: usize = 128;

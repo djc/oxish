@@ -277,7 +277,7 @@ async fn force_command_exec() {
 
     let (_key_dir, mut client, server) = setup(
         &PublicKeyAlgorithm::Ed25519,
-        Some(r#"command="echo OXISH-FORCED-$((6*7))""#),
+        Some(r#"command="echo OXISH-FORCED-$((6*7)) ORIGINAL:$SSH_ORIGINAL_COMMAND""#),
         None,
         graviola::DEFAULT_PROVIDER,
     )
@@ -298,6 +298,12 @@ async fn force_command_exec() {
     assert!(
         !stdout.contains(EXEC),
         "client command ran despite the forced command.\n\
+        --- stdout ---\n{stdout}",
+    );
+    // The forced command gets the client's command verbatim, without running it
+    assert!(
+        stdout.contains("ORIGINAL:echo OXISH-EXEC-$((6*7))"),
+        "forced command did not see the client's command.\n\
         --- stdout ---\n{stdout}",
     );
 }
