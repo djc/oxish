@@ -224,33 +224,33 @@ pub fn pem_encode(label: &str, data: &[u8]) -> Zeroizing<String> {
 
 // Format:
 //
-//	byte[]	"openssh-key-v1"
-//	string	ciphername
-//	string	kdfname
-//	string	kdfoptions
-//	uint32	number of keys N
-//	string	publickey1
-//	string	publickey2
-//	...
-//	string	publickeyN
-//	string	encrypted, padded list of private keys
+// 	byte[]	"openssh-key-v1"
+// 	string	ciphername
+// 	string	kdfname
+// 	string	kdfoptions
+// 	uint32	number of keys N
+// 	string	publickey1
+// 	string	publickey2
+// 	...
+// 	string	publickeyN
+// 	string	encrypted, padded list of private keys
 //
 // Unencrypted private keys:
 //
 // 	uint32	checkint
-//	uint32	checkint
-//	byte[]	privatekey1
-//	string	comment1
-//	byte[]	privatekey2
-//	string	comment2
-//	...
-//	byte[]	privatekeyN
-//	string	commentN
-//	byte	1
-//	byte	2
-//	byte	3
-//	...
-//	byte	padlen % 255
+// 	uint32	checkint
+// 	byte[]	privatekey1
+// 	string	comment1
+// 	byte[]	privatekey2
+// 	string	comment2
+// 	...
+// 	byte[]	privatekeyN
+// 	string	commentN
+// 	byte	1
+// 	byte	2
+// 	byte	3
+// 	...
+// 	byte	padlen % 255
 impl FromStr for OpenSshKeyV1 {
     type Err = ProtoError;
 

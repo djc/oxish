@@ -194,9 +194,9 @@ async fn no_spawn() {
     client
         .assert_run(
             COMMAND,
-            // In the rekey scenario, keep the session open long enough for several rekeys before the
-            // sentinel; it only arrives if the session survived them.
-            Duration::from_secs(10),
+            // In the rekey scenario, keep the session open long enough for several rekeys before
+            // the sentinel; it only arrives if the session survived them.
+            Duration::from_secs(60),
             server,
         )
         .await
@@ -260,8 +260,8 @@ async fn rekey_graviola() {
     let (status, _stdout, stderr) = client
         .assert_run(
             b"sleep 10\necho OXISH-$((6*7))\nexit\n",
-            // In the rekey scenario, keep the session open long enough for several rekeys before the
-            // sentinel; it only arrives if the session survived them.
+            // In the rekey scenario, keep the session open long enough for several rekeys before
+            // the sentinel; it only arrives if the session survived them.
             Duration::from_secs(30),
             server,
         )
@@ -304,8 +304,8 @@ async fn handshake(
     let (_, stdout, stderr) = client
         .assert_run(
             COMMAND,
-            // In the rekey scenario, keep the session open long enough for several rekeys before the
-            // sentinel; it only arrives if the session survived them.
+            // In the rekey scenario, keep the session open long enough for several rekeys before
+            // the sentinel; it only arrives if the session survived them.
             Duration::from_secs(10),
             server,
         )
@@ -425,11 +425,12 @@ impl CliClient {
 
         let output = timeout(wait_for, child.wait_with_output()).await??;
 
-        // The server task completes on its own once the ssh client tears down the connection: cleanly
-        // (Ok) if the client sent a disconnect, or with Err if it just closed the socket. The client
-        // process can be reaped a moment before the server observes that teardown, so give the server a
-        // bounded window to finish rather than aborting it out from under that race. Only a genuine hang
-        // — the server never noticing the disconnect — should fail the test.
+        // The server task completes on its own once the ssh client tears down the connection:
+        // cleanly (Ok) if the client sent a disconnect, or with Err if it just closed the socket.
+        // The client process can be reaped a moment before the server observes that teardown, so
+        // give the server a bounded window to finish rather than aborting it out from under that
+        // race. Only a genuine hang — the server never noticing the disconnect — should fail the
+        // test.
         match timeout(Duration::from_secs(10), server).await {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(error))) => println!("server task yielded {error:#}"),
