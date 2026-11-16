@@ -238,6 +238,70 @@ async fn force_command() {
     );
 }
 
+/// Check that a command passed to the client runs through an `exec` channel request
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn exec_command() {
+    subscribe();
+
+    let (_key_dir, mut client, server) = setup(
+        &PublicKeyAlgorithm::Ed25519,
+        None,
+        None,
+        graviola::DEFAULT_PROVIDER,
+    )
+    .await
+    .expect("failed to set up test");
+
+    // Nothing is written to stdin, so the output and the exit status can only come from the
+    // command in the `exec` request.
+    client.command = Some("echo OXISH-EXEC-$((6*7)); exit 7");
+    let (status, stdout, stderr) = client
+        .run(b"", Duration::from_secs(10), server)
+        .await
+        .unwrap();
+
+    assert!(
+        stdout.contains(EXEC),
+        "command from exec request did not run.\n\
+        --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+    );
+    assert_eq!(status.code(), Some(7), "--- stderr ---\n{stderr}");
+}
+
+/// Check that a `command` key option replaces the command from an `exec` channel request
+#[cfg(feature = "graviola")]
+#[tokio::test]
+async fn force_command_exec() {
+    subscribe();
+
+    let (_key_dir, mut client, server) = setup(
+        &PublicKeyAlgorithm::Ed25519,
+        Some(r#"command="echo OXISH-FORCED-$((6*7))""#),
+        None,
+        graviola::DEFAULT_PROVIDER,
+    )
+    .await
+    .expect("failed to set up test");
+
+    client.command = Some("echo OXISH-EXEC-$((6*7))");
+    let (_, stdout, stderr) = client
+        .run(b"", Duration::from_secs(10), server)
+        .await
+        .unwrap();
+
+    assert!(
+        stdout.contains(FORCED),
+        "forced command did not run.\n\
+        --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+    );
+    assert!(
+        !stdout.contains(EXEC),
+        "client command ran despite the forced command.\n\
+        --- stdout ---\n{stdout}",
+    );
+}
+
 /// Exercise a client-initiated rekey against the graviola provider
 #[cfg(feature = "graviola")]
 #[tokio::test]
@@ -362,6 +426,8 @@ async fn setup(
 struct CliClient {
     addr: SocketAddr,
     cmd: Command,
+    /// Command to run through an `exec` request, instead of starting a shell
+    command: Option<&'static str>,
 }
 
 impl CliClient {
@@ -378,7 +444,11 @@ impl CliClient {
             .args(["-o", "IdentitiesOnly=yes"]) // don't offer agent keys
             .args(["-o", "LogLevel=DEBUG3"]); // verbose client diagnostics, captured on stderr for failure triage
 
-        Self { addr, cmd }
+        Self {
+            addr,
+            cmd,
+            command: None,
+        }
     }
 
     async fn assert_run(
@@ -409,6 +479,7 @@ impl CliClient {
         let mut child = self
             .cmd
             .arg(format!("{USER}@{}", self.addr.ip()))
+            .args(self.command)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -711,4 +782,5 @@ const USER: &str = "oxish-e2e";
 const COMMAND: &[u8] = b"echo OXISH-$((6*7))\nexit\n";
 const OUTPUT: &str = "OXISH-42";
 const FORCED: &str = "OXISH-FORCED-42";
+const EXEC: &str = "OXISH-EXEC-42";
 const KX_WARNING_MARKER: &str = "post-quantum secure";

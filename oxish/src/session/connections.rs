@@ -3,6 +3,7 @@ use core::{
     future::Future,
     mem,
     pin::Pin,
+    str,
     task::{Context, Poll},
     time::Duration,
 };
@@ -120,6 +121,39 @@ impl Channels {
                 }
 
                 channel.start_terminal(command, &pty_req, write)?;
+            }
+            ChannelRequestType::Exec(exec) => {
+                let Ok(requested) = str::from_utf8(exec.command) else {
+                    // TODO: support non-UTF-8 command
+                    warn!(channel_id = %request.recipient_channel, "refusing exec request with non-UTF-8 command");
+                    if request.want_reply {
+                        write.encode(&channel.failure())?;
+                    }
+                    return Ok(());
+                };
+
+                let pty_req = match channel.terminal.take() {
+                    Some(TerminalState::Requested(pty_req)) => pty_req,
+                    state => {
+                        channel.terminal = state;
+                        // TODO: support non-PTY exec channel also
+                        warn!(channel_id = %request.recipient_channel, "refusing exec request without pending pty-req");
+                        if request.want_reply {
+                            write.encode(&channel.failure())?;
+                        }
+                        return Ok(());
+                    }
+                };
+
+                let command = match options.command.as_deref() {
+                    Some(command) => {
+                        info!(channel_id = %request.recipient_channel, command, "running forced command from authorized key");
+                        command
+                    }
+                    None => requested,
+                };
+
+                channel.start_terminal(Some(command), &pty_req, write)?;
             }
             ChannelRequestType::WindowChange(window_change) => match &channel.terminal {
                 Some(TerminalState::Running(terminal)) => terminal.resize(&window_change)?,
