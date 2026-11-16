@@ -119,17 +119,7 @@ impl Channels {
                     info!(channel_id = %request.recipient_channel, command, "running forced command from authorized key");
                 }
 
-                channel.terminal = Some(TerminalState::Running(Terminal::spawn(
-                    command,
-                    &pty_req,
-                    &channel.env,
-                )?));
-
-                channel.receive_window = INITIAL_WINDOW_SIZE;
-                write.encode(&ChannelWindowAdjust {
-                    recipient_channel: channel.remote_id,
-                    bytes_to_add: INITIAL_WINDOW_SIZE,
-                })?;
+                channel.start_terminal(command, &pty_req, write)?;
             }
             ChannelRequestType::WindowChange(window_change) => match &channel.terminal {
                 Some(TerminalState::Running(terminal)) => terminal.resize(&window_change)?,
@@ -477,6 +467,27 @@ impl Channel {
             initial_window_size: 0,
             maximum_packet_size: MAX_PACKET_LEN - 64, // Leave some room for packet overhead
         }
+    }
+
+    /// Spawn the user's shell on a new PTY and open the receive window for its input
+    ///
+    /// The shell runs `command` if there is one, and is an interactive login shell otherwise.
+    fn start_terminal(
+        &mut self,
+        command: Option<&str>,
+        pty_req: &PtyReq<'_>,
+        write: &mut WriteState,
+    ) -> Result<(), Error> {
+        self.terminal = Some(TerminalState::Running(Terminal::spawn(
+            command, pty_req, &self.env,
+        )?));
+
+        self.receive_window = INITIAL_WINDOW_SIZE;
+        write.encode(&ChannelWindowAdjust {
+            recipient_channel: self.remote_id,
+            bytes_to_add: INITIAL_WINDOW_SIZE,
+        })?;
+        Ok(())
     }
 
     fn success(&self) -> ChannelRequestSuccess {
