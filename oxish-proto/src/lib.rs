@@ -52,14 +52,19 @@ impl<'a> Identification<'a> {
             return Err(IdentificationError::InvalidUtf8.into());
         };
 
-        let Some((message, next)) = message.split_once("\r\n") else {
-            // The maximum length is 255 bytes including CRLF. message excludes
-            // the CRLF, so subtract 2.
-            return match message.len() > 255 - 2 {
+        // The maximum length is 255 bytes including CRLF, so we only need to search for a
+        // CRLF in the first 255 bytes
+        let haystack = &message[..message.len().min(MAX_IDENTIFICATION_LEN)];
+        let Some(crlf_index) = haystack.find("\r\n") else {
+            return match message.len() > MAX_IDENTIFICATION_LEN - 2 {
                 true => Err(IdentificationError::TooLong.into()),
                 false => Ok(Completion::Incomplete(None)),
             };
         };
+        // When splitting at the index of the first CRLF byte, the remainder will start with CRLF
+        let (message, next) = message.split_at(crlf_index);
+        // Omit the CRLF
+        let next = &next[2..];
 
         let Some(rest) = message.strip_prefix("SSH-") else {
             return Err(IdentificationError::NoSsh.into());
@@ -747,3 +752,8 @@ pub const MAX_PACKET_LEN: u32 = 64 * 1024;
 ///
 /// See <https://www.rfc-editor.org/rfc/rfc4253#section-4.2>.
 pub const PROTOCOL: &str = "2.0";
+
+/// Maximum length of an identification string including CRLF
+///
+/// See <https://www.rfc-editor.org/info/rfc4253/#section-4.2>
+pub const MAX_IDENTIFICATION_LEN: usize = 255;
