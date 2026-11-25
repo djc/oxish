@@ -89,6 +89,35 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("session binary `{}` not found", session_bin.display());
     }
 
+    #[cfg_attr(not(debug_assertions), expect(unused_mut))]
+    let mut config = match &args.config {
+        Some(path) => {
+            let s = fs::read_to_string(path)
+                .with_context(|| format!("failed to read config file `{}`", path.display()))?;
+            toml::from_str::<Config>(&s)
+                .with_context(|| format!("failed to parse config file `{}`", path.display()))?
+        }
+        None => Config::default(),
+    };
+    #[cfg(debug_assertions)]
+    {
+        config.spawn = args.spawn;
+    }
+
+    let server = Arc::new(
+        Server::new(
+            DefaultStore::new(provider)?,
+            host_keys,
+            session_bin,
+            provider,
+        )?
+        .with_config(config),
+    );
+
+    if args.test {
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     let listeners = {
         // There may be several, e.g. from separate IPv4 and IPv6 `ListenStream=` lines
@@ -114,31 +143,6 @@ async fn main() -> anyhow::Result<()> {
         Some(port) => bind(port)?,
         None => anyhow::bail!("--port is required"),
     };
-
-    #[cfg_attr(not(debug_assertions), expect(unused_mut))]
-    let mut config = match &args.config {
-        Some(path) => {
-            let s = fs::read_to_string(path)
-                .with_context(|| format!("failed to read config file `{}`", path.display()))?;
-            toml::from_str::<Config>(&s)
-                .with_context(|| format!("failed to parse config file `{}`", path.display()))?
-        }
-        None => Config::default(),
-    };
-    #[cfg(debug_assertions)]
-    {
-        config.spawn = args.spawn;
-    }
-
-    let server = Arc::new(
-        Server::new(
-            DefaultStore::new(provider)?,
-            host_keys,
-            session_bin,
-            provider,
-        )?
-        .with_config(config),
-    );
 
     let mut tasks = JoinSet::new();
     for listener in listeners {
@@ -171,6 +175,8 @@ struct Args {
     /// Path to the `oxish-session` binary (defaults to a sibling of this executable)
     #[clap(long)]
     session_bin: Option<PathBuf>,
+    #[clap(short, long)]
+    test: bool,
     #[cfg(debug_assertions)]
     #[clap(long, action = ArgAction::Set, default_value_t = true)]
     spawn: bool,
