@@ -6,6 +6,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::PathBuf,
+    process::ExitCode,
     sync::Arc,
 };
 
@@ -29,7 +30,7 @@ use tokio::{
 use tracing::{info, warn};
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<ExitCode> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -58,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
                 result?;
 
                 eprintln!("generated host key at {}", path.display());
-                Ok(())
+                Ok(ExitCode::SUCCESS)
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
                 "host key file `{}` already exists",
@@ -154,10 +155,11 @@ async fn main() -> anyhow::Result<()> {
 
     // `Server::run()` doesn't currently return, but if any listener stops (or its task panics),
     // exit rather than keep serving on only some of the addresses
-    match tasks.join_next().await {
-        Some(result) => result?,
-        None => Ok(()),
+    if let Some(result) = tasks.join_next().await {
+        result??;
     }
+
+    Ok(ExitCode::SUCCESS)
 }
 
 #[derive(Debug, Parser)]
