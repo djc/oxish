@@ -61,10 +61,10 @@ async fn main() -> anyhow::Result<ExitCode> {
                 eprintln!("generated host key at {}", path.display());
                 Ok(ExitCode::SUCCESS)
             }
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
-                "host key file `{}` already exists",
-                path.display()
-            )),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                eprintln!("host key file `{}` already exists", path.display());
+                return Ok(ExitCode::from(EX_CANTCREAT));
+            }
             Err(err) => Err(err.into()),
         };
     }
@@ -258,3 +258,6 @@ const DEFAULT_HOST_KEY_FILES: &[&str] = &[
     "/etc/ssh/ssh_host_ed25519_key",
     "/etc/ssh/ssh_host_ecdsa_key",
 ];
+
+// From `sysexits.h`
+const EX_CANTCREAT: u8 = 73;
