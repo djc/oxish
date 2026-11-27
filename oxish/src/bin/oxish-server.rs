@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<ExitCode> {
     );
 
     if args.test {
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     #[cfg(target_os = "linux")]
