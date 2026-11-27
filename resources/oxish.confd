@@ -1,0 +1,8 @@
+# path to oxish's config file (if any)
+#OXISH_CONFIG="-c /etc/oxish.toml"
+
+# port number to use (defaults to 22)
+#PORT="22"
+
+# what should oxish log (defaults to error)
+#export RUST_LOG="warn"
