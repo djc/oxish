@@ -1,0 +1,66 @@
+#!/sbin/openrc-run
+# https://github.com/OpenRC/openrc/blob/master/service-script-guide.md
+
+supervisor=supervise-daemon
+
+name="OxiSH"
+description="Modern, memory safe ssh server"
+command="/usr/bin/oxish-server"
+command_args="$OXISH_CONFIG -p ${PORT:-22}"
+output_logger="logger -t $name -p daemon.warn"
+error_logger="logger -t $name -p daemon.err"
+
+extra_commands="genkeys checkconfig"
+
+if [ $RC_UNAME = "Linux" ]; then
+    no_new_privs=1
+fi
+
+depend() {
+    use dns logger
+}
+
+# https://github.com/OpenRC/openrc/blob/master/service-script-guide.md#dont-restartreload-with-a-broken-config
+checkconfig() {
+    $command -t $OXISH_CONFIG || return $?
+}
+
+genkeys() {
+    _parseerror() {
+        case $1 in
+            # oxish exits with 73 if the keys already exist
+            0|73) return 0 ;;
+            *) return $1 ;;
+        esac
+    }
+
+    $command --host-key-type \
+        ssh-ed25519 \
+        --generate-host-key \
+        /etc/ssh/ssh_host_ed25519_key
+
+    _parseerror $? || return $?
+
+    $command --host-key-type \
+        ecdsa-sha2-nistp256 \
+        --generate-host-key \
+        /etc/ssh/ssh_host_ecdsa_key
+
+    _parseerror $? || return $?
+}
+
+start_pre() {
+    genkeys || return $?
+
+    if [ "$RC_CMD" != "restart" ]; then
+        checkconfig || return $?
+    fi
+}
+
+stop_pre() {
+    if [ "$RC_CMD" = "restart" ]; then
+        checkconfig || return $?
+    fi
+
+    return 0
+}
